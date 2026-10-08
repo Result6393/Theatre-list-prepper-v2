@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: No private data in the repo
+        run: |
+          set -u
+          if git ls-files | grep -Ei '\.(csv|tsv|xlsx|xls)$'; then echo 'Spreadsheet/CSV files must not be committed'; exit 1; fi
+          if git grep -I -n -i -E 'health\.nsw|nsw\.gov' -- . ':!package-lock.json' ':!.github'; then echo 'Real health-system address found'; exit 1; fi
+          bad=$(git grep -I -h -o -E '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' -- . ':!package-lock.json' ':!.github' | grep -Evi '@(example\.org|x\.org|b\.org|c\.org)$' || true)
+          if [ -n "$bad" ]; then echo "Unexpected email addresses: $bad"; exit 1; fi
+      - run: npm ci
+      - run: npm test
+      - run: npm run build

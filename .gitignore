@@ -1,0 +1,9 @@
+node_modules/
+dist/
+# Never commit real theatre lists or run sheets.
+*.csv
+*.tsv
+*.xlsx
+*.xls
+# Exported settings can contain email addresses: never commit them.
+*settings*.json
