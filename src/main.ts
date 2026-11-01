@@ -6,7 +6,8 @@ import { extractSessions, type Patient, type Session } from './extract';
 import { buildRow } from './layout';
 import { ParseError, parseTable, type Table } from './parse';
 import { classifyFile } from './files';
-import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, type KeyValueStore } from './settings';
+import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore } from './settings';
+import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
 
 interface Grid {
@@ -45,6 +46,23 @@ const state = {
 };
 
 const app = document.getElementById('app')!;
+
+/** Saves settings on this device and, if signed in to sync, to your other devices. */
+function persist(): void {
+  saveSettings(storage, state.settings);
+  pushSoon(SYNC_APP, STORAGE_KEY);
+}
+
+/** Reloads settings after sync brought newer ones from another device. */
+function applySyncedSettings(): void {
+  state.settings = loadSettings(storage);
+  state.notice = { text: 'Settings updated from your other devices.', error: false };
+  if (state.view === 'settings') state.settingsSnapshot = exportSettings(state.settings);
+  else if (state.table) refreshSessions();
+  render();
+}
+
+let unmountSync: (() => void) | null = null;
 
 // ---- State changes ------------------------------------------------------------
 
@@ -220,7 +238,7 @@ async function handleDroppedFile(file: File): Promise<void> {
     const hasCustom = exportSettings(state.settings) !== exportSettings(defaultSettings());
     if (hasCustom && !confirm('Replace your current settings with the ones in this file?')) return;
     state.settings = imported;
-    saveSettings(storage, state.settings);
+    persist();
     state.notice = { text: `Settings imported from ${file.name}.`, error: false };
     if (state.view === 'main') refreshSessions();
   } catch {
@@ -293,22 +311,31 @@ function render(): void {
         )]
       : []),
     state.view === 'settings'
-      ? renderSettings({
+      ? withSyncPanel(renderSettings({
           settings: state.settings,
           table: state.table,
-          save: () => saveSettings(storage, state.settings),
+          save: () => persist(),
           rerender: render,
           replace: (settings) => {
             state.settings = settings;
-            saveSettings(storage, state.settings);
+            persist();
             render();
           },
           done: closeSettings,
-        })
+        }))
       : h('main', {}, renderInputStep(), renderListStep(), renderGrid()),
   );
   for (const area of app.querySelectorAll<HTMLTextAreaElement>('textarea.cell')) autoGrow(area);
   window.scrollTo(0, scroll);
+}
+
+/** Puts the sync sign-in panel at the top of the Settings page. */
+function withSyncPanel(view: HTMLElement): HTMLElement {
+  unmountSync?.();
+  const slot = h('div', { class: 'sync-slot' });
+  view.prepend(slot);
+  unmountSync = mountSyncControl(slot, SYNC_APP, STORAGE_KEY, applySyncedSettings);
+  return view;
 }
 
 function step(n: number, title: string, ...body: (Node | string | null | false)[]): HTMLElement {
@@ -652,3 +679,8 @@ document.addEventListener('drop', (e) => {
 });
 
 render();
+
+// Newer settings from another device (if signed in to sync) replace these once they arrive.
+pullBeforeStart(SYNC_APP, STORAGE_KEY).then((result) => {
+  if (result === 'pulled') applySyncedSettings();
+});

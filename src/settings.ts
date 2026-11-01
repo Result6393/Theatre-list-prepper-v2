@@ -11,7 +11,9 @@ export interface Settings {
 
 export type KeyValueStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
-const STORAGE_KEY = 'theatre-list-prepper.settings';
+export const STORAGE_KEY = 'theatre-list-prepper.settings';
+/** Name of this app's record on the settings sync server. */
+export const SYNC_APP = 'theatre-list-prepper';
 
 export function defaultSettings(): Settings {
   return {

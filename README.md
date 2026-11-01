@@ -34,13 +34,14 @@ With the default columns (B–K of the consultant cheat sheet):
 - **Columns:** match your own sheet. Add, remove, rename and reorder columns. Each one is blank, a cleaned-up field, or a run-sheet column as listed. You can also set where the paste starts and whether to copy a heading row.
 - **Email to Medical Records:** the To/Cc addresses, your name for the sign-off, and the subject and wording (with placeholders such as `{day}` and `{patients}`). Nothing is built in, so the addresses stay out of the repo.
 - **Hospitals:** which hospitals to flag, and which hospital codes to drop from comments.
+- **Sync across devices:** sign in with your sync password at the top of Settings and your settings follow you to every device where you've signed in. They're encrypted in your browser before upload, so the sync server (a Cloudflare Worker, see [Result6393.github.io](https://github.com/Result6393/Result6393.github.io)) only stores scrambled data. Works on the GitHub Pages version; the downloaded single-file copy can't reach it and just uses its own settings.
 - **Back up / move:** export your settings to a file and import them on another computer, or share them with a colleague. To import, just drag the settings (`.json`) file onto the page, anywhere (or use the Import settings button). If you've already changed settings, the app asks before replacing them.
 
 ## Privacy
 
 An exported settings file can contain email addresses (such as the Medical Records recipient), so it is never kept in this repository: `.gitignore` excludes `*settings*.json`. Share it with colleagues directly instead.
 
-Everything happens in your browser. The run sheet is never uploaded, stored or sent anywhere, and the app makes no network requests. Only your settings (columns, hospital flags, email addresses and wording) are saved in the browser.
+Everything happens in your browser. The run sheet is never uploaded, stored or sent anywhere, and the app makes no network requests apart from settings sync, if you turn it on. Only your settings (columns, hospital flags, email addresses and wording) are saved in the browser. If you sign in to sync, those settings (encrypted) are also the only thing ever sent to the sync server.
 
 The one exception is the **Email Medical Records** button: you press it, and the patients' MRNs and names are placed in a link that opens a draft in your own email (or the share sheet on your phone). Nothing is sent until you press Send there.
 
