@@ -81,6 +81,17 @@ async function aesKey(c) {
 }
 
 // ---------- server calls ----------
+
+/** Server's own error message if it sent one, else the status code. */
+async function serverError(res) {
+  let detail = '';
+  try {
+    detail = (await res.json()).error || '';
+  } catch {
+    /* not JSON */
+  }
+  return new Error(`Sync server error ${res.status}${detail ? `: ${detail}` : ''}`);
+}
 async function call(method, path, c, body, timeoutMs) {
   const ctrl = new AbortController();
   const t = timeoutMs ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
@@ -101,7 +112,7 @@ async function fetchRemote(app, c, timeoutMs) {
   const res = await call('GET', `/s/${app}`, c, null, timeoutMs);
   if (res.status === 404) return null;
   if (res.status === 401) throw Object.assign(new Error('Sync password no longer valid. Sign in again.'), { signedOut: true });
-  if (!res.ok) throw new Error(`Sync server error ${res.status}`);
+  if (!res.ok) throw await serverError(res);
   const blob = await res.json();
   try {
     const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(blob.iv) }, await aesKey(c), unb64(blob.ct));
@@ -117,7 +128,7 @@ async function upload(app, c, text, updated) {
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await aesKey(c), enc.encode(text));
   const res = await call('PUT', `/s/${app}`, c, { iv: b64(iv), ct: b64(ct), updated }, 10000);
   if (res.status === 401) throw Object.assign(new Error('Sync password no longer valid. Sign in again.'), { signedOut: true });
-  if (!res.ok) throw new Error(`Sync server error ${res.status}`);
+  if (!res.ok) throw await serverError(res);
 }
 
 // ---------- public API ----------
@@ -128,7 +139,7 @@ export async function signIn(password) {
   const res = await fetch(WORKER_URL + '/auth', { method: 'POST', headers: { Authorization: `Bearer ${c.authToken}` } });
   if (res.status === 401) throw new Error('Wrong password.');
   if (res.status === 429) throw new Error('Too many wrong passwords. Try again in 15 minutes.');
-  if (!res.ok) throw new Error(`Sync server error ${res.status}`);
+  if (!res.ok) throw await serverError(res);
   writeJson(SYNC_KEY, c);
 }
 
