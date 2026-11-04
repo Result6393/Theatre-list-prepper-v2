@@ -1,16 +1,16 @@
 import './style.css';
 import { copyHtml, copyText, htmlTableRows, toTsv } from './clipboard';
-import { autoGrow, h } from './dom';
+import { autoGrow, downloadBlob, h } from './dom';
 import { startDrag } from './drag';
 import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, outlookComposeUrl, weekdayLabel } from './email';
 import { extractSessions, type Patient, type Session } from './extract';
 import { combineSessions, listOfPatient, orderedSelection } from './lists';
-import { copyBlock, findInSheet, findPreppedRows, freshRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
+import { copyBlock, findInSheet, findListBlock, findPreppedRows, freshRows, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
 import { findingGroups, hasToken, isLensSurgery, promptColumns, readLens, readTarget, toggleFinding, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
-import { readWorkbook, WorkbookError, type SheetData } from './xlsx';
+import { openWorkbook, overwrittenBelow, saveWorkbook, withEdit, WorkbookError, type SheetData, type SheetEdit, type Workbook } from './xlsx';
 import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore } from './settings';
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
@@ -34,6 +34,8 @@ interface Grid {
   fromWorkbook?: SheetFile;
   /** The sheet in that file it came from; null when you chose not to use the file. */
   fromSheet?: string | null;
+  /** A list straight from your prepped sheet, before any run sheet is loaded. */
+  sheetOnly?: boolean;
   /** The list as it was before the file, so choosing another sheet starts afresh. */
   beforeWorkbook?: { rows: GridRow[]; padTo: number; pasteAt: string | null; summary: MergeSummary | null; undo: Grid['undo'] };
 }
@@ -41,7 +43,12 @@ interface Grid {
 /** Your previously prepped sheet, chosen in step 1 or the update panel. Read on this computer only. */
 interface SheetFile {
   name: string;
+  /** The sheets' values, with edits made before the run sheet was loaded. */
   sheets: SheetData[];
+  /** The workbook as in the file, for saving changes into it (null for a CSV). */
+  book: Workbook | null;
+  /** Lets the browser save over the file itself (Edge/Chrome), with your permission. */
+  handle: FileSystemFileHandle | null;
 }
 
 const storage: KeyValueStore | null = (() => {
@@ -74,6 +81,8 @@ const state = {
   emailMenuOpen: false,
   /** Your previously prepped sheet: each list you open is updated from it. */
   workbook: null as SheetFile | null,
+  /** Without a run sheet: the sheet of your prepped file being worked on. */
+  sheetSelected: '' as string,
   /** Something went wrong reading a chosen file (shown in step 1). */
   fileError: '',
   /** A message under the header, e.g. after importing a settings file. */
@@ -118,6 +127,7 @@ function listedSessions(): Session[] {
 }
 
 function loadRunSheet(text: string): void {
+  if (text.trim()) keepSheetEdits();
   state.status = '';
   state.inputText = text;
   if (!text.trim()) {
@@ -288,10 +298,13 @@ async function copyEmailText(grid: Grid): Promise<void> {
 }
 
 /** Reads a chosen or dropped file as sheets of cells: an Excel workbook, or a CSV as one sheet. */
-async function readSheets(file: File): Promise<SheetData[]> {
-  if (classifyFile(file.name, file.type) === 'workbook') return readWorkbook(await file.arrayBuffer());
+async function readSheets(file: File): Promise<{ sheets: SheetData[]; book: Workbook | null }> {
+  if (classifyFile(file.name, file.type) === 'workbook') {
+    const book = await openWorkbook(await file.arrayBuffer());
+    return { sheets: [...book.sheets], book };
+  }
   const rows = Papa.parse<string[]>((await file.text()).replace(/^\uFEFF/, ''), { skipEmptyLines: false }).data;
-  return [{ name: file.name, rows }];
+  return { sheets: [{ name: file.name, rows }], book: null };
 }
 
 /** The run sheet in a workbook, as text for the parser, if one of its sheets has the run-sheet headings. */
@@ -312,7 +325,7 @@ function runSheetIn(sheets: SheetData[]): string | null {
  * Opens a file chosen or dropped: the run sheet (CSV or Excel), your prepped Excel sheet, or a
  * settings file. A workbook with run-sheet headings is the run sheet; any other is your prepped sheet.
  */
-async function openFile(file: File, as: 'any' | 'runsheet' | 'prepped' = 'any'): Promise<void> {
+async function openFile(file: File, as: 'any' | 'runsheet' | 'prepped' = 'any', handle: FileSystemFileHandle | null = null): Promise<void> {
   const kind = classifyFile(file.name, file.type);
   if (kind === 'settings') return importSettingsFile(file);
   state.notice = null;
@@ -323,8 +336,9 @@ async function openFile(file: File, as: 'any' | 'runsheet' | 'prepped' = 'any'):
     return;
   }
   let sheets: SheetData[];
+  let book: Workbook | null;
   try {
-    sheets = await readSheets(file);
+    ({ sheets, book } = await readSheets(file));
   } catch (e) {
     state.fileError = e instanceof WorkbookError ? `${file.name}: ${e.message}` : `Couldn’t read ${file.name}.`;
     render();
@@ -341,15 +355,146 @@ async function openFile(file: File, as: 'any' | 'runsheet' | 'prepped' = 'any'):
     render();
     return;
   }
-  state.workbook = { name: file.name, sheets };
-  if (state.grid) applyWorkbook(state.grid, state.workbook);
-  else say(state.table ? `Prepped sheet ${file.name} ready: choose a list to update it.` : `Prepped sheet ${file.name} ready. Now load the latest run sheet.`, false);
+  state.workbook = { name: file.name, sheets, book, handle };
+  if (!state.table) {
+    // No run sheet yet: open the prepped sheet's lists straight away.
+    for (const [key, grid] of state.grids) if (grid.sheetOnly) state.grids.delete(key);
+    const lists = sheetLists();
+    state.sheetSelected = lists.length === 1 ? lists[0].sheet : '';
+    openSheet();
+    say(
+      lists.length
+        ? `Opened ${file.name}. Edit it here; load the latest run sheet when you have it to update the list${lists.length > 1 ? 's' : ''}.`
+        : `${file.name} has no patient rows (MRNs) that the app can find. Check the Patient column in Settings matches your sheet.`,
+      false,
+    );
+  } else if (state.grid) applyWorkbook(state.grid, state.workbook);
+  else say(`Prepped sheet ${file.name} ready: choose a list to update it.`, false);
   render();
 }
 
+/** The lists on your prepped sheet (one block of patient rows per sheet), for working without a run sheet. */
+function sheetLists() {
+  const wb = state.workbook;
+  if (!wb) return [];
+  return wb.sheets.map((sheet) => findListBlock(sheet, state.settings.layout)).filter((b): b is NonNullable<typeof b> => b !== null);
+}
+
+/** Opens a sheet of your prepped file as a list (no run sheet loaded). */
+function openSheet(): void {
+  const wb = state.workbook;
+  const block = sheetLists().find((b) => b.sheet === state.sheetSelected);
+  state.updateOpen = false;
+  state.emailMenuOpen = false;
+  if (!wb || !block) {
+    state.grid = null;
+    return;
+  }
+  const key = `sheet:${block.sheet}`;
+  let grid = state.grids.get(key);
+  if (!grid || grid.fromWorkbook !== wb) {
+    const combined: Session = {
+      id: key, theatre: '', or: '', date: '', start: '', end: '', ampm: '', slotName: block.sheet, slotOwner: '', consultant: '', patients: [],
+    };
+    grid = {
+      sessions: [], combined, listOf: new Map(), rows: sheetRows(block.rows, key), padTo: block.rows.length, pasteAt: block.cell,
+      summary: null, undo: null, fromWorkbook: wb, fromSheet: block.sheet, sheetOnly: true,
+    };
+    state.grids.set(key, grid);
+  }
+  state.grid = grid;
+}
+
+function chooseSheet(name: string): void {
+  state.sheetSelected = name;
+  state.status = '';
+  openSheet();
+  render();
+}
+
+/** Before the run sheet replaces the sheet-only lists, keep their edits as your sheet's values. */
+function keepSheetEdits(): void {
+  const wb = state.workbook;
+  if (!wb) return;
+  for (const grid of state.grids.values()) {
+    if (!grid.sheetOnly || grid.fromWorkbook !== wb || !grid.fromSheet || !grid.pasteAt) continue;
+    const at = wb.sheets.findIndex((s) => s.name === grid.fromSheet);
+    if (at === -1) continue;
+    wb.sheets[at] = withEdit(wb.sheets[at], { sheet: grid.fromSheet, cell: grid.pasteAt, rows: copyBlock(grid.rows, state.settings.layout, grid.padTo) });
+  }
+  state.sheetSelected = '';
+}
+
+/** Lists from your prepped file, each with the block it writes back: the most recent wins per sheet. */
+function workbookEdits(wb: SheetFile): { grid: Grid; edit: SheetEdit }[] {
+  const bySheet = new Map<string, { grid: Grid; edit: SheetEdit }>();
+  for (const grid of state.grids.values()) {
+    if (grid.fromWorkbook !== wb || !grid.fromSheet || !grid.pasteAt) continue;
+    bySheet.set(grid.fromSheet, { grid, edit: { sheet: grid.fromSheet, cell: grid.pasteAt, rows: copyBlock(grid.rows, state.settings.layout, grid.padTo) } });
+  }
+  return [...bySheet.values()];
+}
+
 /**
- * Updates a list from your prepped sheet. Without a sheet named, the workbook's first sheet is used
- * (choose another above the list); null means don't use the file.
+ * Saves your lists into the prepped Excel file: only the cells that changed in each list's block.
+ * Saves over the file itself when the browser allows it (with your permission), otherwise downloads
+ * an updated copy with the same name.
+ */
+async function saveToWorkbook(): Promise<void> {
+  const wb = state.workbook;
+  if (!wb?.book) return;
+  const book = wb.book;
+  const edits = workbookEdits(wb);
+  if (!edits.length) {
+    say('None of your lists came from this file yet, so there’s nothing to save into it.');
+    return;
+  }
+  const lost = edits.flatMap(({ grid, edit }) => {
+    const sheet = book.sheets.find((s) => s.name === edit.sheet);
+    return sheet ? overwrittenBelow(sheet, edit, grid.padTo).map((text) => `${edit.sheet}: ${text.split('\n')[0]}`) : [];
+  });
+  if (lost.length && !confirm(`The list is longer than before, so saving writes over ${lost.length} cell${lost.length === 1 ? '' : 's'} below it:\n\n${lost.slice(0, 5).join('\n')}${lost.length > 5 ? '\n…' : ''}\n\nSave anyway?`)) return;
+
+  let result;
+  try {
+    result = await saveWorkbook(book, edits.map((e) => e.edit));
+  } catch (e) {
+    say(e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}.`);
+    return;
+  }
+  if (result.changed === 0) {
+    say(`${wb.name} already matches your lists: nothing to save.`);
+    return;
+  }
+  let inPlace = false;
+  if (wb.handle) {
+    try {
+      const writable = await wb.handle.createWritable();
+      await writable.write(result.bytes as BlobPart);
+      await writable.close();
+      inPlace = true;
+    } catch {
+      // Not allowed, or the file is open in Excel: download a copy instead.
+    }
+  }
+  if (!inPlace) downloadBlob(wb.name, new Blob([result.bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+
+  // The saved file is now the one to compare against.
+  wb.book = await openWorkbook(result.bytes.buffer as ArrayBuffer);
+  wb.sheets = [...wb.book.sheets];
+  for (const { grid, edit } of edits) grid.padTo = edit.rows.length;
+  const changes = `${result.changed} change${result.changed === 1 ? '' : 's'}`;
+  const formulas = result.formulas ? ` Formula cells were left as they were (${result.formulas}).` : '';
+  say(
+    inPlace
+      ? `Saved ${changes} to ${wb.name}.${formulas}`
+      : `Downloaded ${wb.name} with ${changes}. Use it in place of the old file (e.g. upload it to OneDrive).${formulas}`,
+  );
+}
+
+/**
+ * Updates a list from your prepped sheet. Without a sheet named, the sheet that fits this list best
+ * is used (most of its patients, fewest others); null means don't use the file.
  */
 function applyWorkbook(grid: Grid, workbook: SheetFile, sheetName?: string | null): void {
   // Start from the list as it was before any prepped file, so changing sheet doesn't stack.
@@ -361,11 +506,11 @@ function applyWorkbook(grid: Grid, workbook: SheetFile, sheetName?: string | nul
     say(`Not using ${workbook.name} for this list: it’s as on the run sheet.`, false);
     return;
   }
-  const chosen = sheetName ?? workbook.sheets[0]?.name;
   const isDefault = sheetName === undefined && workbook.sheets.length > 1;
   let found;
   try {
-    found = findPreppedRows(workbook.sheets.filter((s) => s.name === chosen), grid.combined, state.settings.layout);
+    const candidates = sheetName === undefined ? workbook.sheets : workbook.sheets.filter((s) => s.name === sheetName);
+    found = findPreppedRows(candidates, grid.combined, state.settings.layout);
   } catch (e) {
     say(e instanceof MergeError ? e.message : `Couldn’t read ${workbook.name}.`, false);
     return;
@@ -373,7 +518,9 @@ function applyWorkbook(grid: Grid, workbook: SheetFile, sheetName?: string | nul
   if (!found) {
     say(
       workbook.sheets.length > 1
-        ? `None of the patients on ${listName(grid.combined)} are on ${isDefault ? 'the first sheet, ' : 'sheet '}“${chosen}”, so the list is as on the run sheet. Choose its sheet above the list.`
+        ? isDefault
+          ? `None of the patients on ${listName(grid.combined)} are in ${workbook.name}, so the list is as on the run sheet.`
+          : `None of the patients on ${listName(grid.combined)} are on sheet “${sheetName}”, so the list is as on the run sheet.`
         : `None of the patients on ${listName(grid.combined)} are in ${workbook.name}, so the list is as on the run sheet.`,
       false,
     );
@@ -385,7 +532,7 @@ function applyWorkbook(grid: Grid, workbook: SheetFile, sheetName?: string | nul
     return;
   }
   grid.fromSheet = found.sheet;
-  const where = workbook.sheets.length > 1 ? `${isDefault ? 'first sheet' : 'sheet'} “${found.sheet}”, from ${found.cell}` : `from ${found.cell}`;
+  const where = workbook.sheets.length > 1 ? `sheet “${found.sheet}”, from ${found.cell}` : `from ${found.cell}`;
   say(`Updated from ${workbook.name} (${where}).${isDefault ? ' Wrong sheet? Choose another above the list.' : ''}`, false);
 }
 
@@ -427,6 +574,9 @@ function renderSource(grid: Grid): HTMLElement | null {
 
 function forgetWorkbook(): void {
   state.workbook = null;
+  for (const [key, grid] of state.grids) if (grid.sheetOnly) state.grids.delete(key);
+  if (state.grid?.sheetOnly) state.grid = null;
+  state.sheetSelected = '';
   render();
 }
 
@@ -643,9 +793,34 @@ function pickFile(accept: string, onFile: (file: File) => void): void {
   input.click();
 }
 
+interface OpenFilePicker {
+  (options: { types?: { description: string; accept: Record<string, string[]> }[]; multiple?: boolean }): Promise<FileSystemFileHandle[]>;
+}
+
+/**
+ * Chooses your prepped file. Where the browser can (Edge/Chrome), this keeps a handle to the file so
+ * changes can be saved back into it; otherwise it's an ordinary file chooser.
+ */
+async function choosePrepped(): Promise<void> {
+  const picker = (window as unknown as { showOpenFilePicker?: OpenFilePicker }).showOpenFilePicker;
+  if (picker) {
+    try {
+      const [handle] = await picker({
+        types: [{ description: 'Excel workbook or CSV', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx', '.xlsm'], 'text/csv': ['.csv'] } }],
+      });
+      await openFile(await handle.getFile(), 'prepped', handle);
+      return;
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      // Not allowed here (e.g. some file:// pages): use the ordinary chooser.
+    }
+  }
+  pickFile(PREPPED_FILES, (file) => void openFile(file, 'prepped'));
+}
+
 /** "Previously prepped": your Excel sheet, so each list keeps your notes when the run sheet has changed. */
 function renderPrepped(compact: boolean): HTMLElement {
-  const choose = () => pickFile(PREPPED_FILES, (file) => void openFile(file, 'prepped'));
+  const choose = () => void choosePrepped();
   const wb = state.workbook;
   if (compact) {
     return h(
@@ -660,7 +835,7 @@ function renderPrepped(compact: boolean): HTMLElement {
     'div',
     { class: 'prepped-box' },
     h('h3', {}, 'Previously prepped? ', h('span', { class: 'muted' }, '(optional)')),
-    h('p', { class: 'hint small' }, 'Choose your cheat sheet from last time (Excel). Each list you open is updated from it: your notes stay with each patient, new patients are marked New and cancellations go to the bottom. It’s read on this computer only.'),
+    h('p', { class: 'hint small' }, 'Choose your cheat sheet (Excel) to work on it straight away. With the run sheet loaded too, each list is updated from it: your notes stay with each patient, new patients are marked New and cancellations go to the bottom. Read on this computer only.'),
     wb
       ? h('p', {}, '✓ ', h('strong', {}, wb.name), ' ', h('button', { class: 'link', onclick: choose }, 'Change'), ' · ', h('button', { class: 'link', onclick: forgetWorkbook }, 'Remove'))
       : h('button', { onclick: choose }, 'Choose prepped Excel sheet…'),
@@ -671,7 +846,32 @@ function renderPrepped(compact: boolean): HTMLElement {
 function renderSetup(): HTMLElement {
   const fileError = state.fileError ? h('p', { class: 'error', role: 'alert' }, state.fileError) : null;
   if (!state.table) {
-    return step(
+    const wb = state.workbook;
+    const lists = wb ? sheetLists() : [];
+    const sheetStep = lists.length
+      ? step(
+          2,
+          lists.length === 1 ? 'List' : `Lists in ${wb!.name}`,
+          h(
+            'div',
+            { class: 'list-cards' },
+            lists.map((b) =>
+              h(
+                'div',
+                { class: b.sheet === state.sheetSelected ? 'list-card no-tick on' : 'list-card no-tick' },
+                h(
+                  'button',
+                  { class: 'list-open', 'aria-pressed': b.sheet === state.sheetSelected ? 'true' : 'false', onclick: () => chooseSheet(b.sheet) },
+                  h('span', { class: 'list-title' }, b.sheet),
+                  h('span', { class: 'list-sub' }, `${b.matches} patient${b.matches === 1 ? '' : 's'} · from ${b.cell}`),
+                ),
+              ),
+            ),
+          ),
+          h('p', { class: 'hint small' }, 'From your prepped sheet. Load the latest run sheet above when you have it, to check for patients added, cancelled or moved: your edits here are kept.'),
+        )
+      : null;
+    return h('div', {}, step(
       1,
       'Run sheet',
       h(
@@ -682,7 +882,7 @@ function renderSetup(): HTMLElement {
           {},
           h('textarea', {
             class: 'paste',
-            rows: 5,
+            rows: state.workbook ? 3 : 5,
             value: state.inputText,
             placeholder: 'Copy the whole run sheet (including its heading row) from Excel and paste it here with Ctrl+V…',
             oninput: (e: Event) => loadRunSheet((e.target as HTMLTextAreaElement).value),
@@ -702,7 +902,7 @@ function renderSetup(): HTMLElement {
         renderPrepped(false),
       ),
       fileError,
-    );
+    ), sheetStep);
   }
 
   const lists = listedSessions();
@@ -824,15 +1024,18 @@ function renderPrep(): HTMLElement | null {
       },
       `Copy ${count} patient${count === 1 ? '' : 's'}${cancelledCount ? ` + ${cancelledCount} cancelled` : ''} for Excel`,
     ),
-    h(
-      'button',
-      {
-        class: state.updateOpen ? 'on' : '',
-        title: 'List changed? With the latest run sheet loaded, paste your prepped rows back in to keep your notes.',
-        onclick: () => (state.updateOpen ? closeUpdate() : openUpdate()),
-      },
-      grid.summary ? 'Update again from my sheet…' : 'Update from my sheet…',
-    ),
+    renderSaveButton(grid),
+    grid.sheetOnly
+      ? null
+      : h(
+          'button',
+          {
+            class: state.updateOpen ? 'on' : '',
+            title: 'List changed? With the latest run sheet loaded, paste your prepped rows back in to keep your notes.',
+            onclick: () => (state.updateOpen ? closeUpdate() : openUpdate()),
+          },
+          grid.summary ? 'Update again from my sheet…' : 'Update from my sheet…',
+        ),
     renderEmailMenu(grid),
     h('span', { class: 'toolbar-count muted' }, `${count} of ${active.length} ticked`),
   );
@@ -885,7 +1088,7 @@ function renderPrep(): HTMLElement | null {
       r.note ? h('div', { class: 'who' }, r.note) : null,
     ];
     const prompts = isCancelled ? null : renderPrompts(r);
-    const gripKey = p ? `${p.id}:grip` : undefined;
+    const gripKey = `${rowKey(r)}:grip`;
     const grip = isCancelled
       ? null
       : h(
@@ -942,7 +1145,7 @@ function renderPrep(): HTMLElement | null {
           rows: 1,
           value: r.cells[col],
           'aria-label': `${c.heading} for ${rowName(r)}`,
-          'data-key': p ? `${p.id}:cell${col}` : undefined,
+          'data-key': `${rowKey(r)}:cell${col}`,
           // Leaving an edited cell redraws the prompts, so typing "PXF" by hand lights up its button too.
           onchange: prompts ? () => setTimeout(render) : undefined,
           oninput: (e: Event) => {
@@ -1000,13 +1203,32 @@ function renderPrep(): HTMLElement | null {
     h(
       'div',
       { class: 'prep-head' },
-      h('h2', {}, h('span', { class: 'num' }, '3'), listName(combined)),
-      factChips,
+      grid.sheetOnly
+        ? h('h2', {}, h('span', { class: 'num' }, '3'), combined.slotName, h('span', { class: 'muted heading-note' }, ` from ${grid.fromWorkbook?.name ?? 'your sheet'}`))
+        : h('h2', {}, h('span', { class: 'num' }, '3'), listName(combined)),
+      grid.sheetOnly ? null : factChips,
     ),
     toolbar,
-    renderSource(grid),
+    grid.sheetOnly
+      ? h('p', { class: 'source-bar muted' }, 'Working from your prepped sheet, without a run sheet: times, New, Moved and the Medical Records email need the run sheet.')
+      : renderSource(grid),
     renderUpdate(grid),
     h('div', { class: 'table-wrap' }, table),
+  );
+}
+
+/** Saves the lists back into your prepped Excel file, when this list came from it. */
+function renderSaveButton(grid: Grid): HTMLElement | null {
+  const wb = state.workbook;
+  if (!wb?.book || grid.fromWorkbook !== wb || !grid.fromSheet) return null;
+  const others = workbookEdits(wb).length - 1;
+  return h(
+    'button',
+    {
+      title: `Writes only the cells you changed into ${wb.name}${others > 0 ? ` (this list and ${others} other${others === 1 ? '' : 's'} from it)` : ''}, keeping its formatting and other sheets. ${wb.handle ? 'Saves over the file (your browser asks first).' : 'Downloads the updated file with the same name.'}`,
+      onclick: () => void saveToWorkbook(),
+    },
+    `Save to ${wb.name}`,
   );
 }
 
@@ -1029,6 +1251,7 @@ function renderEmailMenu(grid: Grid): HTMLElement {
       {
         class: state.emailMenuOpen ? 'on' : '',
         disabled: patients === 0,
+        title: grid.sheetOnly ? 'Load the run sheet to email Medical Records' : '',
         'aria-haspopup': 'menu',
         'aria-expanded': state.emailMenuOpen ? 'true' : 'false',
         onclick: () => ((state.emailMenuOpen = !state.emailMenuOpen), render()),
@@ -1104,7 +1327,7 @@ function renderUpdate(grid: Grid): HTMLElement | null {
       'p',
       { class: 'hint small' },
       'Or ',
-      h('button', { class: 'link', onclick: () => pickFile(PREPPED_FILES, (file) => void openFile(file, 'prepped')) }, 'choose your Excel file'),
+      h('button', { class: 'link', onclick: () => void choosePrepped() }, 'choose your Excel file'),
       ' instead: the rows for this list are found in it for you.',
     ),
     state.updateError ? h('p', { class: 'error', role: 'alert' }, state.updateError) : null,
@@ -1112,13 +1335,26 @@ function renderUpdate(grid: Grid): HTMLElement | null {
   );
 }
 
+/** Identifies a row: its booking, or (for rows only on your sheet) its place there. */
+function rowKey(r: GridRow): string {
+  return r.patient?.id ?? r.id ?? '';
+}
+
+/** Cataract or lens surgery: from the booking, or from the Procedure cell for rows only on your sheet. */
+function isLensRow(r: GridRow): boolean {
+  if (r.status === 'cancelled') return false;
+  if (r.patient) return isLensSurgery(r.patient);
+  const col = state.settings.layout.columns.findIndex((c) => c.source === 'field:procedure' || c.source === 'field:procedureRaw');
+  return col >= 0 && /\bCE\b|\bIOL\b|cataract|phaco|lens/i.test(r.cells[col] ?? '');
+}
+
 /** One-click findings, lens and target under a lens patient. Each click edits the cell itself. */
 function renderPrompts(r: GridRow): HTMLElement | null {
   const { prompts, layout } = state.settings;
-  if (!prompts.enabled || !r.patient || !isLensSurgery(r.patient)) return null;
+  if (!prompts.enabled || !isLensRow(r)) return null;
   const cols = promptColumns(layout, prompts);
   if (cols.findings === -1 && cols.lens === -1) return null;
-  const key = r.patient.id;
+  const key = rowKey(r);
   const set = (col: number, value: string) => {
     r.cells[col] = value;
     // After the event, so a Tab to the next box lands before the redraw (which keeps that focus).
@@ -1242,7 +1478,14 @@ document.addEventListener('drop', (e) => {
   dragDepth = 0;
   overlay.hidden = true;
   const file = e.dataTransfer?.files[0];
-  if (file) void openFile(file);
+  if (!file) return;
+  // Edge/Chrome can hand over the file itself, so changes can be saved back into it.
+  const item = e.dataTransfer?.items[0] as (DataTransferItem & { getAsFileSystemHandle?: () => Promise<FileSystemHandle | null> }) | undefined;
+  const handle = item?.getAsFileSystemHandle?.();
+  void (async () => {
+    const h = handle ? await handle.catch(() => null) : null;
+    await openFile(file, 'any', h && h.kind === 'file' ? (h as FileSystemFileHandle) : null);
+  })();
 });
 
 

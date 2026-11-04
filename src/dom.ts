@@ -28,7 +28,11 @@ export function h<K extends keyof HTMLElementTagNameMap>(
 }
 
 export function downloadText(fileName: string, text: string, type = 'application/json'): void {
-  const url = URL.createObjectURL(new Blob([text], { type }));
+  downloadBlob(fileName, new Blob([text], { type }));
+}
+
+export function downloadBlob(fileName: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob);
   const link = h('a', { href: url, download: fileName });
   document.body.append(link);
   link.click();

@@ -1027,3 +1027,12 @@ tbody.patient:focus-within .prompt-input {
   margin-left: 4px;
   padding: 3px 6px;
 }
+
+.list-card.no-tick button.list-open {
+  padding-left: 14px;
+}
+
+.heading-note {
+  font-weight: 400;
+  font-size: 0.9rem;
+}

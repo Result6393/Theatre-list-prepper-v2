@@ -9,11 +9,14 @@ import { columnIndex, columnName, type SheetData } from './xlsx';
  * and patients who have dropped off are kept at the bottom, labelled as cancelled.
  */
 
-export type RowStatus = 'fresh' | 'kept' | 'new' | 'cancelled';
+/** 'sheet': a row from your prepped Excel file, before any run sheet is loaded. */
+export type RowStatus = 'fresh' | 'kept' | 'new' | 'cancelled' | 'sheet';
 
 export interface GridRow {
-  /** The run-sheet booking; null for a cancelled row, which is only on your sheet now. */
+  /** The run-sheet booking; null for a row that's only on your sheet (cancelled, or no run sheet yet). */
   patient: Patient | null;
+  /** Identifies a row without a booking, e.g. for keeping focus while editing. */
+  id?: string;
   cells: string[];
   included: boolean;
   status: RowStatus;
@@ -77,6 +80,53 @@ export function withoutTrailingBlankRows(rows: string[][]): string[][] {
 /** True when every row has the same number of cells, as a clean copy from Excel does. */
 export function isRectangular(rows: string[][]): boolean {
   return rows.every((row) => row.length === rows[0].length);
+}
+
+/**
+ * A list straight from your prepped sheet, before the run sheet is loaded: its block of patient rows
+ * on the sheet (in the column with most MRNs), from the first MRN to the last.
+ */
+export function findListBlock(sheet: SheetData, layout: Layout): FoundRows | null {
+  const key = keyColumn(layout);
+  const width = layout.columns.length;
+  const preferred = columnIndex(layout.pasteStart || 'B5');
+  const widest = Math.max(0, ...sheet.rows.map((r) => r.length));
+  const starts = [preferred, ...Array.from({ length: Math.min(widest, 12) }, (_, i) => i).filter((i) => i !== preferred)];
+  let best: FoundRows | null = null;
+  for (const start of starts) {
+    const keys = sheet.rows.map((r) => key.read(r[start + key.index] ?? ''));
+    const first = keys.findIndex((k) => MRN_LIKE.test(k));
+    if (first === -1) continue;
+    let last = keys.length - 1;
+    while (!MRN_LIKE.test(keys[last])) last--;
+    const patients = keys.slice(first, last + 1).filter((k) => MRN_LIKE.test(k)).length;
+    if (patients > (best?.matches ?? 0)) {
+      best = {
+        sheet: sheet.name,
+        rows: sheet.rows.slice(first, last + 1).map((r) => Array.from({ length: width }, (_, i) => r[start + i] ?? '')),
+        cell: `${columnName(start)}${first + 1}`,
+        matches: patients,
+        others: 0,
+      };
+    }
+  }
+  return best;
+}
+
+/** Editable rows from a block on your sheet: patients in order, then any under the CANCELLED row. */
+export function sheetRows(block: string[][], idPrefix: string): GridRow[] {
+  let cancelled = false;
+  const rows: GridRow[] = [];
+  block.forEach((cells, i) => {
+    if (isEmptyRow(cells)) return;
+    const first = cells.find((c) => c.trim()) ?? '';
+    if (new RegExp(`^${CANCELLED_LABEL}\\b`, 'i').test(first.trim()) && !cells.slice(1).some((c) => MRN_LIKE.test(normaliseMrn(c.split(/\s+/)[0] ?? '')))) {
+      cancelled = true;
+      return;
+    }
+    rows.push({ patient: null, id: `${idPrefix}:${i}`, cells: [...cells], included: true, status: cancelled ? 'cancelled' : 'sheet', changes: {} });
+  });
+  return rows;
 }
 
 /** "0001234" and "1234 " match: Excel can drop leading zeros from an MRN-only column. */
