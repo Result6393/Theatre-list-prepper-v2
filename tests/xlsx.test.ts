@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { extractSessions } from '../src/extract';
 import { buildRow, defaultLayout } from '../src/layout';
-import { copyBlock, findListBlock, findPreppedRows, mergePrepped, sheetRows } from '../src/merge';
+import { copyBlock, findInSheet, findListBlock, findPreppedRows, mergePrepped, sheetRows } from '../src/merge';
 import { parseTable } from '../src/parse';
 import { openWorkbook, overwrittenBelow, readWorkbook, saveWorkbook, sheetNameProblem, withEdit, WorkbookError } from '../src/xlsx';
 import { runSheetCsv } from './fixtures';
@@ -203,6 +203,22 @@ describe('working from your prepped sheet without a run sheet', () => {
   });
 });
 
+describe('a sheet’s heading with a date in it', () => {
+  // Excel keeps dates as numbers (46309 is 14/10/2026), which look like an MRN on their own.
+  const heading = [['Consultant', 'Willow', null, 'Date', 46309], [], [...layout.columns.map((c) => c.heading)]];
+
+  it('isn’t taken for a patient, so the list is found from B5', async () => {
+    const sheets = await readWorkbook(await makeWorkbook({ S: [...heading, ...prepped()] }, 1, 1));
+    expect(findListBlock(sheets[0], layout)).toMatchObject({ cell: 'B4', matches: 2 });
+    expect(findInSheet(sheets[0], or1am, layout)).toMatchObject({ cell: 'B4', matches: 2, others: 0 });
+  });
+
+  it('leaves a blank template with no list at all', async () => {
+    const sheets = await readWorkbook(await makeWorkbook({ Template: heading }, 1, 1));
+    expect(findListBlock(sheets[0], layout)).toBeNull();
+  });
+});
+
 describe('saving a list as a new sheet', () => {
   const template =
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
@@ -227,8 +243,8 @@ describe('saving a list as a new sheet', () => {
     const rows = [['LEFT', '2000001 NEW, Nina 60F'], ['', '']];
     const result = await saveWorkbook(book, [{ sheet: 'Thu OR2', cell: 'B5', rows }], [{ name: 'Thu OR2', copyOf: 'Wed OR4' }]);
     const saved = await openWorkbook(result.bytes.buffer as ArrayBuffer);
-    expect(saved.sheets.map((s) => s.name)).toEqual(['Wed OR4', 'Thu OR2']);
-    const [original, added] = saved.sheets;
+    expect(saved.sheets.map((s) => s.name)).toEqual(['Thu OR2', 'Wed OR4']);
+    const [added, original] = saved.sheets;
     expect(original.rows[4].slice(1, 3)).toEqual(['RIGHT', '1000001 OLD, One 70F']);
     expect(added.rows[0].slice(1, 3)).toEqual(['Consultant', 'Willow']);
     expect(added.rows[4].slice(1, 3)).toEqual(['LEFT', '2000001 NEW, Nina 60F']);
@@ -243,9 +259,27 @@ describe('saving a list as a new sheet', () => {
     expect(xml).toContain('<pageSetup orientation="landscape"/>');
     expect(xml).not.toMatch(/tabSelected|<drawing|tableParts|r:id/);
     expect(await sheetText(result.bytes, 'xl/worksheets/sheet1.xml')).toBe(template);
-    expect(await sheetText(result.bytes, 'xl/workbook.xml')).toContain('<sheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" name="Thu OR2" sheetId="2" r:id="rIdTlp2"/></sheets>');
+    expect(await sheetText(result.bytes, 'xl/workbook.xml')).toContain('<sheets><sheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" name="Thu OR2" sheetId="2" r:id="rIdTlp2"/><sheet name="Wed OR4"');
     expect(await sheetText(result.bytes, 'xl/_rels/workbook.xml.rels')).toContain('Id="rIdTlp2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>');
     expect(await sheetText(result.bytes, '[Content_Types].xml')).toContain('<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>');
+  });
+
+  it('adds it as the first tab, keeping print areas and the open tab on the same sheets', async () => {
+    const f = files();
+    f['xl/workbook.xml'] =
+      '<workbook xmlns:r="rels"><bookViews><workbookView firstSheet="1" activeTab="1"/></bookViews>' +
+      '<sheets><sheet name="Wed OR4" sheetId="1" r:id="rId1"/><sheet name="Thu OR1" sheetId="5" r:id="rId9"/></sheets>' +
+      '<definedNames><definedName name="_xlnm.Print_Area" localSheetId="0">\'Wed OR4\'!$A$1:$K$20</definedName><definedName name="Lenses">Lists!$A$1:$A$9</definedName></definedNames></workbook>';
+    f['xl/_rels/workbook.xml.rels'] = f['xl/_rels/workbook.xml.rels'].replace('</Relationships>', '<Relationship Id="rId9" Type="worksheet" Target="worksheets/sheet1.xml"/></Relationships>');
+    const result = await saveWorkbook(await openWorkbook(await makeZip(f)), [], [{ name: 'New', copyOf: 'Wed OR4' }]);
+    const xml = await sheetText(result.bytes, 'xl/workbook.xml');
+    expect(xml).toMatch(/<sheets><sheet [^>]*name="New" sheetId="6"[^>]*\/><sheet name="Wed OR4"/);
+    expect(xml).toContain('<workbookView activeTab="2"/>');
+    expect(xml).toContain('localSheetId="1">\'Wed OR4\'!$A$1:$K$20');
+    expect(xml).toContain('<definedName name="Lenses">Lists!$A$1:$A$9</definedName>');
+    const plain = files();
+    const added = await saveWorkbook(await openWorkbook(await makeZip(plain)), [], [{ name: 'New', copyOf: 'Wed OR4' }]);
+    expect(await sheetText(added.bytes, 'xl/workbook.xml')).not.toContain('activeTab');
   });
 
   it('declares the relationship prefix on the new sheet, for files that declare it per sheet', async () => {
