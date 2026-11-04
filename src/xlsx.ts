@@ -116,10 +116,10 @@ export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: Ne
     const prefix = existing[0]?.match(/^<(\w+:)?/)?.[1] ?? '';
     const relPrefix = existing[0]?.match(/\s(\w+):id="/)?.[1] ?? 'r';
     const sheetId = Math.max(0, ...existing.map((t) => Number(attr(t, 'sheetId')) || 0)) + 1;
-    // Added at the end, so print areas and other per-sheet names keep pointing at the right sheets.
     // The relationships namespace is declared on the element too: some files declare it per sheet, not once.
     const sheetTag = `<${prefix}sheet xmlns:${relPrefix}="http://schemas.openxmlformats.org/officeDocument/2006/relationships" name="${escapeXml(add.name).replace(/"/g, '&quot;')}" sheetId="${sheetId}" ${relPrefix}:id="${rid}"/>`;
-    replaced.set('xl/workbook.xml', appendChild(workbook, 'sheets', sheetTag));
+    replaced.set('xl/workbook.xml', asFirstSheet(workbook, sheetTag));
+    sheets.unshift(sheets.pop()!);
 
     const types = await current('[Content_Types].xml');
     replaced.set('[Content_Types].xml', appendChild(types, 'Types', `<Override PartName="/${path}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`));
@@ -198,6 +198,26 @@ function removeElements(xml: string, names: string[], only: (element: string) =>
   }
   let out = xml;
   for (const [start, end] of cuts.reverse()) if (only(xml.slice(start, end))) out = out.slice(0, start) + out.slice(end);
+  return out;
+}
+
+/**
+ * Puts a new sheet first, as the leftmost tab. Things that point at sheets by position move along
+ * with them: per-sheet names such as print areas (localSheetId), and the tab Excel opens on
+ * (activeTab), so the sheet you last had open (and selected) is still the one shown.
+ */
+function asFirstSheet(workbook: string, sheetTag: string): string {
+  const sheets = workbook.match(/<((?:\w+:)?)sheets\b[^>]*>/);
+  if (!sheets) return appendChild(workbook, 'sheets', sheetTag);
+  const at = sheets.index! + sheets[0].length;
+  let out = workbook.slice(0, at) + sheetTag + workbook.slice(at);
+  out = out.replace(/(<(?:\w+:)?definedName\b[^>]*?\slocalSheetId=")(\d+)"/g, (_, open: string, n: string) => `${open}${Number(n) + 1}"`);
+  out = out.replace(/<((?:\w+:)?)workbookView\b([^>]*?)(\/?)>/g, (_, p: string, attrs: string, close: string) => {
+    let a = /\sactiveTab="\d+"/.test(attrs) ? attrs.replace(/\sactiveTab="(\d+)"/, (_m, n: string) => ` activeTab="${Number(n) + 1}"`) : `${attrs} activeTab="1"`;
+    // Scroll the tab bar back to the start, so the new tab is in view.
+    a = a.replace(/\sfirstSheet="\d+"/, '');
+    return `<${p}workbookView${a}${close}>`;
+  });
   return out;
 }
 

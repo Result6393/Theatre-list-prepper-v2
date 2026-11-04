@@ -94,12 +94,11 @@ export function findListBlock(sheet: SheetData, layout: Layout): FoundRows | nul
   const starts = [preferred, ...Array.from({ length: Math.min(widest, 12) }, (_, i) => i).filter((i) => i !== preferred)];
   let best: FoundRows | null = null;
   for (const start of starts) {
-    const keys = sheet.rows.map((r) => key.read(r[start + key.index] ?? ''));
-    const first = keys.findIndex((k) => MRN_LIKE.test(k));
+    const isPatient = sheet.rows.map((r) => key.isPatient(r, start));
+    const first = isPatient.indexOf(true);
     if (first === -1) continue;
-    let last = keys.length - 1;
-    while (!MRN_LIKE.test(keys[last])) last--;
-    const patients = keys.slice(first, last + 1).filter((k) => MRN_LIKE.test(k)).length;
+    const last = isPatient.lastIndexOf(true);
+    const patients = isPatient.slice(first, last + 1).filter(Boolean).length;
     if (patients > (best?.matches ?? 0)) {
       best = {
         sheet: sheet.name,
@@ -136,11 +135,41 @@ export function normaliseMrn(value: string): string {
 }
 
 /** Which column holds the MRN, and how to read it from that cell. */
-function keyColumn(layout: Layout): { index: number; read: (cell: string) => string } {
+interface KeyColumn {
+  index: number;
+  read: (cell: string) => string;
+  /**
+   * Whether a sheet row (its block starting at `start`) looks like a patient: an MRN, plus a name
+   * after it in a Patient cell, or other text beside an MRN-only column. A number on its own, such
+   * as a date in the sheet's heading (Excel keeps dates as numbers like 46310), isn't a patient.
+   */
+  isPatient: (row: string[], start: number) => boolean;
+}
+
+function keyColumn(layout: Layout): KeyColumn {
+  const width = layout.columns.length;
   const exact = layout.columns.findIndex((c) => c.source === 'field:mrn' || c.source === 'raw:MRN');
-  if (exact !== -1) return { index: exact, read: normaliseMrn };
+  if (exact !== -1) {
+    return {
+      index: exact,
+      read: normaliseMrn,
+      isPatient: (row, start) =>
+        MRN_LIKE.test(normaliseMrn(row[start + exact] ?? '')) &&
+        row.slice(start, start + width).some((cell, i) => i !== exact && /[A-Za-z]/.test(cell)),
+    };
+  }
   const patient = layout.columns.findIndex((c) => c.source === 'field:patient');
-  if (patient !== -1) return { index: patient, read: (cell) => normaliseMrn(cell.trim().split(/\s+/)[0] ?? '') };
+  if (patient !== -1) {
+    const read = (cell: string) => normaliseMrn(cell.trim().split(/\s+/)[0] ?? '');
+    return {
+      index: patient,
+      read,
+      isPatient: (row, start) => {
+        const cell = row[start + patient] ?? '';
+        return MRN_LIKE.test(read(cell)) && /^\s*\S+\s+.*[A-Za-z]/.test(cell);
+      },
+    };
+  }
   throw new MergeError('To match patients, your columns need a Patient or MRN column (Settings → Columns).');
 }
 
@@ -190,14 +219,18 @@ export function findInSheet(sheet: SheetData, session: Session, layout: Layout):
   const starts = [preferred, ...Array.from({ length: Math.min(widest, 12) }, (_, i) => i).filter((i) => i !== preferred)];
   let best: FoundRows | null = null;
   for (const start of starts) {
-    const keys = sheet.rows.map((r) => key.read(r[start + key.index] ?? ''));
-    const first = keys.findIndex((k) => MRN_LIKE.test(k));
+    const isPatient = sheet.rows.map((r) => key.isPatient(r, start));
+    const first = isPatient.indexOf(true);
     if (first === -1) continue;
-    let last = keys.length - 1;
-    while (!MRN_LIKE.test(keys[last])) last--;
-    const block = keys.slice(first, last + 1);
-    const matches = block.filter((k) => listMrns.has(k)).length;
-    const others = block.filter((k) => MRN_LIKE.test(k) && !listMrns.has(k)).length;
+    const last = isPatient.lastIndexOf(true);
+    const keys = sheet.rows.map((r) => key.read(r[start + key.index] ?? ''));
+    let matches = 0;
+    let others = 0;
+    for (let i = first; i <= last; i++) {
+      if (!isPatient[i]) continue;
+      if (listMrns.has(keys[i])) matches++;
+      else others++;
+    }
     const found: FoundRows = {
       sheet: sheet.name,
       rows: sheet.rows.slice(first, last + 1).map((r) => Array.from({ length: width }, (_, i) => r[start + i] ?? '')),
