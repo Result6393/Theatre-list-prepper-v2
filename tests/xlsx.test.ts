@@ -3,7 +3,7 @@ import { extractSessions } from '../src/extract';
 import { buildRow, defaultLayout } from '../src/layout';
 import { copyBlock, findListBlock, findPreppedRows, mergePrepped, sheetRows } from '../src/merge';
 import { parseTable } from '../src/parse';
-import { openWorkbook, overwrittenBelow, readWorkbook, saveWorkbook, withEdit, WorkbookError } from '../src/xlsx';
+import { openWorkbook, overwrittenBelow, readWorkbook, saveWorkbook, sheetNameProblem, withEdit, WorkbookError } from '../src/xlsx';
 import { runSheetCsv } from './fixtures';
 import { makeWorkbook, makeZip } from './xlsx-helper';
 
@@ -200,5 +200,71 @@ describe('working from your prepped sheet without a run sheet', () => {
     expect(new Set(list.map((r) => r.id)).size).toBe(3);
     // Copying (or saving) it back gives the same block.
     expect(copyBlock(list, layout, block.rows.length)).toEqual(block.rows.map((r) => r.map((c) => c)));
+  });
+});
+
+describe('saving a list as a new sheet', () => {
+  const template =
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    '<sheetViews><sheetView tabSelected="1" workbookViewId="0"/></sheetViews><cols><col min="2" max="2" width="30"/></cols><sheetData>' +
+    '<row r="1"><c r="B1" t="s"><v>0</v></c><c r="C1" t="s"><v>1</v></c></row>' +
+    '<row r="5"><c r="A5" s="1"><f>ROW()-4</f></c><c r="B5" s="3" t="s"><v>2</v></c><c r="C5" s="3" t="s"><v>3</v></c></row>' +
+    '<row r="6"><c r="A6" s="1"><f>ROW()-4</f></c><c r="B6" s="3" t="s"><v>2</v></c><c r="C6" s="3" t="s"><v>4</v></c></row>' +
+    '</sheetData><conditionalFormatting sqref="B5:B20"><cfRule type="expression" priority="1"><formula>B5="RIGHT"</formula><extLst><ext uri="x"><x14:id xmlns:x14="y">{A}</x14:id></ext></extLst></cfRule></conditionalFormatting>' +
+    '<pageSetup orientation="landscape" r:id="rId1"/><drawing r:id="rId2"/><tableParts count="1"><tablePart r:id="rId3"/></tableParts>' +
+    '<extLst><ext uri="z"><x14:conditionalFormattings xmlns:x14="y"/></ext></extLst></worksheet>';
+  const files = () => ({
+    '[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
+    'xl/workbook.xml': '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Wed OR4" sheetId="1" r:id="rId1"/></sheets></workbook>',
+    'xl/_rels/workbook.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="styles" Target="styles.xml"/></Relationships>',
+    'xl/sharedStrings.xml': '<sst><si><t>Consultant</t></si><si><t>Willow</t></si><si><t>RIGHT</t></si><si><t>1000001 OLD, One 70F</t></si><si><t>1000002 OLD, Two 70F</t></si></sst>',
+    'xl/worksheets/sheet1.xml': template,
+    'xl/worksheets/_rels/sheet1.xml.rels': '<Relationships/>',
+  });
+
+  it('copies a sheet’s layout into a new tab and puts the list there, leaving the original alone', async () => {
+    const book = await openWorkbook(await makeZip(files()));
+    const rows = [['LEFT', '2000001 NEW, Nina 60F'], ['', '']];
+    const result = await saveWorkbook(book, [{ sheet: 'Thu OR2', cell: 'B5', rows }], [{ name: 'Thu OR2', copyOf: 'Wed OR4' }]);
+    const saved = await openWorkbook(result.bytes.buffer as ArrayBuffer);
+    expect(saved.sheets.map((s) => s.name)).toEqual(['Wed OR4', 'Thu OR2']);
+    const [original, added] = saved.sheets;
+    expect(original.rows[4].slice(1, 3)).toEqual(['RIGHT', '1000001 OLD, One 70F']);
+    expect(added.rows[0].slice(1, 3)).toEqual(['Consultant', 'Willow']);
+    expect(added.rows[4].slice(1, 3)).toEqual(['LEFT', '2000001 NEW, Nina 60F']);
+    expect(added.rows[5].slice(1, 3)).toEqual(['', '']);
+
+    const xml = await sheetText(result.bytes, 'xl/worksheets/sheet2.xml');
+    expect(xml).toContain('<cols><col min="2" max="2" width="30"/></cols>');
+    expect(xml).toContain('<c r="A5" s="1"><f>ROW()-4</f></c>');
+    expect(xml).toContain('<c r="C5" s="3" t="inlineStr">');
+    expect(xml).toContain('<formula>B5="RIGHT"</formula><extLst><ext uri="x">');
+    expect(xml).toContain('<extLst><ext uri="z">');
+    expect(xml).toContain('<pageSetup orientation="landscape"/>');
+    expect(xml).not.toMatch(/tabSelected|<drawing|tableParts|r:id/);
+    expect(await sheetText(result.bytes, 'xl/worksheets/sheet1.xml')).toBe(template);
+    expect(await sheetText(result.bytes, 'xl/workbook.xml')).toContain('<sheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" name="Thu OR2" sheetId="2" r:id="rIdTlp2"/></sheets>');
+    expect(await sheetText(result.bytes, 'xl/_rels/workbook.xml.rels')).toContain('Id="rIdTlp2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>');
+    expect(await sheetText(result.bytes, '[Content_Types].xml')).toContain('<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>');
+  });
+
+  it('declares the relationship prefix on the new sheet, for files that declare it per sheet', async () => {
+    const f = files();
+    f['xl/workbook.xml'] = '<workbook xmlns="main"><sheets><sheet xmlns:r="rels" name="Wed OR4" sheetId="1" r:id="rId1"/></sheets></workbook>';
+    const result = await saveWorkbook(await openWorkbook(await makeZip(f)), [], [{ name: 'New', copyOf: 'Wed OR4' }]);
+    const xml = await sheetText(result.bytes, 'xl/workbook.xml');
+    const added = xml.match(/<sheet [^>]*name="New"[^>]*\/>/)![0];
+    expect(added).toContain('xmlns:r=');
+    expect(added).toContain('r:id="rIdTlp2"');
+  });
+
+  it('checks the new sheet’s name the way Excel does', async () => {
+    expect(sheetNameProblem('Thu OR2', ['Wed OR4'])).toBeNull();
+    expect(sheetNameProblem('wed or4', ['Wed OR4'])).toMatch(/already/);
+    expect(sheetNameProblem('14/10 OR4', [])).toMatch(/can’t contain/);
+    expect(sheetNameProblem('x'.repeat(32), [])).toMatch(/31/);
+    expect(sheetNameProblem('  ', [])).toMatch(/name/);
+    const book = await openWorkbook(await makeZip(files()));
+    await expect(saveWorkbook(book, [], [{ name: 'Wed OR4', copyOf: 'Wed OR4' }])).rejects.toThrow(/already/);
   });
 });
