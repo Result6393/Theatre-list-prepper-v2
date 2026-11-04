@@ -6,7 +6,15 @@ Bump the version in `package.json` (shown in the page title and top bar) every t
 - new feature or visible behaviour change → minor (`npm version minor --no-git-tag-version`)
 - breaking change to saved settings or the run-sheet format → major
 
-Commit the bump (`package.json` and `package-lock.json`) with the change. Only push a git tag (`vX.Y.Z`, matching `package.json`) when a downloadable release is wanted.
+Commit the bump (`package.json` and `package-lock.json`) with the change.
+
+## Merge and deploy every time
+The owner wants every change merged and deployed, without being asked:
+1. Push the working branch, open a pull request into `main`, and merge it once CI passes. Merging deploys GitHub Pages (`pages.yml`).
+2. Push a tag `vX.Y.Z` matching `package.json` on the merged `main` commit. The release workflow publishes the offline file (`theatre-list-prepper-vX.Y.Z.html`), which is what the owner uses at the hospital (Pages is blocked there).
+3. Check the Pages and release runs succeed, and report the release link.
+
+Each pushed change gets its own version, so every merge has a new tag.
 
 ## Offline file
 Name the single-file build with its version when sharing it, e.g. `theatre-list-prepper-v1.1.1.html` (copy `dist/index.html`; Pages needs it to stay `index.html`). The release workflow does the same.
