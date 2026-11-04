@@ -1036,3 +1036,46 @@ tbody.patient:focus-within .prompt-input {
   font-weight: 400;
   font-size: 0.9rem;
 }
+
+/* Save: split button and the report of where the file went */
+
+.split {
+  display: inline-flex;
+}
+
+.split .split-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.split .split-more {
+  margin-left: -1px;
+  padding-left: 8px;
+  padding-right: 8px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.save-report {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--ok);
+  border-radius: 6px;
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.save-report.warn {
+  border-color: var(--danger);
+  background: var(--alert-bg);
+  color: var(--text);
+  font-weight: 400;
+}
+
+.save-report .link {
+  margin-left: auto;
+  white-space: nowrap;
+}

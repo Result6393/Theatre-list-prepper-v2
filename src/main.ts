@@ -49,6 +49,14 @@ interface SheetFile {
   book: Workbook | null;
   /** Lets the browser save over the file itself (Edge/Chrome), with your permission. */
   handle: FileSystemFileHandle | null;
+  /** When the file was last changed, as we read or saved it: to notice saves made in Excel since. */
+  lastModified: number | null;
+}
+
+/** How the last save went, shown under the toolbar until dismissed (a toast is too easy to miss). */
+interface SaveReport {
+  ok: boolean;
+  text: string;
 }
 
 const storage: KeyValueStore | null = (() => {
@@ -80,6 +88,7 @@ const state = {
   updateError: '',
   emailMenuOpen: false,
   saveMenuOpen: false,
+  saveReport: null as SaveReport | null,
   /** The "Save as a new sheet" form, while it's open. */
   newSheet: null as { name: string; copyOf: string; error: string } | null,
   /** Your previously prepped sheet: each list you open is updated from it. */
@@ -360,7 +369,8 @@ async function openFile(file: File, as: 'any' | 'runsheet' | 'prepped' = 'any', 
     render();
     return;
   }
-  state.workbook = { name: file.name, sheets, book, handle };
+  state.workbook = { name: file.name, sheets, book, handle, lastModified: handle ? file.lastModified : null };
+  state.saveReport = null;
   if (!state.table) {
     // No run sheet yet: open the prepped sheet's lists straight away.
     for (const [key, grid] of state.grids) if (grid.sheetOnly) state.grids.delete(key);
@@ -432,27 +442,118 @@ function keepSheetEdits(): void {
   state.sheetSelected = '';
 }
 
+type Permission = 'granted' | 'denied' | 'prompt';
+interface Permissions {
+  queryPermission?: (d: { mode: 'readwrite' }) => Promise<Permission>;
+  requestPermission?: (d: { mode: 'readwrite' }) => Promise<Permission>;
+}
+interface SaveFilePicker {
+  (options: { suggestedName?: string; types?: { description: string; accept: Record<string, string[]> }[] }): Promise<FileSystemFileHandle>;
+}
+const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
 /**
- * Puts the saved workbook where you'll find it: over the file itself when the browser allows it
- * (Edge/Chrome, with your permission), otherwise as a download with the same name. Returns true
- * when it saved over the file. Either way the saved version is what later saves compare against.
+ * Asks to save over the file, straight away while the click still counts as yours: browsers only
+ * show that question in answer to a click, and preparing the workbook takes a moment.
  */
-async function writeOut(wb: SheetFile, bytes: Uint8Array): Promise<boolean> {
-  let inPlace = false;
-  if (wb.handle) {
+function askToSave(wb: SheetFile): Promise<Permission | 'no-file'> {
+  const handle = wb.handle as (FileSystemFileHandle & Permissions) | null;
+  if (!handle) return Promise.resolve('no-file');
+  if (!handle.requestPermission) return Promise.resolve('granted');
+  return handle.requestPermission({ mode: 'readwrite' }).catch(() => 'prompt' as const);
+}
+
+/** Writes the bytes into a file; on failure, says why in words. */
+async function writeTo(handle: FileSystemFileHandle, bytes: Uint8Array): Promise<string | null> {
+  try {
+    const writable = await handle.createWritable();
+    await writable.write(bytes as BlobPart);
+    await writable.close();
+    return null;
+  } catch (e) {
+    const name = e instanceof DOMException ? e.name : '';
+    if (name === 'NotAllowedError' || name === 'SecurityError') return 'the browser wasn’t allowed to change it';
+    if (name === 'NoModificationAllowedError' || name === 'InvalidStateError' || name === 'InvalidModificationError') {
+      return 'it looks to be open in Excel, or OneDrive was busy with it';
+    }
+    return `the browser couldn’t write to it${name ? ` (${name})` : ''}`;
+  }
+}
+
+type SaveOutcome = { how: 'over' | 'as'; name: string; reason?: string } | { how: 'downloaded'; why: string } | { how: 'cancelled' };
+
+/**
+ * Puts the saved workbook where you'll find it: over the file you opened when the browser allows
+ * it; otherwise in a file you pick (choose the original to replace it; later saves go there too);
+ * and only when the browser can do neither, as a download. The saved version is then what later
+ * saves compare against.
+ */
+async function writeOut(wb: SheetFile, bytes: Uint8Array, permission: Promise<Permission | 'no-file'>): Promise<SaveOutcome> {
+  let why = '';
+  /** Why it couldn't save over the file, as a short phrase. */
+  let reason = '';
+  const allowed = await permission;
+  if (wb.handle && allowed !== 'denied') {
+    // Saving over changes made in Excel since would lose them, so check first.
+    const onDisk = await wb.handle.getFile().catch(() => null);
+    if (onDisk && wb.lastModified && onDisk.lastModified !== wb.lastModified &&
+      !confirm(`${wb.name} has been changed since you opened it here (perhaps saved in Excel). Saving replaces those changes with this version.\n\nSave anyway?`)) {
+      return { how: 'cancelled' };
+    }
+    const problem = await writeTo(wb.handle, bytes);
+    if (!problem) return finishSave(wb, bytes, { how: 'over', name: wb.name });
+    why = `Couldn’t save over ${wb.name}: ${problem}.${/Excel/.test(problem) ? ' Close it in Excel and press Save again to save over it.' : ''}`;
+    reason = `couldn’t save over ${wb.name}: ${problem}`;
+  } else {
+    why = wb.handle ? `You didn’t allow saving over ${wb.name}.` : `The browser can only save over a file you chose with “Choose prepped Excel sheet…” in Edge or Chrome.`;
+    reason = wb.handle ? `you didn’t allow saving over ${wb.name}` : `${wb.name} wasn’t opened in a way that lets the browser save over it`;
+  }
+  const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker;
+  if (picker) {
     try {
-      const writable = await wb.handle.createWritable();
-      await writable.write(bytes as BlobPart);
-      await writable.close();
-      inPlace = true;
-    } catch {
-      // Not allowed, or the file is open in Excel: download a copy instead.
+      const handle = await picker({ suggestedName: wb.name, types: [{ description: 'Excel workbook', accept: { [XLSX_TYPE]: ['.xlsx'] } }] });
+      const problem = await writeTo(handle, bytes);
+      if (!problem) {
+        wb.handle = handle;
+        wb.name = handle.name;
+        return finishSave(wb, bytes, { how: 'as', name: handle.name, reason });
+      }
+      why += ` Couldn’t save as ${handle.name} either: ${problem}.`;
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return { how: 'cancelled' };
+      // The browser won't show a save dialog here: download instead.
     }
   }
-  if (!inPlace) downloadBlob(wb.name, new Blob([bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+  downloadBlob(wb.name, new Blob([bytes as BlobPart], { type: XLSX_TYPE }));
+  return finishSave(wb, bytes, { how: 'downloaded', why });
+}
+
+async function finishSave(wb: SheetFile, bytes: Uint8Array, outcome: SaveOutcome): Promise<SaveOutcome> {
   wb.book = await openWorkbook(bytes.buffer as ArrayBuffer);
   wb.sheets = [...wb.book.sheets];
-  return inPlace;
+  wb.lastModified = wb.handle && outcome.how !== 'downloaded' ? ((await wb.handle.getFile().catch(() => null))?.lastModified ?? null) : wb.lastModified;
+  return outcome;
+}
+
+/** Says plainly where the save went, and keeps saying it until dismissed. */
+function reportSave(outcome: SaveOutcome, what: string, extra = ''): void {
+  const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const wb = state.workbook;
+  if (outcome.how === 'cancelled') {
+    state.saveReport = { ok: false, text: 'Not saved.' };
+  } else if (outcome.how === 'downloaded') {
+    state.saveReport = {
+      ok: false,
+      text: `${what} saved into a new copy of ${wb?.name ?? 'the file'} in your Downloads folder (it may be named like “${(wb?.name ?? 'file.xlsx').replace(/\.xlsx$/i, ' (1).xlsx')}”). The file you opened hasn’t changed: replace it with the downloaded copy (e.g. upload it to OneDrive). ${outcome.why}${extra}`,
+    };
+  } else {
+    state.saveReport = {
+      ok: true,
+      text: `${outcome.how === 'as' && outcome.reason ? `${outcome.reason[0].toUpperCase()}${outcome.reason.slice(1)}, so you chose where to save. ` : ''}${what} saved into ${outcome.name} at ${time}.${outcome.how === 'as' ? ' Later saves go straight to this file.' : ''} If it’s open in Excel, close it there (without saving) and open it again to see the changes.${extra}`,
+    };
+  }
+  state.status = '';
+  render();
 }
 
 /** A name for a new sheet for this list, e.g. "OR 4 AM 14-10", not already used. */
@@ -490,6 +591,7 @@ async function saveAsNewSheet(grid: Grid): Promise<void> {
   const wb = state.workbook;
   const form = state.newSheet;
   if (!wb?.book || !form) return;
+  const permission = askToSave(wb);
   const book = wb.book;
   const name = form.name.trim();
   const problem = sheetNameProblem(name, book.sheets.map((s) => s.name));
@@ -511,7 +613,11 @@ async function saveAsNewSheet(grid: Grid): Promise<void> {
     render();
     return;
   }
-  const inPlace = await writeOut(wb, result.bytes);
+  const outcome = await writeOut(wb, result.bytes, permission);
+  if (outcome.how === 'cancelled') {
+    reportSave(outcome, '');
+    return;
+  }
   // From now on this list saves into its new sheet.
   if (grid.sheetOnly) {
     for (const [key, g] of state.grids) if (g === grid) state.grids.delete(key);
@@ -524,11 +630,7 @@ async function saveAsNewSheet(grid: Grid): Promise<void> {
   grid.pasteAt = cell;
   grid.padTo = edit.rows.length;
   state.newSheet = null;
-  say(
-    inPlace
-      ? `Saved this list as a new sheet “${name}” in ${wb.name} (from ${cell}).`
-      : `Downloaded ${wb.name} with a new sheet “${name}”. Use it in place of the old file (e.g. upload it to OneDrive).`,
-  );
+  reportSave(outcome, `This list was`, ` It’s on the new sheet “${name}”, from ${cell}.`);
 }
 
 /** Lists from your prepped file, each with the block it writes back: the most recent wins per sheet. */
@@ -549,6 +651,7 @@ function workbookEdits(wb: SheetFile): { grid: Grid; edit: SheetEdit }[] {
 async function saveToWorkbook(): Promise<void> {
   const wb = state.workbook;
   if (!wb?.book) return;
+  const permission = askToSave(wb);
   const book = wb.book;
   const edits = workbookEdits(wb);
   if (!edits.length) {
@@ -569,18 +672,20 @@ async function saveToWorkbook(): Promise<void> {
     return;
   }
   if (result.changed === 0) {
-    say(`${wb.name} already matches your lists: nothing to save.`);
+    state.saveReport = { ok: true, text: `Nothing to save: ${wb.name} already has everything on your list${edits.length > 1 ? 's' : ''}.` };
+    render();
     return;
   }
-  const inPlace = await writeOut(wb, result.bytes);
+  const outcome = await writeOut(wb, result.bytes, permission);
+  if (outcome.how === 'cancelled') {
+    reportSave(outcome, '');
+    return;
+  }
   for (const { grid, edit } of edits) grid.padTo = edit.rows.length;
   const changes = `${result.changed} change${result.changed === 1 ? '' : 's'}`;
+  const sheets = edits.map((e) => `“${e.edit.sheet}”`).join(', ');
   const formulas = result.formulas ? ` Formula cells were left as they were (${result.formulas}).` : '';
-  say(
-    inPlace
-      ? `Saved ${changes} to ${wb.name}.${formulas}`
-      : `Downloaded ${wb.name} with ${changes}. Use it in place of the old file (e.g. upload it to OneDrive).${formulas}`,
-  );
+  reportSave(outcome, `${changes[0].toUpperCase()}${changes.slice(1)} (sheet${edits.length === 1 ? '' : 's'} ${sheets})`, formulas);
 }
 
 /**
@@ -1300,6 +1405,7 @@ function renderPrep(): HTMLElement | null {
       grid.sheetOnly ? null : factChips,
     ),
     toolbar,
+    renderSaveReport(),
     renderNewSheet(grid),
     grid.sheetOnly
       ? h('p', { class: 'source-bar muted' }, 'Working from your prepped sheet, without a run sheet: times, New, Moved and the Medical Records email need the run sheet.')
@@ -1309,27 +1415,45 @@ function renderPrep(): HTMLElement | null {
   );
 }
 
-/** Save ▾: into this list's sheet in your prepped Excel file, or as a new sheet in it. */
+/**
+ * Save to file.xlsx: saves straight into this list's sheet (or, for a list not in the file, opens
+ * "Save as a new sheet"); ▾ has both.
+ */
 function renderSaveMenu(grid: Grid): HTMLElement | null {
   const wb = state.workbook;
   if (!wb?.book) return null;
   const linked = grid.fromWorkbook === wb && Boolean(grid.fromSheet);
   const others = workbookEdits(wb).length - 1;
-  const how = wb.handle ? 'Saves over the file (your browser asks first).' : 'Downloads the updated file with the same name.';
+  const how = wb.handle ? 'Saves over the file (your browser may ask first).' : 'Asks where to save: choose the file you opened to replace it.';
   const item = (label: string, detail: string, onclick: () => void) =>
     h('button', { class: 'menu-item', role: 'menuitem', onclick }, h('span', {}, label), h('span', { class: 'menu-detail' }, detail));
+  const saveHere = () => {
+    state.saveMenuOpen = false;
+    void saveToWorkbook();
+  };
   return h(
     'div',
-    { class: 'menu-wrap' },
+    { class: 'menu-wrap split' },
     h(
       'button',
       {
-        class: state.saveMenuOpen || state.newSheet ? 'on' : '',
+        class: 'split-main',
+        title: linked ? `Saves the cells you changed into sheet “${grid.fromSheet}” of ${wb.name}. ${how}` : `This list isn’t in ${wb.name} yet: save it as a new sheet.`,
+        onclick: () => (linked ? saveHere() : openNewSheet(grid)),
+      },
+      linked ? `Save to ${wb.name}` : `Save as a new sheet in ${wb.name}…`,
+    ),
+    h(
+      'button',
+      {
+        class: state.saveMenuOpen || state.newSheet ? 'split-more on' : 'split-more',
+        title: 'More ways to save',
+        'aria-label': 'More ways to save',
         'aria-haspopup': 'menu',
         'aria-expanded': state.saveMenuOpen ? 'true' : 'false',
         onclick: () => ((state.saveMenuOpen = !state.saveMenuOpen), (state.emailMenuOpen = false), render()),
       },
-      `Save to ${wb.name} ▾`,
+      '▾',
     ),
     state.saveMenuOpen
       ? h(
@@ -1339,16 +1463,25 @@ function renderSaveMenu(grid: Grid): HTMLElement | null {
             ? item(
                 `Save to sheet “${grid.fromSheet}”`,
                 `Only the cells you changed${others > 0 ? `, here and in ${others} other list${others === 1 ? '' : 's'} from this file` : ''}. Formatting and other sheets stay as they are.`,
-                () => {
-                  state.saveMenuOpen = false;
-                  void saveToWorkbook();
-                },
+                saveHere,
               )
             : null,
           item('Save as a new sheet…', 'Adds a sheet with this list, copying the headings and formatting of one of your sheets.', () => openNewSheet(grid)),
-          h('p', { class: 'menu-note' }, how),
+          h('p', { class: 'menu-note' }, `${how} Close the file in Excel first.`),
         )
       : null,
+  );
+}
+
+/** How the last save went: where the file is, or why it couldn't save over it. */
+function renderSaveReport(): HTMLElement | null {
+  const report = state.saveReport;
+  if (!report) return null;
+  return h(
+    'div',
+    { class: report.ok ? 'save-report' : 'save-report warn', role: report.ok ? 'status' : 'alert' },
+    h('span', {}, report.ok ? '✓ ' : '⚠ ', report.text),
+    h('button', { class: 'link', onclick: () => ((state.saveReport = null), render()) }, 'Dismiss'),
   );
 }
 
