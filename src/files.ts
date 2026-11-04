@@ -1,6 +1,8 @@
-export type FileKind = 'settings' | 'runsheet';
+export type FileKind = 'settings' | 'workbook' | 'runsheet';
 
-/** Settings files are JSON; anything else dropped or chosen is treated as a run sheet. */
+/** Settings files are JSON and Excel files are workbooks; anything else is treated as a run sheet (CSV). */
 export function classifyFile(name: string, type = ''): FileKind {
-  return /\.json$/i.test(name) || /json/i.test(type) ? 'settings' : 'runsheet';
+  if (/\.json$/i.test(name) || /json/i.test(type)) return 'settings';
+  if (/\.(xlsx|xlsm|xls)$/i.test(name) || /spreadsheetml|ms-excel/i.test(type)) return 'workbook';
+  return 'runsheet';
 }

@@ -978,3 +978,52 @@ tbody.patient:focus-within .prompt-input {
     z-index: 5;
   }
 }
+
+/* Step 1: run sheet and (optionally) your prepped sheet */
+
+.setup-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 800px) {
+  .setup-inputs {
+    grid-template-columns: 1fr;
+  }
+}
+
+.prepped-box {
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.prepped-box h3 {
+  margin: 0 0 4px;
+  font-size: 0.95rem;
+}
+
+.prepped-box p {
+  margin: 0 0 10px;
+}
+
+.prepped-line {
+  margin-left: auto;
+}
+
+.source-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+}
+
+.source-bar select {
+  margin-left: 4px;
+  padding: 3px 6px;
+}
