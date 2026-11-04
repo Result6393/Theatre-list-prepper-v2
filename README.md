@@ -32,10 +32,12 @@ Choose your cheat sheet (`.xlsx`) under **Previously prepped?** in step 1. Downl
 
 - **Straight away, without a run sheet:** each sheet with patient rows becomes a list in step 2. Open one to see the patients and edit, reorder, tick and use the prompts as usual. Times, New, Moved and the Medical Records email need the run sheet.
 - **With the run sheet too** (load it before or after): each list you open is updated from the file, see below. Edits you made before loading the run sheet are kept.
-- **Save to *file*.xlsx ▾** writes your lists back into the same file:
+- **Save to *file*.xlsx** writes your lists back into the same file (**▾** next to it has both options):
   - **Save to sheet "…"**: only the cells you changed in each list's block are written. Formatting, formulas, other sheets and everything else stay as they were, and new rows take the formatting of the row above. If a list has grown and would write over something below it, it asks first.
   - **Save as a new sheet…**: adds a sheet (name it, e.g. "OR 4 AM 14-10") that starts as a copy of one of your sheets, keeping its headings, column widths, formatting and formulas, with this list in place of that sheet's patients. Works for any list, including one whose patients aren't in the file yet (e.g. tomorrow's list). Anything else on the copied sheet, like a consultant or date at the top, is copied as it was, so update it in Excel if it's changed. After that, the list saves into its new sheet.
-  - In Edge or Chrome it saves over the file itself (the browser asks first). Otherwise it downloads the updated file with the same name, ready to upload back to OneDrive.
+  - **Where it saves:** over the file you opened, when you chose it with **Choose prepped Excel sheet…** in Edge or Chrome (the browser may ask first). If it can't (you dropped the file on the page, didn't allow it, or the file is open in Excel), it asks where to save: choose the original file to replace it, and later saves go straight there. Only if the browser can't do that either does it download an updated copy to your Downloads folder.
+  - A message under the toolbar says exactly where it saved, or why it couldn't save over the file, and stays until you dismiss it.
+  - **Close the file in Excel before saving**: Excel locks it on Windows, and an open window won't show the changes until you reopen it. If the file was changed (e.g. saved in Excel) since you opened it here, the app asks before replacing it.
 
 ## When the list changes on the day
 
