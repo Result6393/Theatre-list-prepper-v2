@@ -57,6 +57,10 @@ interface SheetFile {
 interface SaveReport {
   ok: boolean;
   text: string;
+  /** Still saving (e.g. waiting for the browser's permission). */
+  busy?: boolean;
+  /** Buttons in the message, e.g. "Save anyway" or "Download a copy instead". */
+  actions?: { label: string; primary?: boolean; run: () => void }[];
 }
 
 const storage: KeyValueStore | null = (() => {
@@ -480,6 +484,26 @@ async function writeTo(handle: FileSystemFileHandle, bytes: Uint8Array): Promise
   }
 }
 
+/**
+ * Asks in the page rather than with a browser dialog (those can be hidden or blocked, and then the
+ * save would stop with nothing on screen). Resolves with the chosen option's value.
+ */
+function askInPage<T>(text: string, options: { label: string; value: T; primary?: boolean }[]): Promise<T> {
+  return new Promise((resolve) => {
+    state.saveReport = {
+      ok: false,
+      text,
+      actions: options.map((o) => ({ label: o.label, primary: o.primary, run: () => resolve(o.value) })),
+    };
+    render();
+  });
+}
+
+function savingNotice(text: string): void {
+  state.saveReport = { ok: true, busy: true, text };
+  render();
+}
+
 type SaveOutcome = { how: 'over' | 'as'; name: string; reason?: string } | { how: 'downloaded'; why: string } | { how: 'cancelled' };
 
 /**
@@ -492,13 +516,35 @@ async function writeOut(wb: SheetFile, bytes: Uint8Array, permission: Promise<Pe
   let why = '';
   /** Why it couldn't save over the file, as a short phrase. */
   let reason = '';
-  const allowed = await permission;
+  // The browser's "allow this page to edit the file?" question is easy to miss, so say so, and offer a way out.
+  let giveUp!: (value: 'download') => void;
+  const gaveUp = new Promise<'download'>((resolve) => (giveUp = resolve));
+  const waiting = setTimeout(() => {
+    state.saveReport = {
+      ok: false,
+      busy: true,
+      text: `Waiting for your browser to allow saving over ${wb.name}. Look for its question (often a small box by the address bar, or behind this window) and choose Allow or Edit file.`,
+      actions: [{ label: 'Download a copy instead', run: () => giveUp('download') }],
+    };
+    render();
+  }, 1200);
+  const allowed = await Promise.race([permission, gaveUp]);
+  clearTimeout(waiting);
+  if (allowed === 'download') {
+    downloadBlob(wb.name, new Blob([bytes as BlobPart], { type: XLSX_TYPE }));
+    return finishSave(wb, bytes, { how: 'downloaded', why: 'You chose to download a copy rather than wait for the browser.' });
+  }
+  savingNotice(`Saving into ${wb.name}…`);
   if (wb.handle && allowed !== 'denied') {
     // Saving over changes made in Excel since would lose them, so check first.
     const onDisk = await wb.handle.getFile().catch(() => null);
-    if (onDisk && wb.lastModified && onDisk.lastModified !== wb.lastModified &&
-      !confirm(`${wb.name} has been changed since you opened it here (perhaps saved in Excel). Saving replaces those changes with this version.\n\nSave anyway?`)) {
-      return { how: 'cancelled' };
+    if (onDisk && wb.lastModified && onDisk.lastModified !== wb.lastModified) {
+      const go = await askInPage(`${wb.name} has been changed since you opened it here (perhaps saved in Excel). Saving replaces those changes with this version.`, [
+        { label: 'Save anyway', value: true, primary: true },
+        { label: 'Cancel', value: false },
+      ]);
+      if (!go) return { how: 'cancelled' };
+      savingNotice(`Saving into ${wb.name}…`);
     }
     const problem = await writeTo(wb.handle, bytes);
     if (!problem) return finishSave(wb, bytes, { how: 'over', name: wb.name });
@@ -510,6 +556,20 @@ async function writeOut(wb: SheetFile, bytes: Uint8Array, permission: Promise<Pe
   }
   const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker;
   if (picker) {
+    // The browser only opens its Save window straight after a click: if that moment has passed, ask for one.
+    const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+    if (activation && !activation.isActive) {
+      const next = await askInPage(`${why} Choose where to save it: pick ${wb.name} itself to replace it.`, [
+        { label: 'Choose where to save…', value: 'pick' as const, primary: true },
+        { label: 'Download a copy', value: 'download' as const },
+        { label: 'Cancel', value: 'cancel' as const },
+      ]);
+      if (next === 'cancel') return { how: 'cancelled' };
+      if (next === 'download') {
+        downloadBlob(wb.name, new Blob([bytes as BlobPart], { type: XLSX_TYPE }));
+        return finishSave(wb, bytes, { how: 'downloaded', why });
+      }
+    }
     try {
       const handle = await picker({ suggestedName: wb.name, types: [{ description: 'Excel workbook', accept: { [XLSX_TYPE]: ['.xlsx'] } }] });
       const problem = await writeTo(handle, bytes);
@@ -588,28 +648,56 @@ function openNewSheet(grid: Grid): void {
 
 /** Saves this list as a new sheet in your Excel file, copying another sheet's layout. */
 async function saveAsNewSheet(grid: Grid): Promise<void> {
+  try {
+    await saveAsNewSheetNow(grid);
+  } catch (e) {
+    saveFailed(e);
+  }
+}
+
+/** Something unexpected went wrong while saving: say so, rather than nothing happening. */
+function saveFailed(e: unknown): void {
+  console.error(e);
+  const message = e instanceof Error ? e.message : String(e);
+  state.saveReport = { ok: false, text: `Saving didn’t work (${message}). Nothing was changed in your file. Try again, or use Copy for Excel instead.` };
+  render();
+}
+
+async function saveAsNewSheetNow(grid: Grid): Promise<void> {
   const wb = state.workbook;
   const form = state.newSheet;
   if (!wb?.book || !form) return;
   const permission = askToSave(wb);
+  savingNotice(`Saving a new sheet into ${wb.name}…`);
   const book = wb.book;
   const name = form.name.trim();
   const problem = sheetNameProblem(name, book.sheets.map((s) => s.name));
   const template = book.sheets.find((s) => s.name === form.copyOf);
   if (problem || !template) {
     form.error = problem ?? 'Choose a sheet to copy the layout from.';
+    state.saveReport = null;
     render();
     return;
   }
   const { cell, oldLength } = newSheetPlace(grid, template);
   const edit = { sheet: name, cell, rows: copyBlock(grid.rows, state.settings.layout, oldLength) };
   const lost = overwrittenBelow(template, edit, oldLength);
-  if (lost.length && !confirm(`On the new sheet the list is longer than on “${template.name}”, so it writes over ${lost.length} cell${lost.length === 1 ? '' : 's'} copied from below it:\n\n${lost.slice(0, 5).map((t) => t.split('\n')[0]).join('\n')}\n\nSave anyway?`)) return;
+  if (lost.length) {
+    const go = await askInPage(
+      `On the new sheet the list is longer than on “${template.name}”, so it writes over ${lost.length} cell${lost.length === 1 ? '' : 's'} copied from below it: ${lost.slice(0, 3).map((t) => `“${t.split('\n')[0]}”`).join(', ')}${lost.length > 3 ? '…' : ''}.`,
+      [{ label: 'Save anyway', value: true, primary: true }, { label: 'Cancel', value: false }],
+    );
+    if (!go) {
+      reportSave({ how: 'cancelled' }, '');
+      return;
+    }
+  }
   let result;
   try {
     result = await saveWorkbook(book, [edit], [{ name, copyOf: template.name }]);
   } catch (e) {
-    form.error = e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}.`;
+    form.error = e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}${e instanceof Error ? ` (${e.message})` : ''}.`;
+    state.saveReport = null;
     render();
     return;
   }
@@ -649,26 +737,46 @@ function workbookEdits(wb: SheetFile): { grid: Grid; edit: SheetEdit }[] {
  * an updated copy with the same name.
  */
 async function saveToWorkbook(): Promise<void> {
+  try {
+    await saveToWorkbookNow();
+  } catch (e) {
+    saveFailed(e);
+  }
+}
+
+async function saveToWorkbookNow(): Promise<void> {
   const wb = state.workbook;
   if (!wb?.book) return;
   const permission = askToSave(wb);
+  savingNotice(`Saving into ${wb.name}…`);
   const book = wb.book;
   const edits = workbookEdits(wb);
   if (!edits.length) {
-    say('None of your lists came from this file yet, so there’s nothing to save into it.');
+    state.saveReport = { ok: false, text: 'None of your lists came from this file yet, so there’s nothing to save into it. Use “Save as a new sheet…” (▾) instead.' };
+    render();
     return;
   }
   const lost = edits.flatMap(({ grid, edit }) => {
     const sheet = book.sheets.find((s) => s.name === edit.sheet);
     return sheet ? overwrittenBelow(sheet, edit, grid.padTo).map((text) => `${edit.sheet}: ${text.split('\n')[0]}`) : [];
   });
-  if (lost.length && !confirm(`The list is longer than before, so saving writes over ${lost.length} cell${lost.length === 1 ? '' : 's'} below it:\n\n${lost.slice(0, 5).join('\n')}${lost.length > 5 ? '\n…' : ''}\n\nSave anyway?`)) return;
+  if (lost.length) {
+    const go = await askInPage(
+      `The list is longer than before, so saving writes over ${lost.length} cell${lost.length === 1 ? '' : 's'} below it: ${lost.slice(0, 3).map((t) => `“${t}”`).join(', ')}${lost.length > 3 ? '…' : ''}.`,
+      [{ label: 'Save anyway', value: true, primary: true }, { label: 'Cancel', value: false }],
+    );
+    if (!go) {
+      reportSave({ how: 'cancelled' }, '');
+      return;
+    }
+  }
 
   let result;
   try {
     result = await saveWorkbook(book, edits.map((e) => e.edit));
   } catch (e) {
-    say(e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}.`);
+    state.saveReport = { ok: false, text: e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}${e instanceof Error ? ` (${e.message})` : ''}.` };
+    render();
     return;
   }
   if (result.changed === 0) {
@@ -1438,6 +1546,7 @@ function renderSaveMenu(grid: Grid): HTMLElement | null {
       'button',
       {
         class: 'split-main',
+        disabled: Boolean(state.saveReport?.busy || state.saveReport?.actions),
         title: linked ? `Saves the cells you changed into sheet “${grid.fromSheet}” of ${wb.name}. ${how}` : `This list isn’t in ${wb.name} yet: save it as a new sheet.`,
         onclick: () => (linked ? saveHere() : openNewSheet(grid)),
       },
@@ -1477,11 +1586,16 @@ function renderSaveMenu(grid: Grid): HTMLElement | null {
 function renderSaveReport(): HTMLElement | null {
   const report = state.saveReport;
   if (!report) return null;
+  const actions = report.actions ?? [];
   return h(
     'div',
-    { class: report.ok ? 'save-report' : 'save-report warn', role: report.ok ? 'status' : 'alert' },
-    h('span', {}, report.ok ? '✓ ' : '⚠ ', report.text),
-    h('button', { class: 'link', onclick: () => ((state.saveReport = null), render()) }, 'Dismiss'),
+    { class: `save-report${report.ok ? '' : ' warn'}${report.busy ? ' busy' : ''}`, role: report.ok ? 'status' : 'alert' },
+    h('span', {}, report.busy ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : report.ok ? '✓ ' : actions.length ? '' : '⚠ ', report.text),
+    actions.length
+      ? h('span', { class: 'report-actions' }, actions.map((a) => h('button', { class: a.primary ? 'primary' : '', onclick: a.run }, a.label)))
+      : report.busy
+        ? null
+        : h('button', { class: 'link', onclick: () => ((state.saveReport = null), render()) }, 'Dismiss'),
   );
 }
 
@@ -1518,7 +1632,7 @@ function renderNewSheet(grid: Grid): HTMLElement | null {
         }),
       ),
       h('label', {}, 'Copy the layout of ', copyOf),
-      h('button', { class: 'primary', onclick: () => void saveAsNewSheet(grid) }, 'Save new sheet'),
+      h('button', { class: 'primary', disabled: Boolean(state.saveReport?.busy || state.saveReport?.actions), onclick: () => void saveAsNewSheet(grid) }, state.saveReport?.busy ? 'Saving…' : 'Save new sheet'),
       h('button', { class: 'ghost', onclick: () => ((state.newSheet = null), render()) }, 'Cancel'),
     ),
     form.error ? h('p', { class: 'error', role: 'alert' }, form.error) : null,
