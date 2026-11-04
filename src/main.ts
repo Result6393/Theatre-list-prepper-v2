@@ -1,9 +1,9 @@
 import './style.css';
-import { copyHtml, copyText, toTsv } from './clipboard';
+import { copyHtml, copyText, htmlTableRows, toTsv } from './clipboard';
 import { autoGrow, h } from './dom';
 import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, outlookComposeUrl, weekdayLabel } from './email';
 import { extractSessions, type Patient, type Session } from './extract';
-import { buildRow } from './layout';
+import { copyBlock, freshRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
 import { classifyFile } from './files';
 import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore } from './settings';
@@ -12,9 +12,12 @@ import { renderSettings } from './settings-view';
 
 interface Grid {
   session: Session;
-  patients: Patient[];
-  cells: string[][];
-  included: boolean[];
+  rows: GridRow[];
+  /** After an update from your sheet: how many rows the copy must cover to replace the old ones. */
+  padTo: number;
+  summary: MergeSummary | null;
+  /** The list as it was before the last update from your sheet. */
+  undo: { rows: GridRow[]; padTo: number; summary: MergeSummary | null } | null;
 }
 
 const storage: KeyValueStore | null = (() => {
@@ -41,6 +44,9 @@ const state = {
   /** Other lists, besides the one in view, to include in the Medical Records email. */
   emailLists: new Set<string>(),
   status: '',
+  /** The "Update from my sheet" paste box is open. */
+  updateOpen: false,
+  updateError: '',
   /** A message under the header, e.g. after importing a settings file. */
   notice: null as { text: string; error: boolean } | null,
 };
@@ -107,12 +113,7 @@ function refreshSessions(): void {
 function gridFor(session: Session): Grid {
   let grid = state.grids.get(session.id);
   if (!grid) {
-    grid = {
-      session,
-      patients: [...session.patients],
-      cells: session.patients.map((p) => buildRow(p, state.settings.layout)),
-      included: session.patients.map(() => true),
-    };
+    grid = { session, rows: freshRows(session.patients, state.settings.layout), padTo: 0, summary: null, undo: null };
     state.grids.set(session.id, grid);
   }
   return grid;
@@ -126,6 +127,8 @@ function openSession(): void {
 function chooseSession(id: string): void {
   state.sessionId = id;
   state.status = '';
+  state.updateOpen = false;
+  state.updateError = '';
   openSession();
   render();
 }
@@ -137,18 +140,23 @@ function emailGrids(): Grid[] {
     .map(gridFor);
 }
 
+/** Ticked patients still on the run sheet (not cancelled). */
+function tickedPatients(grid: Grid): Patient[] {
+  return grid.rows.filter((r) => r.included && r.status !== 'cancelled' && r.patient).map((r) => r.patient!);
+}
+
 function emailCount(): number {
-  return emailGrids().reduce((n, g) => n + g.included.filter(Boolean).length, 0);
+  return emailGrids().reduce((n, g) => n + tickedPatients(g).length, 0);
 }
 
 function medicalRecordsEmail() {
-  const groups = emailGrids().map((g) => ({ session: g.session, patients: g.patients.filter((_, i) => g.included[i]) }));
+  const groups = emailGrids().map((g) => ({ session: g.session, patients: tickedPatients(g) }));
   return buildEmail(state.settings.email, groups);
 }
 
 function emailSummary(): string {
   const count = emailCount();
-  const lists = emailGrids().filter((g) => g.included.some(Boolean)).length;
+  const lists = emailGrids().filter((g) => tickedPatients(g).length > 0).length;
   return `${count} patient${count === 1 ? '' : 's'}${lists > 1 ? ` from ${lists} lists` : ''}`;
 }
 
@@ -264,23 +272,83 @@ function closeSettings(): void {
   render();
 }
 
+/** Moves a row within the list; cancelled rows stay together at the bottom. */
 function moveRow(grid: Grid, from: number, to: number): void {
-  if (to < 0 || to >= grid.patients.length) return;
-  for (const list of [grid.patients, grid.cells, grid.included] as unknown[][]) {
-    const [item] = list.splice(from, 1);
-    list.splice(to, 0, item);
+  if (to < 0 || to >= activeRows(grid).length) return;
+  const [row] = grid.rows.splice(from, 1);
+  grid.rows.splice(to, 0, row);
+  render();
+}
+
+function activeRows(grid: Grid): GridRow[] {
+  return grid.rows.filter((r) => r.status !== 'cancelled');
+}
+
+function cancelledRows(grid: Grid): GridRow[] {
+  return grid.rows.filter((r) => r.status === 'cancelled');
+}
+
+/** "OR 3 · PM · Smith", with the day when the run sheet covers several. */
+function listName(s: Session): string {
+  const day = sheetDates().length > 1 && s.date ? `${shortDay(s.date)} · ` : '';
+  return `${day}${[s.or, s.ampm, s.consultant || s.slotName].filter(Boolean).join(' · ')}`;
+}
+
+/** Merges rows pasted from your cheat sheet into this list, keeping your notes. */
+function updateFromSheet(grid: Grid, text: string, html: string): void {
+  let pasted = parsePastedRows(text);
+  if (html && (pasted.length === 0 || !isRectangular(pasted))) {
+    const fromHtml = htmlTableRows(html);
+    if (fromHtml?.length) pasted = withoutTrailingBlankRows(fromHtml);
+  }
+  if (pasted.length === 0) return;
+  try {
+    const result = mergePrepped(pasted, grid.session, listedSessions(), state.settings.layout, listName);
+    grid.undo = { rows: grid.rows, padTo: grid.padTo, summary: grid.summary };
+    grid.rows = result.rows;
+    grid.padTo = result.padTo;
+    grid.summary = result.summary;
+    state.updateOpen = false;
+    state.updateError = '';
+    state.status = '';
+  } catch (e) {
+    state.updateError = e instanceof MergeError ? e.message : 'Couldn’t read those rows. Copy them from your sheet and paste again.';
   }
   render();
 }
 
+function undoUpdate(grid: Grid): void {
+  if (!grid.undo) return;
+  Object.assign(grid, grid.undo, { undo: null });
+  state.status = 'Update undone.';
+  render();
+}
+
+function summaryText(s: MergeSummary): string {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  return [
+    `kept your notes for ${plural(s.kept, 'patient')}`,
+    s.added ? `${s.added} new (need prep)` : '',
+    s.cancelled ? `${s.cancelled} cancelled` : '',
+    s.moved ? `${s.moved} moved` : '',
+    s.changed ? `${s.changed} with run-sheet changes to check` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 async function copyRows(grid: Grid): Promise<void> {
-  const rows = grid.cells.filter((_, i) => grid.included[i]);
   const { layout } = state.settings;
+  const rows = copyBlock(grid.rows, layout, grid.padTo);
   if (layout.includeHeadings) rows.unshift(layout.columns.map((c) => c.heading));
   try {
     await copyText(toTsv(rows));
-    const count = grid.included.filter(Boolean).length;
-    state.status = `Copied ${count} patient${count === 1 ? '' : 's'}. Click ${layout.pasteStart || 'the first cell'} in your sheet and press Ctrl+V.`;
+    const count = activeRows(grid).filter((r) => r.included).length;
+    const cancelled = cancelledRows(grid).filter((r) => r.included).length;
+    const where = layout.pasteStart || 'the first cell';
+    state.status = grid.padTo
+      ? `Copied ${count} patient${count === 1 ? '' : 's'}${cancelled ? ` and ${cancelled} cancelled` : ''}. Click ${where} (where you copied your rows from) and press Ctrl+V to replace the old rows.`
+      : `Copied ${count} patient${count === 1 ? '' : 's'}. Click ${where} in your sheet and press Ctrl+V.`;
   } catch {
     state.status = 'Your browser blocked copying. Try again, or use Ctrl+C after selecting the table.';
   }
@@ -385,7 +453,12 @@ function renderInputStep(): HTMLElement {
       ),
       fileInput,
     ];
-    if (state.error) body.push(h('p', { class: 'error', role: 'alert' }, state.error));
+    if (state.error) {
+      body.push(
+        h('p', { class: 'error', role: 'alert' }, state.error),
+        h('p', { class: 'hint' }, 'Pasting rows from your cheat sheet to update a list? Load the latest run sheet here first and choose the list, then use “Update from my sheet”.'),
+      );
+    }
   }
 
   return step(1, 'Run sheet', ...body);
@@ -442,7 +515,7 @@ function renderEmailLists(): HTMLElement | null {
     h('legend', {}, 'Include in the Medical Records email'),
     lists.map((s) => {
       const current = s.id === state.sessionId;
-      const ticked = gridFor(s).included.filter(Boolean).length;
+      const ticked = tickedPatients(gridFor(s)).length;
       const label = `${multiDay ? `${shortDay(s.date)} · ` : ''}${s.or} · ${s.ampm} · ${s.consultant || s.slotName} · ${ticked} of ${s.patients.length} ticked${current ? ' (this list)' : ''}`;
       return h(
         'label',
@@ -515,73 +588,127 @@ function renderGrid(): HTMLElement | null {
     ),
   );
 
+  const active = activeRows(grid);
+  const cancelled = cancelledRows(grid);
+  const keyIndex = layout.columns.findIndex((c) => c.source === 'field:patient' || c.source === 'field:name' || c.source === 'field:mrn');
+  const rowName = (r: GridRow) => r.patient?.name || (keyIndex >= 0 ? r.cells[keyIndex] : '') || 'this patient';
+
+  const renderRow = (r: GridRow, index: number) => {
+    const p = r.patient;
+    const isCancelled = r.status === 'cancelled';
+    const badges = [
+      r.status === 'new' ? h('span', { class: 'badge badge-new', title: 'Added to the list since your sheet: needs prep' }, 'New') : null,
+      r.reinstated ? h('span', { class: 'badge badge-new', title: 'Was cancelled on your sheet and is back on the run sheet' }, 'Back on list') : null,
+      r.movedFrom !== undefined ? h('span', { class: 'badge badge-moved', title: 'The order changed: this patient has moved' }, `Moved, was #${r.movedFrom}`) : null,
+      isCancelled ? h('span', { class: 'badge badge-cancelled' }, 'Cancelled') : null,
+      r.note ? h('div', { class: 'who' }, r.note) : null,
+    ];
+    const classes = [r.included ? '' : 'excluded', r.status === 'new' || r.reinstated ? 'row-new' : '', isCancelled ? 'row-cancelled' : ''];
+    return h(
+      'tr',
+      { class: classes.filter(Boolean).join(' ') },
+      h(
+        'td',
+        { class: 'tick' },
+        h('input', {
+          type: 'checkbox',
+          checked: r.included,
+          'aria-label': `Include ${rowName(r)}`,
+          onchange: (e: Event) => {
+            r.included = (e.target as HTMLInputElement).checked;
+            render();
+          },
+        }),
+      ),
+      h(
+        'td',
+        { class: 'move' },
+        isCancelled
+          ? null
+          : [
+              h('button', { class: 'mini', title: 'Move up', disabled: index === 0, onclick: () => moveRow(grid, index, index - 1) }, '↑'),
+              h(
+                'button',
+                { class: 'mini', title: 'Move down', disabled: index === active.length - 1, onclick: () => moveRow(grid, index, index + 1) },
+                '↓',
+              ),
+            ],
+      ),
+      h('td', { class: 'time', title: p?.consultant ?? '' }, p?.time ?? '', p ? h('div', { class: 'who' }, p.consultantSurname) : null, ...badges),
+      layout.columns.map((c, col) => {
+        const area = h('textarea', {
+          class: 'cell',
+          rows: 1,
+          value: r.cells[col],
+          'aria-label': `${c.heading} for ${rowName(r)}`,
+          oninput: (e: Event) => {
+            const target = e.target as HTMLTextAreaElement;
+            r.cells[col] = target.value;
+            target.parentElement!.className = cellClass(c.source, target.value);
+            autoGrow(target);
+          },
+        });
+        const latest = r.changes[col];
+        const change =
+          latest === undefined
+            ? null
+            : h(
+                'div',
+                { class: 'change', title: 'The run sheet now says something different from your sheet' },
+                'Now: ',
+                h('strong', {}, latest),
+                h(
+                  'div',
+                  {},
+                  h('button', { class: 'mini', title: 'Use the run sheet’s value', onclick: () => ((r.cells[col] = latest), delete r.changes[col], render()) }, 'Use'),
+                  h('button', { class: 'mini', title: 'Keep what’s on your sheet', onclick: () => (delete r.changes[col], render()) }, 'Keep'),
+                ),
+              );
+        return h('td', { class: cellClass(c.source, r.cells[col]), style: `min-width:${columnWidth(c.source)}px` }, area, change);
+      }),
+    );
+  };
+
   const tbody = h(
     'tbody',
     {},
-    grid.patients.map((p, row) =>
-      h(
-        'tr',
-        { class: grid.included[row] ? '' : 'excluded' },
-        h(
-          'td',
-          { class: 'tick' },
-          h('input', {
-            type: 'checkbox',
-            checked: grid.included[row],
-            'aria-label': `Include ${p.name}`,
-            onchange: (e: Event) => {
-              grid.included[row] = (e.target as HTMLInputElement).checked;
-              render();
-            },
-          }),
-        ),
-        h(
-          'td',
-          { class: 'move' },
-          h('button', { class: 'mini', title: 'Move up', disabled: row === 0, onclick: () => moveRow(grid, row, row - 1) }, '↑'),
-          h(
-            'button',
-            { class: 'mini', title: 'Move down', disabled: row === grid.patients.length - 1, onclick: () => moveRow(grid, row, row + 1) },
-            '↓',
-          ),
-        ),
-        h('td', { class: 'time', title: p.consultant }, p.time, h('div', { class: 'who' }, p.consultantSurname)),
-        layout.columns.map((c, col) => {
-          const area = h('textarea', {
-            class: 'cell',
-            rows: 1,
-            value: grid.cells[row][col],
-            'aria-label': `${c.heading} for ${p.name}`,
-            oninput: (e: Event) => {
-              const target = e.target as HTMLTextAreaElement;
-              grid.cells[row][col] = target.value;
-              target.parentElement!.className = cellClass(c.source, target.value);
-              autoGrow(target);
-            },
-          });
-          return h('td', { class: cellClass(c.source, grid.cells[row][col]), style: `min-width:${columnWidth(c.source)}px` }, area);
-        }),
-      ),
-    ),
+    active.map(renderRow),
+    cancelled.length
+      ? h(
+          'tr',
+          { class: 'cancelled-heading' },
+          h('td', { colspan: layout.columns.length + 3 }, `Cancelled: not on the latest run sheet (${cancelled.length}). Copied below the list, under a CANCELLED row. Untick any you don’t want to keep.`),
+        )
+      : null,
+    cancelled.map((r) => renderRow(r, -1)),
   );
 
-  const count = grid.included.filter(Boolean).length;
+  const count = active.filter((r) => r.included).length;
+  const cancelledCount = cancelled.filter((r) => r.included).length;
   const emailPatients = emailCount();
   const hasRecipients = medicalRecordsEmail().to.length > 0;
+  const where = layout.pasteStart || 'the first cell';
   return step(
     3,
     'Check, edit, copy',
     facts,
+    renderUpdate(grid),
     h('div', { class: 'table-wrap' }, h('table', { class: 'grid' }, thead, tbody)),
     h(
       'div',
       { class: 'copy-bar' },
       h(
         'button',
-        { class: 'primary', disabled: count === 0, onclick: () => copyRows(grid) },
-        `Copy ${count} patient${count === 1 ? '' : 's'} for Excel`,
+        { class: 'primary', disabled: count + cancelledCount === 0, onclick: () => copyRows(grid) },
+        `Copy ${count} patient${count === 1 ? '' : 's'}${cancelledCount ? ` + ${cancelledCount} cancelled` : ''} for Excel`,
       ),
-      h('span', { class: 'hint' }, `Then click ${layout.pasteStart || 'the first cell'} in your sheet and press Ctrl+V.`),
+      h(
+        'span',
+        { class: 'hint' },
+        grid.padTo
+          ? `Then click ${where} (where you copied your rows from) and press Ctrl+V. It replaces the old rows, blanking any left over.`
+          : `Then click ${where} in your sheet and press Ctrl+V.`,
+      ),
     ),
     renderEmailLists(),
     h(
@@ -621,6 +748,60 @@ function renderGrid(): HTMLElement | null {
     ),
     state.status ? h('p', { class: 'status', role: 'status' }, state.status) : null,
     h('p', { class: 'hint small' }, 'Time and consultant are shown for reference and aren’t copied unless you add them as columns in Settings.'),
+  );
+}
+
+function openUpdate(): void {
+  state.updateOpen = true;
+  state.updateError = '';
+  render();
+  app.querySelector<HTMLTextAreaElement>('.update-open textarea')?.focus();
+}
+
+/** "List changed?": paste your rows back from the cheat sheet to merge them with the latest run sheet. */
+function renderUpdate(grid: Grid): HTMLElement {
+  const where = state.settings.layout.pasteStart || 'the first patient row';
+  const summary = grid.summary
+    ? h(
+        'p',
+        { class: 'update-summary', role: 'status' },
+        `Updated from your sheet: ${summaryText(grid.summary)}. `,
+        grid.undo ? h('button', { class: 'link', onclick: () => undoUpdate(grid) }, 'Undo') : null,
+      )
+    : null;
+  if (!state.updateOpen) {
+    return h(
+      'div',
+      { class: 'update' },
+      summary,
+      h(
+        'div',
+        { class: 'copy-bar' },
+        h('button', { onclick: openUpdate }, grid.summary ? 'Update again from my sheet…' : 'Update from my sheet…'),
+        h('span', { class: 'hint' }, 'List changed? With the latest run sheet loaded above, paste your prepped rows back in to keep your notes.'),
+      ),
+    );
+  }
+  const box = h('textarea', {
+    class: 'paste',
+    rows: 4,
+    placeholder: 'Paste your rows here with Ctrl+V…',
+    'aria-label': 'Rows copied from your cheat sheet',
+    onpaste: (e: Event) => {
+      e.preventDefault();
+      const data = (e as ClipboardEvent).clipboardData;
+      updateFromSheet(grid, data?.getData('text/plain') ?? '', data?.getData('text/html') ?? '');
+    },
+  });
+  return h(
+    'div',
+    { class: 'update update-open' },
+    summary,
+    h('p', {}, h('strong', {}, 'Update from my sheet. '), `In your cheat sheet, select all your patient rows, from ${where} down to the last one (include any cancelled rows), and copy them with Ctrl+C. Then click the box below and press Ctrl+V.`),
+    h('p', { class: 'hint' }, 'Patients are matched by MRN. Your notes stay with each patient in the new order; new patients are added and marked New; patients no longer on this list are kept at the bottom as cancelled.'),
+    box,
+    state.updateError ? h('p', { class: 'error', role: 'alert' }, state.updateError) : null,
+    h('button', { class: 'ghost', onclick: () => ((state.updateOpen = false), (state.updateError = ''), render()) }, 'Cancel'),
   );
 }
 

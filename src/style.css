@@ -526,3 +526,94 @@ fieldset.email-lists legend {
 .drop-overlay[hidden] {
   display: none;
 }
+
+/* Update from my sheet */
+
+.update {
+  margin-bottom: 12px;
+}
+
+.update .copy-bar {
+  margin-top: 0;
+}
+
+.update-open {
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+}
+
+.update-open p {
+  margin: 0 0 8px;
+}
+
+.update-open .ghost {
+  margin-top: 8px;
+}
+
+.update-summary {
+  margin: 0 0 8px;
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.badge-new {
+  background: var(--accent);
+  color: var(--surface);
+}
+
+.badge-moved {
+  background: var(--alert-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.badge-cancelled {
+  background: var(--danger);
+  color: var(--surface);
+}
+
+tr.row-new td:first-child {
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+tr.row-cancelled td:not(.tick):not(.time) {
+  opacity: 0.55;
+}
+
+tr.row-cancelled textarea.cell {
+  text-decoration: line-through;
+}
+
+tr.cancelled-heading td {
+  background: var(--bg);
+  color: var(--danger);
+  font-weight: 700;
+  padding: 10px 8px 6px;
+  border-top: 2px solid var(--danger);
+}
+
+.change {
+  margin: 2px 4px 4px;
+  padding: 3px 5px;
+  border-radius: 4px;
+  background: var(--missing-bg);
+  color: var(--text);
+  font-size: 0.8rem;
+  white-space: pre-line;
+}
+
+.change .mini {
+  margin: 2px 2px 0 0;
+}
