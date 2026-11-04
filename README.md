@@ -32,7 +32,10 @@ Choose your cheat sheet (`.xlsx`) under **Previously prepped?** in step 1. Downl
 
 - **Straight away, without a run sheet:** each sheet with patient rows becomes a list in step 2. Open one to see the patients and edit, reorder, tick and use the prompts as usual. Times, New, Moved and the Medical Records email need the run sheet.
 - **With the run sheet too** (load it before or after): each list you open is updated from the file, see below. Edits you made before loading the run sheet are kept.
-- **Save to *file*.xlsx** writes your lists back into the same file. Only the cells you changed in each list's block are written; formatting, formulas, other sheets and everything else stay as they were. New rows take the formatting of the row above. In Edge or Chrome it saves over the file itself (the browser asks first). Otherwise it downloads the updated file with the same name, ready to upload back to OneDrive. If a list has grown and would write over something below it, it asks first.
+- **Save to *file*.xlsx ▾** writes your lists back into the same file:
+  - **Save to sheet "…"**: only the cells you changed in each list's block are written. Formatting, formulas, other sheets and everything else stay as they were, and new rows take the formatting of the row above. If a list has grown and would write over something below it, it asks first.
+  - **Save as a new sheet…**: adds a sheet (name it, e.g. "OR 4 AM 14-10") that starts as a copy of one of your sheets, keeping its headings, column widths, formatting and formulas, with this list in place of that sheet's patients. Works for any list, including one whose patients aren't in the file yet (e.g. tomorrow's list). Anything else on the copied sheet, like a consultant or date at the top, is copied as it was, so update it in Excel if it's changed. After that, the list saves into its new sheet.
+  - In Edge or Chrome it saves over the file itself (the browser asks first). Otherwise it downloads the updated file with the same name, ready to upload back to OneDrive.
 
 ## When the list changes on the day
 

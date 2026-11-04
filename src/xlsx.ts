@@ -79,15 +79,57 @@ export interface SaveResult {
  * formatting is kept, new cells take the formatting of the cell above, and formula cells are never
  * overwritten. Every other part of the file (other sheets, styles, column widths) is copied as it was.
  */
-export async function saveWorkbook(book: Workbook, edits: SheetEdit[]): Promise<SaveResult> {
+export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: NewSheet[] = []): Promise<SaveResult> {
   let changed = 0;
   let formulas = 0;
   const replaced = new Map<string, string>();
+  const entries = [...book.entries];
+  const paths = new Map(book.paths);
+  const sheets = [...book.sheets];
+  const current = async (path: string) => replaced.get(path) ?? (await entryText(entries.find((e) => e.name === path)!));
+
+  for (const add of added) {
+    const problem = sheetNameProblem(add.name, sheets.map((s) => s.name));
+    if (problem) throw new WorkbookError(problem);
+    const templatePath = paths.get(add.copyOf);
+    const template = sheets.find((s) => s.name === add.copyOf);
+    if (!templatePath || !template) throw new WorkbookError(`There’s no sheet “${add.copyOf}” to copy.`);
+    const taken = new Set(entries.map((e) => e.name));
+    let n = 1;
+    while (taken.has(`xl/worksheets/sheet${n}.xml`)) n++;
+    const path = `xl/worksheets/sheet${n}.xml`;
+    const templateEntry = entries.find((e) => e.name === templatePath)!;
+    entries.push({ ...templateEntry, name: path, nameBytes: new TextEncoder().encode(path) });
+    replaced.set(path, copyableSheet(await current(templatePath)));
+    paths.set(add.name, path);
+    sheets.push({ name: add.name, rows: template.rows.map((r) => [...r]) });
+
+    const relsPath = 'xl/_rels/workbook.xml.rels';
+    const rels = await current(relsPath);
+    const ids = new Set(tags(rels, 'Relationship').map((r) => attr(r, 'Id')));
+    let rid = `rIdTlp${n}`;
+    while (ids.has(rid)) rid += 'x';
+    replaced.set(relsPath, appendChild(rels, 'Relationships', `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${n}.xml"/>`));
+
+    const workbook = await current('xl/workbook.xml');
+    const existing = tags(workbook, 'sheet');
+    const prefix = existing[0]?.match(/^<(\w+:)?/)?.[1] ?? '';
+    const relPrefix = existing[0]?.match(/\s(\w+):id="/)?.[1] ?? 'r';
+    const sheetId = Math.max(0, ...existing.map((t) => Number(attr(t, 'sheetId')) || 0)) + 1;
+    // Added at the end, so print areas and other per-sheet names keep pointing at the right sheets.
+    // The relationships namespace is declared on the element too: some files declare it per sheet, not once.
+    const sheetTag = `<${prefix}sheet xmlns:${relPrefix}="http://schemas.openxmlformats.org/officeDocument/2006/relationships" name="${escapeXml(add.name).replace(/"/g, '&quot;')}" sheetId="${sheetId}" ${relPrefix}:id="${rid}"/>`;
+    replaced.set('xl/workbook.xml', appendChild(workbook, 'sheets', sheetTag));
+
+    const types = await current('[Content_Types].xml');
+    replaced.set('[Content_Types].xml', appendChild(types, 'Types', `<Override PartName="/${path}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`));
+  }
+
   for (const edit of edits) {
-    const path = book.paths.get(edit.sheet);
-    const sheet = book.sheets.find((s) => s.name === edit.sheet);
+    const path = paths.get(edit.sheet);
+    const sheet = sheets.find((s) => s.name === edit.sheet);
     if (!path || !sheet) throw new WorkbookError(`There’s no sheet “${edit.sheet}” in this workbook any more.`);
-    const entry = book.entries.find((e) => e.name === path)!;
+    const entry = entries.find((e) => e.name === path)!;
     const xml = replaced.get(path) ?? (await entryText(entry));
     const startRow = Number(edit.cell.match(/\d+/)?.[0] ?? 1);
     const startCol = columnIndex(edit.cell);
@@ -104,10 +146,68 @@ export async function saveWorkbook(book: Workbook, edits: SheetEdit[]): Promise<
     formulas += patched.formulas;
     replaced.set(path, patched.xml);
   }
-  const entries = await Promise.all(
-    book.entries.map(async (e) => (replaced.has(e.name) ? deflateEntry(e, replaced.get(e.name)!) : e)),
-  );
-  return { bytes: writeZip(entries), changed, formulas };
+  const written = await Promise.all(entries.map(async (e) => (replaced.has(e.name) ? deflateEntry(e, replaced.get(e.name)!) : e)));
+  return { bytes: writeZip(written), changed, formulas };
+}
+
+/** A sheet to add, starting as a copy of another (its headings, formatting and formulas). */
+export interface NewSheet {
+  name: string;
+  copyOf: string;
+}
+
+/** Why Excel wouldn't accept this sheet name, or null if it's fine. */
+export function sheetNameProblem(name: string, existing: string[]): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return 'Give the new sheet a name.';
+  if (trimmed.length > 31) return 'Sheet names can be at most 31 characters.';
+  if (/[\\/?*[\]:]/.test(trimmed)) return 'Sheet names can’t contain \\ / ? * [ ] or :.';
+  if (/^'|'$/.test(trimmed)) return 'Sheet names can’t start or end with an apostrophe.';
+  if (trimmed.toLowerCase() === 'history') return '“History” is reserved by Excel.';
+  if (existing.some((e) => e.toLowerCase() === trimmed.toLowerCase())) return `There’s already a sheet called “${trimmed}”.`;
+  return null;
+}
+
+/**
+ * A sheet's XML made safe to copy: parts it shares with the original through relationships
+ * (drawings, comments, tables, links, add-on extensions) are left out, and it isn't the selected tab.
+ */
+function copyableSheet(xml: string): string {
+  let out = removeElements(xml, ['tableParts', 'hyperlinks', 'oleObjects', 'controls', 'drawing', 'legacyDrawing', 'legacyDrawingHF', 'picture']);
+  // Add-on extensions are kept unless they link to other parts (e.g. slicers).
+  out = removeElements(out, ['extLst'], (element) => /\s\w+:id="/.test(element));
+  return out.replace(/\s\w+:id="[^"]*"/g, '').replace(/\stabSelected="(?:1|true)"/g, '');
+}
+
+/** Removes whole elements by name (with any namespace prefix), matching nested ones correctly. */
+function removeElements(xml: string, names: string[], only: (element: string) => boolean = () => true): string {
+  const tag = new RegExp(`<(/?)(?:\\w+:)?(${names.join('|')})\\b[^>]*?(/?)>`, 'g');
+  const cuts: [number, number][] = [];
+  const open: { name: string; start: number }[] = [];
+  for (const m of xml.matchAll(tag)) {
+    const [text, closing, name, selfClosing] = m;
+    const at = m.index!;
+    if (selfClosing) {
+      if (!open.length) cuts.push([at, at + text.length]);
+    } else if (!closing) {
+      open.push({ name, start: at });
+    } else {
+      const top = open.pop();
+      if (top && !open.length) cuts.push([top.start, at + text.length]);
+    }
+  }
+  let out = xml;
+  for (const [start, end] of cuts.reverse()) if (only(xml.slice(start, end))) out = out.slice(0, start) + out.slice(end);
+  return out;
+}
+
+/** Adds an element at the end of <parent> (which may be written as an empty <parent/>). */
+function appendChild(xml: string, parent: string, child: string): string {
+  const close = new RegExp(`</((?:\\w+:)?)${parent}>`);
+  if (close.test(xml)) return xml.replace(close, (m) => `${child}${m}`);
+  const empty = new RegExp(`<((?:\\w+:)?)${parent}\\b([^>]*?)\\s*/>`);
+  if (empty.test(xml)) return xml.replace(empty, (_, p: string, attrs: string) => `<${p}${parent}${attrs}>${child}</${p}${parent}>`);
+  throw new WorkbookError(`This workbook is missing its ${parent} list.`);
 }
 
 /** The edit applied to the sheet's values in memory (no file is written). */

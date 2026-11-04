@@ -10,7 +10,7 @@ import { ParseError, parseTable, type Table } from './parse';
 import { findingGroups, hasToken, isLensSurgery, promptColumns, readLens, readTarget, toggleFinding, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
-import { openWorkbook, overwrittenBelow, saveWorkbook, withEdit, WorkbookError, type SheetData, type SheetEdit, type Workbook } from './xlsx';
+import { openWorkbook, overwrittenBelow, saveWorkbook, sheetNameProblem, withEdit, WorkbookError, type SheetData, type SheetEdit, type Workbook } from './xlsx';
 import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore } from './settings';
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
@@ -79,6 +79,9 @@ const state = {
   updateOpen: false,
   updateError: '',
   emailMenuOpen: false,
+  saveMenuOpen: false,
+  /** The "Save as a new sheet" form, while it's open. */
+  newSheet: null as { name: string; copyOf: string; error: string } | null,
   /** Your previously prepped sheet: each list you open is updated from it. */
   workbook: null as SheetFile | null,
   /** Without a run sheet: the sheet of your prepped file being worked on. */
@@ -189,6 +192,8 @@ function openSelection(): void {
   state.updateOpen = false;
   state.updateError = '';
   state.emailMenuOpen = false;
+  state.saveMenuOpen = false;
+  state.newSheet = null;
   // With your prepped sheet chosen, each list is updated from it the first time it's opened.
   if (state.grid && state.workbook && state.grid.fromWorkbook !== state.workbook) applyWorkbook(state.grid, state.workbook);
 }
@@ -386,6 +391,8 @@ function openSheet(): void {
   const block = sheetLists().find((b) => b.sheet === state.sheetSelected);
   state.updateOpen = false;
   state.emailMenuOpen = false;
+  state.saveMenuOpen = false;
+  state.newSheet = null;
   if (!wb || !block) {
     state.grid = null;
     return;
@@ -423,6 +430,105 @@ function keepSheetEdits(): void {
     wb.sheets[at] = withEdit(wb.sheets[at], { sheet: grid.fromSheet, cell: grid.pasteAt, rows: copyBlock(grid.rows, state.settings.layout, grid.padTo) });
   }
   state.sheetSelected = '';
+}
+
+/**
+ * Puts the saved workbook where you'll find it: over the file itself when the browser allows it
+ * (Edge/Chrome, with your permission), otherwise as a download with the same name. Returns true
+ * when it saved over the file. Either way the saved version is what later saves compare against.
+ */
+async function writeOut(wb: SheetFile, bytes: Uint8Array): Promise<boolean> {
+  let inPlace = false;
+  if (wb.handle) {
+    try {
+      const writable = await wb.handle.createWritable();
+      await writable.write(bytes as BlobPart);
+      await writable.close();
+      inPlace = true;
+    } catch {
+      // Not allowed, or the file is open in Excel: download a copy instead.
+    }
+  }
+  if (!inPlace) downloadBlob(wb.name, new Blob([bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+  wb.book = await openWorkbook(bytes.buffer as ArrayBuffer);
+  wb.sheets = [...wb.book.sheets];
+  return inPlace;
+}
+
+/** A name for a new sheet for this list, e.g. "OR 4 AM 14-10", not already used. */
+function defaultSheetName(grid: Grid, existing: string[]): string {
+  const c = grid.combined;
+  const day = (c.date.split(' + ')[0] ?? '').replace(/^(\d{1,2})\/(\d{1,2})\/\d{4}$/, '$1-$2');
+  const base = (grid.sheetOnly ? `${c.slotName} (new)` : [c.or, c.ampm, day].filter(Boolean).join(' ')).replace(/[\\/?*[\]:]/g, '-').slice(0, 31).trim() || 'New list';
+  let name = base;
+  for (let n = 2; existing.some((e) => e.toLowerCase() === name.toLowerCase()); n++) name = `${base.slice(0, 26)} (${n})`;
+  return name;
+}
+
+/** Where the list goes on a new sheet copied from `template`: in place of the template's own patients. */
+function newSheetPlace(grid: Grid, template: SheetData): { cell: string; oldLength: number } {
+  if (grid.fromSheet === template.name && grid.pasteAt) return { cell: grid.pasteAt, oldLength: grid.padTo };
+  const block = findListBlock(template, state.settings.layout);
+  if (block) return { cell: block.cell, oldLength: block.rows.length };
+  return { cell: state.settings.layout.pasteStart || 'B5', oldLength: 0 };
+}
+
+function openNewSheet(grid: Grid): void {
+  const book = state.workbook?.book;
+  if (!book) return;
+  const names = book.sheets.map((s) => s.name);
+  const withList = book.sheets.find((s) => findListBlock(s, state.settings.layout));
+  const copyOf = grid.fromSheet && names.includes(grid.fromSheet) ? grid.fromSheet : (withList ?? book.sheets[0])?.name ?? '';
+  state.saveMenuOpen = false;
+  state.newSheet = { name: defaultSheetName(grid, names), copyOf, error: '' };
+  render();
+  app.querySelector<HTMLInputElement>('.new-sheet input')?.select();
+}
+
+/** Saves this list as a new sheet in your Excel file, copying another sheet's layout. */
+async function saveAsNewSheet(grid: Grid): Promise<void> {
+  const wb = state.workbook;
+  const form = state.newSheet;
+  if (!wb?.book || !form) return;
+  const book = wb.book;
+  const name = form.name.trim();
+  const problem = sheetNameProblem(name, book.sheets.map((s) => s.name));
+  const template = book.sheets.find((s) => s.name === form.copyOf);
+  if (problem || !template) {
+    form.error = problem ?? 'Choose a sheet to copy the layout from.';
+    render();
+    return;
+  }
+  const { cell, oldLength } = newSheetPlace(grid, template);
+  const edit = { sheet: name, cell, rows: copyBlock(grid.rows, state.settings.layout, oldLength) };
+  const lost = overwrittenBelow(template, edit, oldLength);
+  if (lost.length && !confirm(`On the new sheet the list is longer than on “${template.name}”, so it writes over ${lost.length} cell${lost.length === 1 ? '' : 's'} copied from below it:\n\n${lost.slice(0, 5).map((t) => t.split('\n')[0]).join('\n')}\n\nSave anyway?`)) return;
+  let result;
+  try {
+    result = await saveWorkbook(book, [edit], [{ name, copyOf: template.name }]);
+  } catch (e) {
+    form.error = e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}.`;
+    render();
+    return;
+  }
+  const inPlace = await writeOut(wb, result.bytes);
+  // From now on this list saves into its new sheet.
+  if (grid.sheetOnly) {
+    for (const [key, g] of state.grids) if (g === grid) state.grids.delete(key);
+    grid.combined = { ...grid.combined, id: `sheet:${name}`, slotName: name };
+    state.grids.set(`sheet:${name}`, grid);
+    state.sheetSelected = name;
+  }
+  grid.fromWorkbook = wb;
+  grid.fromSheet = name;
+  grid.pasteAt = cell;
+  grid.padTo = edit.rows.length;
+  state.newSheet = null;
+  say(
+    inPlace
+      ? `Saved this list as a new sheet “${name}” in ${wb.name} (from ${cell}).`
+      : `Downloaded ${wb.name} with a new sheet “${name}”. Use it in place of the old file (e.g. upload it to OneDrive).`,
+  );
 }
 
 /** Lists from your prepped file, each with the block it writes back: the most recent wins per sheet. */
@@ -466,22 +572,7 @@ async function saveToWorkbook(): Promise<void> {
     say(`${wb.name} already matches your lists: nothing to save.`);
     return;
   }
-  let inPlace = false;
-  if (wb.handle) {
-    try {
-      const writable = await wb.handle.createWritable();
-      await writable.write(result.bytes as BlobPart);
-      await writable.close();
-      inPlace = true;
-    } catch {
-      // Not allowed, or the file is open in Excel: download a copy instead.
-    }
-  }
-  if (!inPlace) downloadBlob(wb.name, new Blob([result.bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
-
-  // The saved file is now the one to compare against.
-  wb.book = await openWorkbook(result.bytes.buffer as ArrayBuffer);
-  wb.sheets = [...wb.book.sheets];
+  const inPlace = await writeOut(wb, result.bytes);
   for (const { grid, edit } of edits) grid.padTo = edit.rows.length;
   const changes = `${result.changed} change${result.changed === 1 ? '' : 's'}`;
   const formulas = result.formulas ? ` Formula cells were left as they were (${result.formulas}).` : '';
@@ -1024,7 +1115,7 @@ function renderPrep(): HTMLElement | null {
       },
       `Copy ${count} patient${count === 1 ? '' : 's'}${cancelledCount ? ` + ${cancelledCount} cancelled` : ''} for Excel`,
     ),
-    renderSaveButton(grid),
+    renderSaveMenu(grid),
     grid.sheetOnly
       ? null
       : h(
@@ -1209,6 +1300,7 @@ function renderPrep(): HTMLElement | null {
       grid.sheetOnly ? null : factChips,
     ),
     toolbar,
+    renderNewSheet(grid),
     grid.sheetOnly
       ? h('p', { class: 'source-bar muted' }, 'Working from your prepped sheet, without a run sheet: times, New, Moved and the Medical Records email need the run sheet.')
       : renderSource(grid),
@@ -1217,18 +1309,86 @@ function renderPrep(): HTMLElement | null {
   );
 }
 
-/** Saves the lists back into your prepped Excel file, when this list came from it. */
-function renderSaveButton(grid: Grid): HTMLElement | null {
+/** Save ▾: into this list's sheet in your prepped Excel file, or as a new sheet in it. */
+function renderSaveMenu(grid: Grid): HTMLElement | null {
   const wb = state.workbook;
-  if (!wb?.book || grid.fromWorkbook !== wb || !grid.fromSheet) return null;
+  if (!wb?.book) return null;
+  const linked = grid.fromWorkbook === wb && Boolean(grid.fromSheet);
   const others = workbookEdits(wb).length - 1;
+  const how = wb.handle ? 'Saves over the file (your browser asks first).' : 'Downloads the updated file with the same name.';
+  const item = (label: string, detail: string, onclick: () => void) =>
+    h('button', { class: 'menu-item', role: 'menuitem', onclick }, h('span', {}, label), h('span', { class: 'menu-detail' }, detail));
   return h(
-    'button',
-    {
-      title: `Writes only the cells you changed into ${wb.name}${others > 0 ? ` (this list and ${others} other${others === 1 ? '' : 's'} from it)` : ''}, keeping its formatting and other sheets. ${wb.handle ? 'Saves over the file (your browser asks first).' : 'Downloads the updated file with the same name.'}`,
-      onclick: () => void saveToWorkbook(),
-    },
-    `Save to ${wb.name}`,
+    'div',
+    { class: 'menu-wrap' },
+    h(
+      'button',
+      {
+        class: state.saveMenuOpen || state.newSheet ? 'on' : '',
+        'aria-haspopup': 'menu',
+        'aria-expanded': state.saveMenuOpen ? 'true' : 'false',
+        onclick: () => ((state.saveMenuOpen = !state.saveMenuOpen), (state.emailMenuOpen = false), render()),
+      },
+      `Save to ${wb.name} ▾`,
+    ),
+    state.saveMenuOpen
+      ? h(
+          'div',
+          { class: 'menu', role: 'menu' },
+          linked
+            ? item(
+                `Save to sheet “${grid.fromSheet}”`,
+                `Only the cells you changed${others > 0 ? `, here and in ${others} other list${others === 1 ? '' : 's'} from this file` : ''}. Formatting and other sheets stay as they are.`,
+                () => {
+                  state.saveMenuOpen = false;
+                  void saveToWorkbook();
+                },
+              )
+            : null,
+          item('Save as a new sheet…', 'Adds a sheet with this list, copying the headings and formatting of one of your sheets.', () => openNewSheet(grid)),
+          h('p', { class: 'menu-note' }, how),
+        )
+      : null,
+  );
+}
+
+/** The "Save as a new sheet" form: its name, and which sheet's layout to copy. */
+function renderNewSheet(grid: Grid): HTMLElement | null {
+  const form = state.newSheet;
+  const book = state.workbook?.book;
+  if (!form || !book) return null;
+  const copyOf = h(
+    'select',
+    { 'aria-label': 'Copy the layout of', onchange: (e: Event) => (form.copyOf = (e.target as HTMLSelectElement).value) },
+    book.sheets.map((s) => h('option', { value: s.name }, s.name)),
+  );
+  copyOf.value = form.copyOf;
+  return h(
+    'div',
+    { class: 'update-open new-sheet' },
+    h('p', {}, h('strong', {}, 'Save as a new sheet. '), `Adds a sheet to ${state.workbook!.name} with this list in place of the copied sheet’s patients. Its headings, column widths, formatting and formulas are copied too.`),
+    h(
+      'div',
+      { class: 'inline-form' },
+      h(
+        'label',
+        {},
+        'Name ',
+        h('input', {
+          type: 'text',
+          value: form.name,
+          maxlength: 31,
+          oninput: (e: Event) => (form.name = (e.target as HTMLInputElement).value),
+          onkeydown: (e: Event) => {
+            if ((e as KeyboardEvent).key === 'Enter') void saveAsNewSheet(grid);
+          },
+        }),
+      ),
+      h('label', {}, 'Copy the layout of ', copyOf),
+      h('button', { class: 'primary', onclick: () => void saveAsNewSheet(grid) }, 'Save new sheet'),
+      h('button', { class: 'ghost', onclick: () => ((state.newSheet = null), render()) }, 'Cancel'),
+    ),
+    form.error ? h('p', { class: 'error', role: 'alert' }, form.error) : null,
   );
 }
 
@@ -1254,7 +1414,7 @@ function renderEmailMenu(grid: Grid): HTMLElement {
         title: grid.sheetOnly ? 'Load the run sheet to email Medical Records' : '',
         'aria-haspopup': 'menu',
         'aria-expanded': state.emailMenuOpen ? 'true' : 'false',
-        onclick: () => ((state.emailMenuOpen = !state.emailMenuOpen), render()),
+        onclick: () => ((state.emailMenuOpen = !state.emailMenuOpen), (state.saveMenuOpen = false), render()),
       },
       'Email Medical Records ▾',
     ),
@@ -1491,14 +1651,16 @@ document.addEventListener('drop', (e) => {
 
 // Close the email menu on a click elsewhere or Escape.
 document.addEventListener('pointerdown', (e) => {
-  if (state.emailMenuOpen && !(e.target as HTMLElement).closest('.menu-wrap')) {
+  if ((state.emailMenuOpen || state.saveMenuOpen) && !(e.target as HTMLElement).closest('.menu-wrap')) {
     state.emailMenuOpen = false;
+    state.saveMenuOpen = false;
     render();
   }
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && state.emailMenuOpen) {
+  if (e.key === 'Escape' && (state.emailMenuOpen || state.saveMenuOpen)) {
     state.emailMenuOpen = false;
+    state.saveMenuOpen = false;
     render();
   }
 });
