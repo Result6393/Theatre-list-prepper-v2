@@ -36,7 +36,8 @@ export interface Session {
   date: string;
   start: string;
   end: string;
-  ampm: 'AM' | 'PM';
+  /** AM or PM; "AM + PM" for lists combined with combineSessions. */
+  ampm: string;
   slotName: string;
   /** Surname of the consultant the session belongs to, from the slot name. */
   slotOwner: string;

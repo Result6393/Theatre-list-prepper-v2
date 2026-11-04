@@ -77,18 +77,20 @@ body {
   border-color: rgb(255 255 255 / 0.5);
 }
 
+
+
 main {
-  max-width: 1500px;
+  max-width: 1680px;
   margin: 0 auto;
-  padding: 16px;
+  padding: 16px 24px 80px;
 }
 
 .step {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 14px 16px;
-  margin-bottom: 14px;
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
 }
 
 .step.dragging {
@@ -175,18 +177,6 @@ button.mini {
   font-size: 0.85rem;
 }
 
-.choices {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.choice.selected {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  font-weight: 600;
-}
 
 input[type='text'],
 select,
@@ -227,26 +217,6 @@ textarea.paste {
   margin: 0;
 }
 
-.facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-  margin-bottom: 12px;
-}
-
-.fact {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.fact-label {
-  color: var(--muted);
-}
-
-.fact-value {
-  font-weight: 600;
-}
 
 .table-wrap {
   overflow-x: auto;
@@ -278,15 +248,6 @@ thead th {
   padding: 6px;
 }
 
-.grid td.tick,
-.grid td.move,
-.grid td.time {
-  white-space: nowrap;
-}
-
-.grid td.move button + button {
-  margin-left: 2px;
-}
 
 .grid td.time {
   font-variant-numeric: tabular-nums;
@@ -348,13 +309,6 @@ textarea.cell:hover {
   background: var(--alert-bg);
 }
 
-tr.excluded td {
-  opacity: 0.45;
-}
-
-tr.excluded td.tick {
-  opacity: 1;
-}
 
 .copy-bar {
   display: flex;
@@ -466,19 +420,6 @@ label.stacked {
   margin-bottom: 4px;
 }
 
-fieldset.email-lists {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  margin: 14px 0 0;
-  padding: 8px 12px;
-  display: grid;
-  gap: 4px;
-}
-
-fieldset.email-lists legend {
-  padding: 0 6px;
-  font-weight: 600;
-}
 
 .topbar .version {
   font-size: 0.8rem;
@@ -529,15 +470,8 @@ fieldset.email-lists legend {
 
 /* Update from my sheet */
 
-.update {
-  margin-bottom: 12px;
-}
-
-.update .copy-bar {
-  margin-top: 0;
-}
-
 .update-open {
+  margin-bottom: 12px;
   padding: 10px 12px;
   border: 1px solid var(--accent);
   border-radius: 6px;
@@ -584,19 +518,7 @@ fieldset.email-lists legend {
   color: var(--surface);
 }
 
-tr.row-new td:first-child {
-  box-shadow: inset 4px 0 0 var(--accent);
-}
-
-tr.row-cancelled td:not(.tick):not(.time) {
-  opacity: 0.55;
-}
-
-tr.row-cancelled textarea.cell {
-  text-decoration: line-through;
-}
-
-tr.cancelled-heading td {
+tbody.cancelled-heading td {
   background: var(--bg);
   color: var(--danger);
   font-weight: 700;
@@ -619,10 +541,6 @@ tr.cancelled-heading td {
 }
 
 /* Cataract prompts */
-
-.grid tr.has-prompts td {
-  border-bottom: none;
-}
 
 .grid tr.prompt-row td {
   padding-top: 0;
@@ -681,6 +599,382 @@ input.prompt-input {
   width: auto;
 }
 
-tr.excluded.prompt-row td {
+/* Desktop layout: run sheet and lists */
+
+.muted {
+  color: var(--muted);
+}
+
+.setup-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 14px;
+}
+
+.setup h2 {
+  margin: 0;
+}
+
+.setup-lists {
+  margin-top: 14px;
+}
+
+.setup-lists h2 {
+  margin-bottom: 8px;
+}
+
+.list-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.list-card {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.list-card:hover {
+  border-color: var(--accent);
+}
+
+.list-card.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.list-card input[type='checkbox'] {
+  align-self: center;
+  margin: 0 2px 0 12px;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+button.list-open {
+  display: grid;
+  gap: 1px;
+  padding: 7px 14px 7px 10px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.list-title {
+  font-weight: 600;
+}
+
+.list-sub {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* The list: header, facts and toolbar */
+
+.prep-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.prep-head h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+button.fact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  background: var(--bg);
+}
+
+.fact-label {
+  color: var(--muted);
+}
+
+.fact-value {
+  font-weight: 600;
+}
+
+.copy-icon {
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+button.fact:hover .copy-icon,
+button.fact:focus-visible .copy-icon {
+  opacity: 1;
+}
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 56px;
+  margin: 8px -20px 12px;
+  padding: 10px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.toolbar button.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.toolbar-count {
+  margin-left: auto;
+  font-size: 0.85rem;
+}
+
+.menu-wrap {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: grid;
+  gap: 2px;
+  width: 320px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+}
+
+button.menu-item {
+  display: grid;
+  gap: 1px;
+  padding: 7px 10px;
+  border: none;
+  text-align: left;
+  background: transparent;
+}
+
+button.menu-item:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.menu-detail {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.menu-note {
+  margin: 4px 10px 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* Messages that pop up and fade */
+
+.toast-area {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  z-index: 30;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(760px, calc(100vw - 32px));
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 10px 10px 16px;
+  border-radius: 8px;
+  background: var(--text);
+  color: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+  animation: toast-in 0.2s ease-out;
+}
+
+button.toast-close {
+  padding: 0 6px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 1.1rem;
+  opacity: 0.7;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* The table: one group per patient (their row and their prompts) */
+
+.grid td {
+  border-bottom: none;
+}
+
+.grid tbody {
+  border-bottom: 1px solid var(--border);
+}
+
+.grid tbody.patient:hover {
+  background: color-mix(in srgb, var(--accent-soft) 35%, transparent);
+}
+
+.grid th.handle,
+.grid td.handle {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.grid td.handle {
+  padding-top: 7px;
+}
+
+.grid td.time {
+  white-space: nowrap;
+  padding-top: 8px;
+}
+
+.time-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+button.grip {
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+}
+
+button.grip:hover {
+  color: var(--text);
+}
+
+body.is-dragging,
+body.is-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+tbody.dragging {
+  opacity: 0.35;
+}
+
+tbody.drop-before > tr:first-child > td {
+  box-shadow: inset 0 3px 0 var(--accent);
+}
+
+tbody.drop-after > tr:last-child > td {
+  box-shadow: inset 0 -3px 0 var(--accent);
+}
+
+.drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 40;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  pointer-events: none;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.25);
+}
+
+tbody.row-new td:first-child {
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+tbody.excluded td:not(.handle) {
   opacity: 0.45;
+}
+
+tbody.row-cancelled td:not(.handle):not(.time) {
+  opacity: 0.55;
+}
+
+tbody.row-cancelled textarea.cell {
+  text-decoration: line-through;
+}
+
+/* Prompts stay quiet until you're on that patient; picked ones always show. */
+tbody.patient .chip:not(.on),
+tbody.patient .prompt-label,
+tbody.patient .prompt-input:placeholder-shown {
+  opacity: 0.45;
+  transition: opacity 0.15s;
+}
+
+tbody.patient:hover .chip,
+tbody.patient:hover .prompt-label,
+tbody.patient:hover .prompt-input,
+tbody.patient:focus-within .chip,
+tbody.patient:focus-within .prompt-label,
+tbody.patient:focus-within .prompt-input {
+  opacity: 1;
+}
+
+@media (max-width: 1400px) {
+  main {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .step {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .toolbar {
+    margin-left: -14px;
+    margin-right: -14px;
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+}
+
+/* Wide screens: the table fits, so its headings can stick under the toolbar. */
+@media (min-width: 1500px) {
+  .table-wrap {
+    overflow: visible;
+  }
+
+  .grid thead th {
+    top: 56px;
+    z-index: 5;
+  }
 }

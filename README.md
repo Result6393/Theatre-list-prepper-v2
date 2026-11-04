@@ -4,18 +4,21 @@ Turns a whole day's theatre run sheet (SurgiNet SN006A export) into rows for one
 
 1. **Paste the run sheet** copied from Excel, or choose/drop the CSV file.
 2. **Click the list you're prepping** (theatre + AM/PM, e.g. "OR 3 · PM · Smith").
-3. **Check and edit** the rows: untick patients you don't want, reorder, type in any cell.
+   - **Lists that run on together:** tick more than one list (e.g. OR 3 AM and PM without a break) to prep them as one list. Each patient shows which list they're on. Edits you've already made on a list carry over when you tick it in with another.
+   - The run sheet can cover several days; lists are grouped by day.
+3. **Check and edit** the rows: untick patients you don't want, type in any cell, and **drag** the ⠿ handle to reorder (or click the handle and use the ↑ ↓ keys). Edits and unticks are remembered while you switch between lists.
 4. **Copy for Excel**, click the first cell of your sheet (B5 by default) and press Ctrl+V.
-5. **Email Medical Records** (optional), asking for the paper files of the ticked patients (e.g. "…patients having surgery on Tuesday 13/10" and a list of `MRN NAME`). Check the draft and press Send. Choose how to open it:
-   - **Email Medical Records (Outlook on the web)** opens a draft in a new tab.
-   - **Open in email app** opens a draft in the email app set up on your computer (e.g. installed Outlook), which uses your normal compose font.
+5. **Email Medical Records ▾** (optional) asks for the paper files of the ticked patients on all the ticked lists, grouped under a heading per list when there are several (e.g. "…patients having surgery on Tuesday 13/10" and a list of `MRN NAME`). Check the draft and press Send. Choose how to open it:
+   - **Outlook on the web** opens a draft in a new tab.
+   - **Email app** opens a draft in the email app set up on your computer (e.g. installed Outlook), which uses your normal compose font.
    - **Share…** (phones and tablets, when the browser supports it) shares the text to Outlook or another app. Recipients can't be passed this way, so add the address in the email app.
    - **Copy email text** copies it to paste into any email.
-   - **One email for several lists:** under the table, tick other lists in "Include in the Medical Records email". Their ticked patients are added, grouped under a heading per list. The run sheet can cover several days; lists are grouped by day and the email names each day. Edits and unticks on each list are remembered while you switch between them. (Copy for Excel is still one list at a time.)
+
+Click any of Consultant, Date, OR or Session above the list to copy it for your sheet's header.
 
 ## Cataract prompts
 
-Under each cataract or lens patient there's a row of one-click prompts. They're reminders only: nothing is mandatory, and nothing goes on the sheet unless you pick it.
+Under each cataract or lens patient there's a row of one-click prompts. They're reminders only: nothing is mandatory, and nothing goes on the sheet unless you pick it. They stay faded until you point at (or type in) that patient, and anything you've picked always shows.
 
 - **Findings:** `PXF`, `Guttata`, dilation (`Good` / `Mod` / `Poor`, pick one), `Phacodonesis`, `Tamsulosin`. Each click adds it to *Diagnosis & relevant history* on one line (e.g. `PXF, Poor dilation`); click again to take it out.
 - **Lens:** `DCB00`, `DIB00`, `ZCU…`, `CNA0T…`. Toric lenses get a box for the number (e.g. `4` → `CNA0T4`), and any lens a box for the power (`21.5` → `+21.5D`). It goes on the first line of *Implants / to order*.
