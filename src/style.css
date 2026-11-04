@@ -526,3 +526,161 @@ fieldset.email-lists legend {
 .drop-overlay[hidden] {
   display: none;
 }
+
+/* Update from my sheet */
+
+.update {
+  margin-bottom: 12px;
+}
+
+.update .copy-bar {
+  margin-top: 0;
+}
+
+.update-open {
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+}
+
+.update-open p {
+  margin: 0 0 8px;
+}
+
+.update-open .ghost {
+  margin-top: 8px;
+}
+
+.update-summary {
+  margin: 0 0 8px;
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.badge-new {
+  background: var(--accent);
+  color: var(--surface);
+}
+
+.badge-moved {
+  background: var(--alert-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.badge-cancelled {
+  background: var(--danger);
+  color: var(--surface);
+}
+
+tr.row-new td:first-child {
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+tr.row-cancelled td:not(.tick):not(.time) {
+  opacity: 0.55;
+}
+
+tr.row-cancelled textarea.cell {
+  text-decoration: line-through;
+}
+
+tr.cancelled-heading td {
+  background: var(--bg);
+  color: var(--danger);
+  font-weight: 700;
+  padding: 10px 8px 6px;
+  border-top: 2px solid var(--danger);
+}
+
+.change {
+  margin: 2px 4px 4px;
+  padding: 3px 5px;
+  border-radius: 4px;
+  background: var(--missing-bg);
+  color: var(--text);
+  font-size: 0.8rem;
+  white-space: pre-line;
+}
+
+.change .mini {
+  margin: 2px 2px 0 0;
+}
+
+/* Cataract prompts */
+
+.grid tr.has-prompts td {
+  border-bottom: none;
+}
+
+.grid tr.prompt-row td {
+  padding-top: 0;
+  padding-bottom: 6px;
+}
+
+.prompts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+}
+
+.prompt-set,
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.segmented {
+  padding-left: 4px;
+}
+
+.prompt-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-right: 2px;
+}
+
+button.chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+
+button.chip:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+button.chip.on {
+  color: var(--surface);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  font-weight: 600;
+}
+
+input.prompt-input {
+  padding: 1px 6px;
+  font-size: 0.8rem;
+  width: auto;
+}
+
+tr.excluded.prompt-row td {
+  opacity: 0.45;
+}

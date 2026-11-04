@@ -2,6 +2,7 @@ import { downloadText, h } from './dom';
 import { DEFAULT_MESSAGE, DEFAULT_SUBJECT, isEmailAddress } from './email';
 import { FIELDS, RUN_SHEET_COLUMNS, defaultLayout } from './layout';
 import type { Table } from './parse';
+import { defaultPrompts, promptColumns } from './prompts';
 import { defaultSettings, exportSettings, importSettings, parseList, type Settings } from './settings';
 
 interface Props {
@@ -19,6 +20,7 @@ export function renderSettings(props: Props): HTMLElement {
     'main',
     { class: 'settings' },
     renderColumns(props),
+    renderPrompts(props),
     renderHospitals(props),
     renderEmail(props),
     renderBackup(props),
@@ -177,6 +179,86 @@ export function columnLetter(pasteStart: string, i: number): string {
     n = Math.floor((n - 1) / 26);
   }
   return out;
+}
+
+// ---- Cataract prompts -------------------------------------------------------------
+
+function renderPrompts(props: Props): HTMLElement {
+  const { prompts, layout } = props.settings;
+  const resolved = promptColumns(layout, prompts);
+  const lines = (label: string, hint: string, value: string[], onChange: (v: string[]) => void) =>
+    h(
+      'label',
+      { class: 'stacked' },
+      label,
+      h('span', { class: 'hint small' }, hint),
+      h('textarea', {
+        rows: Math.max(3, value.length + 1),
+        value: value.join('\n'),
+        onchange: (e: Event) => {
+          onChange((e.target as HTMLTextAreaElement).value.split('\n').map((l) => l.trim()).filter(Boolean));
+          changed(props);
+        },
+      }),
+    );
+  const columnSelect = (label: string, value: string, auto: number, onChange: (v: string) => void) => {
+    const autoName = auto >= 0 ? layout.columns[auto].heading || `column ${columnLetter(layout.pasteStart, auto)}` : 'none found';
+    const select = h(
+      'select',
+      { onchange: (e: Event) => (onChange((e.target as HTMLSelectElement).value), changed(props)) },
+      h('option', { value: '' }, `Automatic (${autoName})`),
+      layout.columns.map((c, i) => h('option', { value: c.heading }, `${columnLetter(layout.pasteStart, i)}: ${c.heading || '(no heading)'}`)),
+    );
+    select.value = value;
+    return h('label', {}, `${label} `, select);
+  };
+  return section(
+    'Cataract prompts',
+    h(
+      'p',
+      { class: 'hint' },
+      'Clickable prompts under each cataract or lens patient. A click adds it to the cell; click again to take it out. Nothing is added unless you pick it.',
+    ),
+    h(
+      'label',
+      {},
+      h('input', {
+        type: 'checkbox',
+        checked: prompts.enabled,
+        onchange: (e: Event) => {
+          prompts.enabled = (e.target as HTMLInputElement).checked;
+          changed(props);
+        },
+      }),
+      ' Show cataract prompts',
+    ),
+    lines('Findings', 'One per line. Separate choices with | to pick just one, e.g. Good dilation | Mod dilation | Poor dilation.', prompts.findings, (v) => (prompts.findings = v)),
+    lines('Lenses', 'One per line. Put x where you type a number, e.g. CNA0Tx for the toric power (CNA0T4).', prompts.lenses, (v) => (prompts.lenses = v)),
+    h(
+      'div',
+      { class: 'inline-form' },
+      columnSelect('Findings go in', prompts.findingsColumn, promptColumns(layout, { ...prompts, findingsColumn: '' }).findings, (v) => (prompts.findingsColumn = v)),
+      columnSelect('Lens and target go in', prompts.lensColumn, promptColumns(layout, { ...prompts, lensColumn: '' }).lens, (v) => (prompts.lensColumn = v)),
+    ),
+    resolved.findings === -1 || resolved.lens === -1
+      ? h('p', { class: 'error' }, `No column chosen for the ${resolved.findings === -1 ? 'findings' : 'lens and target'}, so ${resolved.findings === -1 && resolved.lens === -1 ? 'they aren’t' : 'it isn’t'} shown.`)
+      : null,
+    h(
+      'div',
+      { class: 'inline-form' },
+      h(
+        'button',
+        {
+          class: 'ghost',
+          onclick: () => {
+            props.settings.prompts = defaultPrompts();
+            changed(props);
+          },
+        },
+        'Reset prompts',
+      ),
+    ),
+  );
 }
 
 // ---- Hospitals --------------------------------------------------------------------

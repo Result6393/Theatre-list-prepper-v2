@@ -1,0 +1,264 @@
+import Papa from 'papaparse';
+import type { Patient, Session } from './extract';
+import { buildRow, cellValue, type Layout } from './layout';
+
+/**
+ * Keeping your prep when the list changes on the day: rows copied back out of the cheat sheet are
+ * matched by MRN to the latest run sheet, so notes stay with their patients, new patients are added,
+ * and patients who have dropped off are kept at the bottom, labelled as cancelled.
+ */
+
+export type RowStatus = 'fresh' | 'kept' | 'new' | 'cancelled';
+
+export interface GridRow {
+  /** The run-sheet booking; null for a cancelled row, which is only on your sheet now. */
+  patient: Patient | null;
+  cells: string[];
+  included: boolean;
+  status: RowStatus;
+  /** Where the patient was on your sheet (1 = first), when the update moved them. */
+  movedFrom?: number;
+  /** Was in your cancelled rows and is back on the run sheet. */
+  reinstated?: boolean;
+  /** Run-sheet values (by column) that differ from what's on your sheet, for you to check. */
+  changes: Record<number, string>;
+  /** For a cancelled row: the list the patient is on now, if they moved to another one. */
+  note?: string;
+}
+
+export interface MergeSummary {
+  kept: number;
+  added: number;
+  cancelled: number;
+  moved: number;
+  changed: number;
+}
+
+export interface MergeResult {
+  rows: GridRow[];
+  /** Rows on your sheet before; the copy is padded with blank rows to this length to clear leftovers. */
+  padTo: number;
+  summary: MergeSummary;
+}
+
+export class MergeError extends Error {}
+
+/** First cell of the row that heads the cancelled patients in the copy. */
+export const CANCELLED_LABEL = 'CANCELLED';
+export const CANCELLED_NOTE = 'Not on the latest run sheet';
+
+export function freshRows(patients: Patient[], layout: Layout): GridRow[] {
+  return patients.map((patient) => ({
+    patient,
+    cells: buildRow(patient, layout),
+    included: true,
+    status: 'fresh',
+    changes: {},
+  }));
+}
+
+/** Rows pasted from Excel (tab-separated, multi-line cells in quotes), without trailing empty rows. */
+export function parsePastedRows(text: string): string[][] {
+  // Excel on Windows ends rows with \r\n, so a bare \n is a line break inside a cell (quoted or not).
+  // Set it explicitly: guessing from the first line break goes wrong when a cell's comes first.
+  const clean = text.replace(/^﻿/, '');
+  const newline = clean.includes('\r\n') ? '\r\n' : '\n';
+  const result = Papa.parse<string[]>(clean, { delimiter: '\t', newline, skipEmptyLines: false });
+  return withoutTrailingBlankRows(result.data.map((row) => row.map((cell) => cell.replace(/\r\n?/g, '\n'))));
+}
+
+export function withoutTrailingBlankRows(rows: string[][]): string[][] {
+  const out = [...rows];
+  while (out.length && isEmptyRow(out[out.length - 1])) out.pop();
+  return out;
+}
+
+/** True when every row has the same number of cells, as a clean copy from Excel does. */
+export function isRectangular(rows: string[][]): boolean {
+  return rows.every((row) => row.length === rows[0].length);
+}
+
+/** "0001234" and "1234 " match: Excel can drop leading zeros from an MRN-only column. */
+export function normaliseMrn(value: string): string {
+  const text = value.trim().toUpperCase().replace(/\s+/g, '');
+  return /^\d+$/.test(text) ? text.replace(/^0+(?=\d)/, '') : text;
+}
+
+/** Which column holds the MRN, and how to read it from that cell. */
+function keyColumn(layout: Layout): { index: number; read: (cell: string) => string } {
+  const exact = layout.columns.findIndex((c) => c.source === 'field:mrn' || c.source === 'raw:MRN');
+  if (exact !== -1) return { index: exact, read: normaliseMrn };
+  const patient = layout.columns.findIndex((c) => c.source === 'field:patient');
+  if (patient !== -1) return { index: patient, read: (cell) => normaliseMrn(cell.trim().split(/\s+/)[0] ?? '') };
+  throw new MergeError('To match patients, your columns need a Patient or MRN column (Settings → Columns).');
+}
+
+export function mergePrepped(
+  pasted: string[][],
+  session: Session,
+  allSessions: Session[],
+  layout: Layout,
+  describe: (session: Session) => string,
+): MergeResult {
+  const width = layout.columns.length;
+  const key = keyColumn(layout);
+  const listMrns = new Set(session.patients.map((p) => normaliseMrn(p.mrn)));
+  const elsewhere = new Map<string, Session>();
+  for (const other of allSessions) {
+    if (other.id === session.id) continue;
+    for (const p of other.patients) if (!elsewhere.has(normaliseMrn(p.mrn))) elsewhere.set(normaliseMrn(p.mrn), other);
+  }
+
+  // If an extra column was copied on the left (e.g. column A's row numbers), skip it.
+  const longest = Math.max(0, ...pasted.map((r) => r.length));
+  let offset = 0;
+  let bestMatches = -1;
+  for (let o = 0; o <= Math.min(3, Math.max(0, longest - width)); o++) {
+    const matches = pasted.filter((r) => listMrns.has(key.read(r[o + key.index] ?? ''))).length;
+    if (matches > bestMatches) {
+      offset = o;
+      bestMatches = matches;
+    }
+  }
+
+  const headings = layout.columns.map((c) => c.heading.trim().toLowerCase());
+  const waiting = new Map<string, Patient[]>();
+  for (const p of session.patients) {
+    const mrn = normaliseMrn(p.mrn);
+    waiting.set(mrn, [...(waiting.get(mrn) ?? []), p]);
+  }
+
+  const matched = new Map<Patient, { cells: string[]; oldPos: number; wasCancelled: boolean }>();
+  const cancelled: GridRow[] = [];
+  let inCancelled = false;
+  let position = 0;
+  let padTo = 0;
+
+  for (const raw of pasted) {
+    const cells = Array.from({ length: width }, (_, i) => raw[offset + i] ?? '');
+    if (cells.some(Boolean) && cells.every((c, i) => c.trim().toLowerCase() === headings[i])) continue;
+    padTo += 1;
+    if (isEmptyRow(cells)) continue;
+    const mrn = key.read(cells[key.index]);
+    const patient = waiting.get(mrn)?.shift();
+    if (patient) {
+      if (!inCancelled) position += 1;
+      matched.set(patient, { cells, oldPos: position, wasCancelled: inCancelled });
+      continue;
+    }
+    const first = cells.find((c) => c.trim()) ?? '';
+    if (new RegExp(`^${CANCELLED_LABEL}\\b`, 'i').test(first.trim())) {
+      inCancelled = true;
+      continue;
+    }
+    if (!inCancelled) position += 1;
+    const now = elsewhere.get(mrn);
+    cancelled.push({
+      patient: null,
+      cells,
+      included: true,
+      status: 'cancelled',
+      changes: {},
+      note: now ? `Now on ${describe(now)}` : undefined,
+    });
+  }
+
+  if (matched.size === 0 && cancelled.length > 0) {
+    throw new MergeError(
+      `None of the pasted patients are on this list (${describe(session)}). Check you picked the right list and copied the rows from your sheet.`,
+    );
+  }
+  if (matched.size === 0) throw new MergeError('No patient rows found in what you pasted.');
+
+  const rows: GridRow[] = session.patients.map((patient) => {
+    const prepped = matched.get(patient);
+    if (!prepped) {
+      return { patient, cells: buildRow(patient, layout), included: true, status: 'new', changes: {} };
+    }
+    const changes: Record<number, string> = {};
+    layout.columns.forEach((column, i) => {
+      if (column.source === 'blank') return;
+      const latest = cellValue(patient, column.source);
+      if (latest.trim() && !squash(prepped.cells[i]).includes(squash(latest))) changes[i] = latest;
+    });
+    return {
+      patient,
+      cells: prepped.cells,
+      included: true,
+      status: 'kept',
+      reinstated: prepped.wasCancelled || undefined,
+      changes,
+    };
+  });
+
+  // Patients outside the longest run still in their old order are the ones that moved.
+  const kept = rows.filter((r) => r.status === 'kept' && !r.reinstated);
+  const oldOrder = kept.map((r) => matched.get(r.patient!)!.oldPos);
+  const stayed = longestIncreasing(oldOrder);
+  kept.forEach((r, i) => {
+    if (!stayed.has(i)) r.movedFrom = oldOrder[i];
+  });
+
+  return {
+    rows: [...rows, ...cancelled],
+    padTo,
+    summary: {
+      kept: rows.filter((r) => r.status === 'kept').length,
+      added: rows.filter((r) => r.status === 'new').length,
+      cancelled: cancelled.length,
+      moved: kept.filter((r) => r.movedFrom !== undefined).length,
+      changed: rows.filter((r) => Object.keys(r.changes).length > 0).length,
+    },
+  };
+}
+
+/**
+ * The rows to paste back over your sheet: the list, then the ticked cancelled patients under a
+ * label row, then blank rows to clear anything left over from the old, longer block.
+ */
+export function copyBlock(rows: GridRow[], layout: Layout, padTo = 0): string[][] {
+  const width = layout.columns.length;
+  const blank = () => Array.from({ length: width }, () => '');
+  const out = rows.filter((r) => r.status !== 'cancelled' && r.included).map((r) => r.cells);
+  const cancelled = rows.filter((r) => r.status === 'cancelled' && r.included);
+  if (cancelled.length) {
+    const label = blank();
+    label[0] = CANCELLED_LABEL;
+    let noteAt = layout.columns.findIndex((c) => c.source === 'field:patient' || c.source === 'field:mrn');
+    if (noteAt <= 0) noteAt = width > 1 ? 1 : -1;
+    if (noteAt > 0) label[noteAt] = CANCELLED_NOTE;
+    out.push(blank(), label, ...cancelled.map((r) => r.cells));
+  }
+  while (out.length < padTo) out.push(blank());
+  return out;
+}
+
+function isEmptyRow(row: string[]): boolean {
+  return row.every((cell) => !cell.trim());
+}
+
+function squash(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/** Indexes of one longest strictly increasing run (not necessarily adjacent) in the list. */
+function longestIncreasing(values: number[]): Set<number> {
+  const length = values.map(() => 1);
+  const previous = values.map(() => -1);
+  let best = -1;
+  values.forEach((v, i) => {
+    for (let j = 0; j < i; j++) {
+      // On a tie, keep the earlier-placed patient, so the one who jumped forward is shown as moved.
+      const longer = length[j] + 1 > length[i];
+      const tie = length[j] + 1 === length[i] && previous[i] !== -1 && values[j] < values[previous[i]];
+      if (values[j] < v && (longer || tie)) {
+        length[i] = length[j] + 1;
+        previous[i] = j;
+      }
+    }
+    if (best === -1 || length[i] > length[best] || (length[i] === length[best] && v < values[best])) best = i;
+  });
+  const keep = new Set<number>();
+  for (let i = best; i !== -1; i = previous[i]) keep.add(i);
+  return keep;
+}

@@ -64,3 +64,28 @@ export async function copyHtml(html: string, text: string): Promise<void> {
   document.removeEventListener('copy', onCopy);
   if (!ok) throw new Error('Copy was blocked by the browser.');
 }
+
+/**
+ * Cells of the first table in HTML copied from Excel (browser only). Used when the plain text
+ * didn't come through cleanly. Line breaks in a cell are <br>; other whitespace is collapsed.
+ */
+export function htmlTableRows(html: string): string[][] | null {
+  const table = new DOMParser().parseFromString(html, 'text/html').querySelector('table');
+  if (!table) return null;
+  const text = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return (node.textContent ?? '').replace(/\s+/g, ' ');
+    if (node.nodeName === 'BR') return '\n';
+    return [...node.childNodes].map(text).join('');
+  };
+  return [...table.querySelectorAll('tr')].map((tr) =>
+    [...tr.querySelectorAll('td, th')].flatMap((cell) => {
+      const value = text(cell)
+        .split('\n')
+        .map((line) => line.trim())
+        .join('\n')
+        .trim();
+      const span = Math.max(1, Number((cell as HTMLTableCellElement).colSpan) || 1);
+      return [value, ...Array.from({ length: span - 1 }, () => '')];
+    }),
+  );
+}

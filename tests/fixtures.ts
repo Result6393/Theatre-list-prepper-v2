@@ -11,14 +11,14 @@ export const HEADERS = [
 
 type Row = Record<string, string>;
 
-function slot(theatre: string, name: string, beg: string, end: string): Row {
+export function slot(theatre: string, name: string, beg: string, end: string): Row {
   return {
     TYPE: 'slot', SCHED_DATE: '  14/10/26', FACILITY: 'Test Eye Hospital', AREA: 'OpSuite TEH',
     THEATRE: theatre, SLOT_NAME: name, SLOT_BEG: `14/10/2026 ${beg}`, SLOT_END: `14/10/2026 ${end}`,
   };
 }
 
-function booking(s: Row, fields: Row): Row {
+export function booking(s: Row, fields: Row): Row {
   return {
     ...s, TYPE: 'booking', PT_AGE: ' 70 Y', PT_SEX: 'F', CURRENT_WARD: 'DPU TEH', WARD_FROM: 'DPU TEH',
     PLANNED_ADM_TM: '14/10/2026 7:00', TCI_TM: '14/10/2026 7:00', FIN_CLASS: 'MNW', CLINICAL_ALERT: 'No',
