@@ -26,6 +26,14 @@ Under each cataract or lens patient there's a row of one-click prompts. They're 
 
 The prompts just edit the cell text, so you can still type in the cell, and anything you type yourself (like `PXF`) lights up its button. Picks also come back when you update a list from your sheet. Change the findings, lenses and columns in **Settings → Cataract prompts** (put `x` where a lens code takes a number, and separate pick-one choices with `|`), or turn the prompts off.
 
+## Your prepped Excel file
+
+Choose your cheat sheet (`.xlsx`) under **Previously prepped?** in step 1. Download it from OneDrive first if needed. It's read on this computer and never uploaded.
+
+- **Straight away, without a run sheet:** each sheet with patient rows becomes a list in step 2. Open one to see the patients and edit, reorder, tick and use the prompts as usual. Times, New, Moved and the Medical Records email need the run sheet.
+- **With the run sheet too** (load it before or after): each list you open is updated from the file, see below. Edits you made before loading the run sheet are kept.
+- **Save to *file*.xlsx** writes your lists back into the same file. Only the cells you changed in each list's block are written; formatting, formulas, other sheets and everything else stay as they were. New rows take the formatting of the row above. In Edge or Chrome it saves over the file itself (the browser asks first). Otherwise it downloads the updated file with the same name, ready to upload back to OneDrive. If a list has grown and would write over something below it, it asks first.
+
 ## When the list changes on the day
 
 Patients dropped, added or reordered after you prepped? Keep your notes without retyping them.
@@ -33,10 +41,10 @@ Patients dropped, added or reordered after you prepped? Keep your notes without 
 **From your Excel file (easiest):**
 
 1. **Re-export the run sheet** and load it in step 1.
-2. Under **Previously prepped?** choose your cheat sheet (`.xlsx`; download it from OneDrive first if needed). You can do this before or after the run sheet.
+2. Under **Previously prepped?** choose your cheat sheet. You can do this before or after the run sheet.
 3. Click the list. It's updated from the file straight away: the rows are found from the first MRN to the last, so headings and notes around them don't matter.
-   - **Several sheets** (e.g. one per theatre list): each list starts on the **first sheet**. Pick the right one from **Sheet** above the list; each option says how many of this list's patients it has. **Don't use** puts the list back as on the run sheet.
-   - Copying puts the rows back where they were found in the file (e.g. B5).
+   - **Several sheets** (e.g. one per theatre list): each list uses the sheet that fits it best (most of its patients, fewest others). To change it, use **Sheet** above the list; each option says how many of this list's patients it has. **Don't use** puts the list back as on the run sheet.
+   - Copying puts the rows back where they were found in the file (e.g. B5), or use **Save to *file*.xlsx**.
 
 **Or by copying the rows:** in your cheat sheet, **select all your patient rows** (from B5 down to the last one, including any cancelled rows), copy them, click **Update from my sheet…** and press Ctrl+V in the box. (That box also has a "choose your Excel file" link.)
 
