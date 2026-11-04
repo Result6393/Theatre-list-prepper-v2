@@ -1,28 +1,52 @@
 name: Release offline file
 
-# Push a tag like v1.0.0 to publish the single-file app as a downloadable release.
+# Every merge to main publishes the single-file app as a downloadable release named after the
+# package.json version (v1.4.2 → theatre-list-prepper-v1.4.2.html), creating the tag too.
+# Pushing a tag like v1.4.2 by hand does the same. A version that already has a release is skipped.
 on:
   push:
+    branches: [main]
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - name: Check the tag matches the app version
-        run: test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./package.json').version")"
-      - run: npm ci
-      - run: npm test
-      - run: npm run build
-      - run: cp dist/index.html "theatre-list-prepper-$GITHUB_REF_NAME.html"
-      - run: gh release create "$GITHUB_REF_NAME" "theatre-list-prepper-$GITHUB_REF_NAME.html" --generate-notes
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Work out the release tag
+        id: tag
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "$version" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match package.json ($version)"; exit 1
+          fi
+          echo "name=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "Release $version already exists, so nothing to do."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.tag.outputs.exists != 'true'
+        run: npm ci
+      - if: steps.tag.outputs.exists != 'true'
+        run: npm test
+      - if: steps.tag.outputs.exists != 'true'
+        run: npm run build
+      - if: steps.tag.outputs.exists != 'true'
+        run: |
+          tag="${{ steps.tag.outputs.name }}"
+          cp dist/index.html "theatre-list-prepper-$tag.html"
+          gh release create "$tag" "theatre-list-prepper-$tag.html" --target "$GITHUB_SHA" --title "$tag" --generate-notes
