@@ -617,3 +617,70 @@ tr.cancelled-heading td {
 .change .mini {
   margin: 2px 2px 0 0;
 }
+
+/* Cataract prompts */
+
+.grid tr.has-prompts td {
+  border-bottom: none;
+}
+
+.grid tr.prompt-row td {
+  padding-top: 0;
+  padding-bottom: 6px;
+}
+
+.prompts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+}
+
+.prompt-set,
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.segmented {
+  padding-left: 4px;
+}
+
+.prompt-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-right: 2px;
+}
+
+button.chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+
+button.chip:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+button.chip.on {
+  color: var(--surface);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  font-weight: 600;
+}
+
+input.prompt-input {
+  padding: 1px 6px;
+  font-size: 0.8rem;
+  width: auto;
+}
+
+tr.excluded.prompt-row td {
+  opacity: 0.45;
+}

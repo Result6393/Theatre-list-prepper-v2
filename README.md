@@ -13,6 +13,16 @@ Turns a whole day's theatre run sheet (SurgiNet SN006A export) into rows for one
    - **Copy email text** copies it to paste into any email.
    - **One email for several lists:** under the table, tick other lists in "Include in the Medical Records email". Their ticked patients are added, grouped under a heading per list. The run sheet can cover several days; lists are grouped by day and the email names each day. Edits and unticks on each list are remembered while you switch between them. (Copy for Excel is still one list at a time.)
 
+## Cataract prompts
+
+Under each cataract or lens patient there's a row of one-click prompts. They're reminders only: nothing is mandatory, and nothing goes on the sheet unless you pick it.
+
+- **Findings:** `PXF`, `Guttata`, dilation (`Good` / `Mod` / `Poor`, pick one), `Phacodonesis`, `Tamsulosin`. Each click adds it to *Diagnosis & relevant history* on one line (e.g. `PXF, Poor dilation`); click again to take it out.
+- **Lens:** `DCB00`, `DIB00`, `ZCU…`, `CNA0T…`. Toric lenses get a box for the number (e.g. `4` → `CNA0T4`), and any lens a box for the power (`21.5` → `+21.5D`). It goes on the first line of *Implants / to order*.
+- **Target:** one click for `Plano`, or type one with its sign (e.g. `-0.5` → `Target -0.50`). Goes under the lens.
+
+The prompts just edit the cell text, so you can still type in the cell, and anything you type yourself (like `PXF`) lights up its button. Picks also come back when you update a list from your sheet. Change the findings, lenses and columns in **Settings → Cataract prompts** (put `x` where a lens code takes a number, and separate pick-one choices with `|`), or turn the prompts off.
+
 ## When the list changes on the day
 
 Patients dropped, added or reordered after you prepped? Keep your notes without retyping them:

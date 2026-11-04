@@ -1,6 +1,7 @@
 import './style.css';
 import { copyHtml, copyText, htmlTableRows, toTsv } from './clipboard';
 import { autoGrow, h } from './dom';
+import { findingGroups, hasToken, isLensSurgery, promptColumns, readLens, readTarget, toggleFinding, writeLens, writeTarget } from './prompts';
 import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, outlookComposeUrl, weekdayLabel } from './email';
 import { extractSessions, type Patient, type Session } from './extract';
 import { copyBlock, freshRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
@@ -63,7 +64,7 @@ function persist(): void {
 function applySyncedSettings(): void {
   state.settings = loadSettings(storage);
   state.notice = { text: 'Settings updated from your other devices.', error: false };
-  if (state.view === 'settings') state.settingsSnapshot = exportSettings(state.settings);
+  if (state.view === 'settings') state.settingsSnapshot = listSettings();
   else if (state.table) refreshSessions();
   render();
 }
@@ -256,16 +257,22 @@ async function handleDroppedFile(file: File): Promise<void> {
 }
 
 function openSettings(): void {
-  state.settingsSnapshot = exportSettings(state.settings);
+  state.settingsSnapshot = listSettings();
   state.view = 'settings';
   render();
   window.scrollTo(0, 0);
 }
 
-/** Back to the list; rebuilds it (losing edits) only if the settings actually changed. */
+/** The settings that shape the list's rows: changing these rebuilds it. Email and prompts don't. */
+function listSettings(): string {
+  const { layout, flagHospitals, hospitalCodes } = state.settings;
+  return JSON.stringify({ layout, flagHospitals, hospitalCodes });
+}
+
+/** Back to the list; rebuilds it (losing edits) only if the settings that shape it changed. */
 function closeSettings(): void {
   state.view = 'main';
-  if (exportSettings(state.settings) !== state.settingsSnapshot) {
+  if (listSettings() !== state.settingsSnapshot) {
     state.status = '';
     refreshSessions();
   }
@@ -359,6 +366,7 @@ async function copyRows(grid: Grid): Promise<void> {
 
 function render(): void {
   const scroll = window.scrollY;
+  const focusKey = (document.activeElement as HTMLElement | null)?.dataset?.key;
   app.replaceChildren(
     h(
       'header',
@@ -394,6 +402,7 @@ function render(): void {
       : h('main', {}, renderInputStep(), renderListStep(), renderGrid()),
   );
   for (const area of app.querySelectorAll<HTMLTextAreaElement>('textarea.cell')) autoGrow(area);
+  if (focusKey) app.querySelector<HTMLElement>(`[data-key="${CSS.escape(focusKey)}"]`)?.focus();
   window.scrollTo(0, scroll);
 }
 
@@ -603,8 +612,9 @@ function renderGrid(): HTMLElement | null {
       isCancelled ? h('span', { class: 'badge badge-cancelled' }, 'Cancelled') : null,
       r.note ? h('div', { class: 'who' }, r.note) : null,
     ];
-    const classes = [r.included ? '' : 'excluded', r.status === 'new' || r.reinstated ? 'row-new' : '', isCancelled ? 'row-cancelled' : ''];
-    return h(
+    const prompts = isCancelled ? null : renderPrompts(r);
+    const classes = [r.included ? '' : 'excluded', r.status === 'new' || r.reinstated ? 'row-new' : '', isCancelled ? 'row-cancelled' : '', prompts ? 'has-prompts' : ''];
+    const row = h(
       'tr',
       { class: classes.filter(Boolean).join(' ') },
       h(
@@ -641,6 +651,9 @@ function renderGrid(): HTMLElement | null {
           rows: 1,
           value: r.cells[col],
           'aria-label': `${c.heading} for ${rowName(r)}`,
+          'data-key': p ? `${p.id}:cell${col}` : undefined,
+          // Leaving an edited cell redraws the prompts, so typing "PXF" by hand lights up its button too.
+          onchange: prompts ? () => setTimeout(render) : undefined,
           oninput: (e: Event) => {
             const target = e.target as HTMLTextAreaElement;
             r.cells[col] = target.value;
@@ -667,12 +680,22 @@ function renderGrid(): HTMLElement | null {
         return h('td', { class: cellClass(c.source, r.cells[col]), style: `min-width:${columnWidth(c.source)}px` }, area, change);
       }),
     );
+    if (!prompts) return [row];
+    return [
+      row,
+      h(
+        'tr',
+        { class: ['prompt-row', ...classes.filter((c) => c && c !== 'has-prompts')].join(' ') },
+        h('td', { colspan: 2 }),
+        h('td', { colspan: layout.columns.length + 1 }, prompts),
+      ),
+    ];
   };
 
   const tbody = h(
     'tbody',
     {},
-    active.map(renderRow),
+    active.flatMap(renderRow),
     cancelled.length
       ? h(
           'tr',
@@ -680,7 +703,7 @@ function renderGrid(): HTMLElement | null {
           h('td', { colspan: layout.columns.length + 3 }, `Cancelled: not on the latest run sheet (${cancelled.length}). Copied below the list, under a CANCELLED row. Untick any you don’t want to keep.`),
         )
       : null,
-    cancelled.map((r) => renderRow(r, -1)),
+    cancelled.flatMap((r) => renderRow(r, -1)),
   );
 
   const count = active.filter((r) => r.included).length;
@@ -756,6 +779,85 @@ function openUpdate(): void {
   state.updateError = '';
   render();
   app.querySelector<HTMLTextAreaElement>('.update-open textarea')?.focus();
+}
+
+/** One-click findings, lens and target under a lens patient. Each click edits the cell itself. */
+function renderPrompts(r: GridRow): HTMLElement | null {
+  const { prompts, layout } = state.settings;
+  if (!prompts.enabled || !r.patient || !isLensSurgery(r.patient)) return null;
+  const cols = promptColumns(layout, prompts);
+  if (cols.findings === -1 && cols.lens === -1) return null;
+  const key = r.patient.id;
+  const set = (col: number, value: string) => {
+    r.cells[col] = value;
+    // After the event, so a Tab to the next box lands before the redraw (which keeps that focus).
+    setTimeout(render);
+  };
+  const chip = (label: string, on: boolean, onclick: () => void, title = '') =>
+    h('button', { class: on ? 'chip on' : 'chip', 'aria-pressed': on ? 'true' : 'false', title, 'data-key': `${key}:chip:${label}`, onclick }, label);
+  const field = (name: string, value: string, placeholder: string, label: string, onChange: (v: string) => void, size = 6.5) =>
+    h('input', {
+      type: 'text',
+      class: 'prompt-input',
+      style: `width:${size}em`,
+      value,
+      placeholder,
+      'aria-label': label,
+      'data-key': `${key}:${name}`,
+      onchange: (e: Event) => onChange((e.target as HTMLInputElement).value),
+    });
+
+  const parts: HTMLElement[] = [];
+  if (cols.findings !== -1) {
+    const col = cols.findings;
+    const cell = r.cells[col];
+    parts.push(
+      h(
+        'span',
+        { class: 'prompt-set' },
+        findingGroups(prompts.findings).map((g) => {
+          const chips = g.options.map((o) =>
+            chip(o.short, hasToken(cell, o.token), () => set(col, toggleFinding(cell, g, o.token, prompts.findings)), o.token),
+          );
+          return g.options.length > 1 ? h('span', { class: 'segmented' }, g.label ? h('span', { class: 'prompt-label' }, g.label) : null, chips) : chips[0];
+        }),
+      ),
+    );
+  }
+  if (cols.lens !== -1) {
+    const col = cols.lens;
+    const cell = r.cells[col];
+    const pick = readLens(cell, prompts.lenses);
+    const target = readTarget(cell);
+    const lens = h(
+      'span',
+      { class: 'prompt-set' },
+      h('span', { class: 'prompt-label' }, 'Lens'),
+      prompts.lenses.map((l) =>
+        chip(
+          l.replace('x', '…'),
+          pick?.lens === l,
+          () => set(col, writeLens(cell, prompts.lenses, pick?.lens === l ? null : { lens: l, extra: '', power: pick?.power ?? '' })),
+          l.includes('x') ? `${l}: type the number in the box that appears` : l,
+        ),
+      ),
+      pick?.lens.includes('x')
+        ? field('extra', pick.extra, 'no.', `Number for ${pick.lens}`, (v) => set(col, writeLens(r.cells[col], prompts.lenses, { ...pick, extra: v.trim() })), 3.5)
+        : null,
+      pick ? field('power', pick.power, 'power', 'Lens power', (v) => set(col, writeLens(r.cells[col], prompts.lenses, { ...pick, power: v })), 6) : null,
+    );
+    const targetSet = h(
+      'span',
+      { class: 'prompt-set' },
+      h('span', { class: 'prompt-label' }, 'Target'),
+      chip('Plano', target === 'plano', () => set(col, writeTarget(cell, prompts.lenses, target === 'plano' ? null : 'plano'))),
+      field('target', target && target !== 'plano' ? target : '', 'e.g. -0.50', 'Target refraction', (v) =>
+        set(col, writeTarget(r.cells[col], prompts.lenses, v.trim() ? v : null)),
+      ),
+    );
+    parts.push(lens, targetSet);
+  }
+  return h('div', { class: 'prompts' }, parts);
 }
 
 /** "List changed?": paste your rows back from the cheat sheet to merge them with the latest run sheet. */

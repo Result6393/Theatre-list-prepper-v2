@@ -1,5 +1,6 @@
 import { defaultEmailSettings, type EmailSettings } from './email';
 import { defaultLayout, type Column, type Layout } from './layout';
+import { defaultPrompts, type PromptSettings } from './prompts';
 
 export interface Settings {
   version: 1;
@@ -7,6 +8,7 @@ export interface Settings {
   flagHospitals: string[];
   hospitalCodes: string[];
   email: EmailSettings;
+  prompts: PromptSettings;
 }
 
 export type KeyValueStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
@@ -22,6 +24,7 @@ export function defaultSettings(): Settings {
     flagHospitals: ['POWH', 'STG'],
     hospitalCodes: ['SSEH', 'POWH', 'STG'],
     email: defaultEmailSettings(),
+    prompts: defaultPrompts(),
   };
 }
 
@@ -77,6 +80,18 @@ export function importSettings(text: string): Settings {
     flagHospitals: Array.isArray(data.flagHospitals) ? stringList(data.flagHospitals) : defaults.flagHospitals,
     hospitalCodes: Array.isArray(data.hospitalCodes) ? stringList(data.hospitalCodes) : defaults.hospitalCodes,
     email: importEmail(data.email, defaults.email),
+    prompts: importPrompts(data.prompts, defaults.prompts),
+  };
+}
+
+function importPrompts(value: unknown, defaults: PromptSettings): PromptSettings {
+  if (!isObject(value)) return defaults;
+  return {
+    enabled: typeof value.enabled === 'boolean' ? value.enabled : defaults.enabled,
+    findings: Array.isArray(value.findings) ? stringList(value.findings) : defaults.findings,
+    lenses: Array.isArray(value.lenses) ? stringList(value.lenses) : defaults.lenses,
+    findingsColumn: typeof value.findingsColumn === 'string' ? value.findingsColumn : defaults.findingsColumn,
+    lensColumn: typeof value.lensColumn === 'string' ? value.lensColumn : defaults.lensColumn,
   };
 }
 
