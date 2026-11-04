@@ -2,7 +2,7 @@
 
 Turns a whole day's theatre run sheet (SurgiNet SN006A export) into rows for one list's consultant cheat sheet, ready to paste into Excel.
 
-1. **Paste the run sheet** copied from Excel, or choose/drop the CSV file.
+1. **Paste the run sheet** copied from Excel, or choose/drop the file (CSV or Excel). Optionally, also choose your **previously prepped** Excel sheet (see below).
 2. **Click the list you're prepping** (theatre + AM/PM, e.g. "OR 3 · PM · Smith").
    - **Lists that run on together:** tick more than one list (e.g. OR 3 AM and PM without a break) to prep them as one list. Each patient shows which list they're on. Edits you've already made on a list carry over when you tick it in with another.
    - The run sheet can cover several days; lists are grouped by day.
@@ -28,17 +28,25 @@ The prompts just edit the cell text, so you can still type in the cell, and anyt
 
 ## When the list changes on the day
 
-Patients dropped, added or reordered after you prepped? Keep your notes without retyping them:
+Patients dropped, added or reordered after you prepped? Keep your notes without retyping them.
 
-1. **Re-export the run sheet** and load it in step 1, then click the list.
-2. In your cheat sheet, **select all your patient rows** (from B5 down to the last one, including any cancelled rows) and copy them with Ctrl+C.
-3. Click **Update from my sheet…** and press Ctrl+V in the box.
-4. Check the list. Patients are matched by MRN:
-   - **Patients still on the list** keep everything you typed, in the new order. Anyone whose place changed is marked **Moved, was #n**.
-   - **New patients** are filled in from the run sheet and marked **New**, so you can see who still needs prep.
-   - **Patients no longer on the list** are kept at the bottom, marked **Cancelled** (with the list they're on now, if they moved to another one). Untick any you don't want to keep. Cancelled patients are never put in the Medical Records email.
-   - If the run sheet now says something different from your sheet (e.g. the eye or procedure changed), the cell shows **Now: …** with **Use** or **Keep**.
-5. Click **Copy for Excel**, click B5 (where you copied from) and press Ctrl+V. This replaces the old rows. Cancelled patients go under a `CANCELLED` row at the bottom, and blank rows clear anything left over.
+**From your Excel file (easiest):**
+
+1. **Re-export the run sheet** and load it in step 1.
+2. Under **Previously prepped?** choose your cheat sheet (`.xlsx`; download it from OneDrive first if needed). You can do this before or after the run sheet.
+3. Click the list. It's updated from the file straight away: the rows are found from the first MRN to the last, so headings and notes around them don't matter.
+   - **Several sheets** (e.g. one per theatre list): each list starts on the **first sheet**. Pick the right one from **Sheet** above the list; each option says how many of this list's patients it has. **Don't use** puts the list back as on the run sheet.
+   - Copying puts the rows back where they were found in the file (e.g. B5).
+
+**Or by copying the rows:** in your cheat sheet, **select all your patient rows** (from B5 down to the last one, including any cancelled rows), copy them, click **Update from my sheet…** and press Ctrl+V in the box. (That box also has a "choose your Excel file" link.)
+
+Then check the list. Patients are matched by MRN:
+- **Patients still on the list** keep everything you typed, in the new order. Anyone whose place changed is marked **Moved, was #n** (both patients, when two swap).
+- **New patients** are filled in from the run sheet and marked **New**, so you can see who still needs prep.
+- **Patients no longer on the list** are kept at the bottom, marked **Cancelled** (with the list they're on now, if they moved to another one). Untick any you don't want to keep. Cancelled patients are never put in the Medical Records email.
+- If the run sheet now says something different from your sheet (e.g. the eye or procedure changed), the cell shows **Now: …** with **Use** or **Keep**.
+
+Then click **Copy for Excel**, click B5 (or wherever the rows were) and press Ctrl+V. This replaces the old rows. Cancelled patients go under a `CANCELLED` row at the bottom, and blank rows clear anything left over.
 
 You can do this as many times as the list changes. **Undo** puts the list back as it was before the update. Nothing is saved anywhere: your sheet stays the record.
 
@@ -72,7 +80,7 @@ With the default columns (B–K of the consultant cheat sheet):
 
 An exported settings file can contain email addresses (such as the Medical Records recipient), so it is never kept in this repository: `.gitignore` excludes `*settings*.json`. Share it with colleagues directly instead.
 
-Everything happens in your browser. The run sheet is never uploaded, stored or sent anywhere, and the app makes no network requests apart from settings sync, if you turn it on. Only your settings (columns, hospital flags, email addresses and wording) are saved in the browser. If you sign in to sync, those settings (encrypted) are also the only thing ever sent to the sync server.
+Everything happens in your browser. The run sheet and your prepped Excel file are read on your computer and never uploaded, stored or sent anywhere, and the app makes no network requests apart from settings sync, if you turn it on. Only your settings (columns, hospital flags, email addresses and wording) are saved in the browser. If you sign in to sync, those settings (encrypted) are also the only thing ever sent to the sync server.
 
 The one exception is the **Email Medical Records** button: you press it, and the patients' MRNs and names are placed in a link that opens a draft in your own email (or the share sheet on your phone). Nothing is sent until you press Send there.
 

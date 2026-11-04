@@ -70,7 +70,7 @@ describe('update from my sheet', () => {
     expect(result.rows[0].cells[4]).toBe('VA 6/12 IOP 3');
     expect(result.rows[0].cells[3]).toBe('POAG on 2 drops');
     expect(result.rows[3].cells[4]).toBe('');
-    expect(result.summary).toEqual({ kept: 3, added: 1, cancelled: 2, moved: 1, changed: 1 });
+    expect(result.summary).toEqual({ kept: 3, added: 1, cancelled: 2, moved: 2, changed: 1 });
     expect(result.padTo).toBe(5);
   });
 
@@ -89,7 +89,21 @@ describe('update from my sheet', () => {
 
   it('marks only the patients that moved out of order', () => {
     const moved = merge(preppedSheet()).rows.filter((r) => r.movedFrom !== undefined);
-    expect(moved.map((r) => [mrnOf(r.cells), r.movedFrom])).toEqual([['3000003', 3]]);
+    // Charlie jumped ahead of Alpha: both changed places relative to each other.
+    expect(moved.map((r) => [mrnOf(r.cells), r.movedFrom])).toEqual([['3000003', 3], ['3000001', 1]]);
+  });
+
+  it('marks both patients when two swap places', () => {
+    const swapped = [or4, nightBefore[1], { ...nightBefore[3], SCHED_TM: '08:30' }, { ...nightBefore[2], SCHED_TM: '09:00' }, nightBefore[4], nightBefore[5]];
+    const result = merge(preppedSheet(), swapped);
+    expect(result.rows.map((r) => [mrnOf(r.cells), r.movedFrom ?? null])).toEqual([
+      ['3000001', null],
+      ['3000003', 3],
+      ['3000002', 2],
+      ['3000004', null],
+      ['3000005', null],
+    ]);
+    expect(result.summary.moved).toBe(2);
   });
 
   it('marks just the one patient pushed to the end, not everyone who shifted up', () => {

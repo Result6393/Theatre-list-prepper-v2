@@ -1,6 +1,7 @@
 import Papa from 'papaparse';
 import type { Patient, Session } from './extract';
 import { buildRow, cellValue, type Layout } from './layout';
+import { columnIndex, columnName, type SheetData } from './xlsx';
 
 /**
  * Keeping your prep when the list changes on the day: rows copied back out of the cheat sheet are
@@ -91,6 +92,72 @@ function keyColumn(layout: Layout): { index: number; read: (cell: string) => str
   const patient = layout.columns.findIndex((c) => c.source === 'field:patient');
   if (patient !== -1) return { index: patient, read: (cell) => normaliseMrn(cell.trim().split(/\s+/)[0] ?? '') };
   throw new MergeError('To match patients, your columns need a Patient or MRN column (Settings → Columns).');
+}
+
+export interface FoundRows {
+  sheet: string;
+  /** Your rows, from the first patient to the last (cancelled ones included), as if copied. */
+  rows: string[][];
+  /** Where they start in the sheet, e.g. "B5": paste the update back there. */
+  cell: string;
+  /** How many of them are on this list. */
+  matches: number;
+  /** Patients on the sheet who aren't on this list (cancelled, or another list's). */
+  others: number;
+}
+
+/**
+ * How well a sheet fits a list: patients on this list count for it, others against it, so the
+ * sheet made for this list beats another list's sheet that a moved patient also appears on.
+ */
+function fit(found: FoundRows | null): number {
+  return found && found.matches > 0 ? 2 * found.matches - found.others : -Infinity;
+}
+
+const MRN_LIKE = /^[A-Z]{0,3}\d{4,}[A-Z]?$/;
+
+/**
+ * Finds your prepped rows in a workbook: the sheet (and column) with the most patients from this
+ * list, from its first MRN down to its last. Headings above and notes below are left out.
+ */
+export function findPreppedRows(sheets: SheetData[], session: Session, layout: Layout): FoundRows | null {
+  let best: FoundRows | null = null;
+  for (const sheet of sheets) {
+    const found = findInSheet(sheet, session, layout);
+    if (fit(found) > fit(best)) best = found;
+  }
+  return best;
+}
+
+/** Your rows for this list on one sheet, or null if none of its patients are there. */
+export function findInSheet(sheet: SheetData, session: Session, layout: Layout): FoundRows | null {
+  const key = keyColumn(layout);
+  const width = layout.columns.length;
+  const listMrns = new Set(session.patients.map((p) => normaliseMrn(p.mrn)));
+  const preferred = columnIndex(layout.pasteStart || 'B5');
+  const widest = Math.max(0, ...sheet.rows.map((r) => r.length));
+  // Your paste column first, then the others in case the sheet starts somewhere else.
+  const starts = [preferred, ...Array.from({ length: Math.min(widest, 12) }, (_, i) => i).filter((i) => i !== preferred)];
+  let best: FoundRows | null = null;
+  for (const start of starts) {
+    const keys = sheet.rows.map((r) => key.read(r[start + key.index] ?? ''));
+    const first = keys.findIndex((k) => MRN_LIKE.test(k));
+    if (first === -1) continue;
+    let last = keys.length - 1;
+    while (!MRN_LIKE.test(keys[last])) last--;
+    const block = keys.slice(first, last + 1);
+    const matches = block.filter((k) => listMrns.has(k)).length;
+    const others = block.filter((k) => MRN_LIKE.test(k) && !listMrns.has(k)).length;
+    const found: FoundRows = {
+      sheet: sheet.name,
+      rows: sheet.rows.slice(first, last + 1).map((r) => Array.from({ length: width }, (_, i) => r[start + i] ?? '')),
+      cell: `${columnName(start)}${first + 1}`,
+      matches,
+      others,
+    };
+    if (fit(found) > fit(best)) best = found;
+  }
+  return best;
 }
 
 export function mergePrepped(
@@ -194,7 +261,7 @@ export function mergePrepped(
   // Patients outside the longest run still in their old order are the ones that moved.
   const kept = rows.filter((r) => r.status === 'kept' && !r.reinstated);
   const oldOrder = kept.map((r) => matched.get(r.patient!)!.oldPos);
-  const stayed = longestIncreasing(oldOrder);
+  const stayed = inEveryLongestRun(oldOrder);
   kept.forEach((r, i) => {
     if (!stayed.has(i)) r.movedFrom = oldOrder[i];
   });
@@ -241,24 +308,25 @@ function squash(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-/** Indexes of one longest strictly increasing run (not necessarily adjacent) in the list. */
-function longestIncreasing(values: number[]): Set<number> {
-  const length = values.map(() => 1);
-  const previous = values.map(() => -1);
-  let best = -1;
-  values.forEach((v, i) => {
-    for (let j = 0; j < i; j++) {
-      // On a tie, keep the earlier-placed patient, so the one who jumped forward is shown as moved.
-      const longer = length[j] + 1 > length[i];
-      const tie = length[j] + 1 === length[i] && previous[i] !== -1 && values[j] < values[previous[i]];
-      if (values[j] < v && (longer || tie)) {
-        length[i] = length[j] + 1;
-        previous[i] = j;
-      }
-    }
-    if (best === -1 || length[i] > length[best] || (length[i] === length[best] && v < values[best])) best = i;
+/**
+ * Patients who certainly kept their place: those in every longest run still in the old order.
+ * When two swap, neither is certain, so both show as moved; when one jumps, only that one does.
+ */
+function inEveryLongestRun(values: number[]): Set<number> {
+  const n = values.length;
+  const ending = values.map(() => 1);
+  const starting = values.map(() => 1);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < i; j++) if (values[j] < values[i]) ending[i] = Math.max(ending[i], ending[j] + 1);
+  }
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = i + 1; j < n; j++) if (values[j] > values[i]) starting[i] = Math.max(starting[i], starting[j] + 1);
+  }
+  const longest = Math.max(0, ...ending);
+  const onSome = values.map((_, i) => ending[i] + starting[i] - 1 === longest);
+  const atStep = new Map<number, number>();
+  values.forEach((_, i) => {
+    if (onSome[i]) atStep.set(ending[i], (atStep.get(ending[i]) ?? 0) + 1);
   });
-  const keep = new Set<number>();
-  for (let i = best; i !== -1; i = previous[i]) keep.add(i);
-  return keep;
+  return new Set(values.map((_, i) => i).filter((i) => onSome[i] && atStep.get(ending[i]) === 1));
 }
