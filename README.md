@@ -82,7 +82,7 @@ Never commit real run sheets or theatre lists to this repository. `.gitignore` e
 
 ## Versions
 
-The version number is in `package.json` and appears in the page title and the top bar. To release: bump `version` in `package.json` (e.g. `npm version minor --no-git-tag-version`), merge, then push a matching tag (`v1.1.0`). The release workflow refuses a tag that doesn't match.
+The version number is in `package.json` and appears in the page title and the top bar. To release: bump `version` in `package.json` (e.g. `npm version minor --no-git-tag-version`) and merge to `main`. The release workflow then publishes `theatre-list-prepper-vX.Y.Z.html` as release `vX.Y.Z`, creating the tag. A version that already has a release is skipped.
 
 ## Development
 
