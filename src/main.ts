@@ -96,6 +96,10 @@ const state = {
   saveReport: null as SaveReport | null,
   /** The "Save as a new sheet" form, while it's open. */
   newSheet: null as { name: string; copyOf: string; error: string } | null,
+  /** The "Save to a new Excel file" form, while it's open. `source` is "file:<sheet>" or "template:<sheet>". */
+  newFile: null as { name: string; source: string; error: string } | null,
+  /** A template workbook for new files (kept on this computer if it has no patients in it). */
+  template: null as { name: string; book: Workbook } | null,
   /** Your previously prepped sheet: each list you open is updated from it. */
   workbook: null as SheetFile | null,
   /** Without a run sheet: the sheet of your prepped file being worked on. */
@@ -208,6 +212,7 @@ function openSelection(): void {
   state.emailMenuOpen = false;
   state.saveMenuOpen = false;
   state.newSheet = null;
+  state.newFile = null;
   // With your prepped sheet chosen, each list is updated from it the first time it's opened.
   if (state.grid && state.workbook && state.grid.fromWorkbook !== state.workbook) applyWorkbook(state.grid, state.workbook);
 }
@@ -408,6 +413,7 @@ function openSheet(): void {
   state.emailMenuOpen = false;
   state.saveMenuOpen = false;
   state.newSheet = null;
+  state.newFile = null;
   if (!wb || !block) {
     state.grid = null;
     return;
@@ -623,9 +629,12 @@ function reportSave(outcome: SaveOutcome, what: string, extra = ''): void {
  */
 function headingFor(grid: Grid, sheet: SheetData | undefined, sheetName: string, listCell: string): { cells: HeadingCell[]; edits: SheetEdit[] } {
   if (!sheet || grid.sheetOnly || !grid.sessions.length) return { cells: [], edits: [] };
-  const { consultant, date, or, ampm } = grid.combined;
+  const { consultant, date, or, ampm, start, end } = grid.combined;
+  // The hospital is the run sheet's theatre without its OR, e.g. "SSEH" from "SSEH OR 01".
+  const hospital = [...new Set(grid.sessions.map((x) => x.theatre.replace(/\s*\bOR\s*0*\d+.*$/i, '').trim()).filter(Boolean))].join(' + ');
+  const times = start && end ? `${start}–${end}` : '';
   const listRow = Number(listCell.match(/\d+/)?.[0] ?? 1) - 1;
-  const cells = headingCells(sheet, listRow, { consultant, date, or, ampm }, state.settings.layout);
+  const cells = headingCells(sheet, listRow, { consultant, date, or, ampm, hospital, times }, state.settings.layout);
   return { cells, edits: cells.map((c) => ({ sheet: sheetName, cell: c.cell, rows: [[c.value]], numbers: c.field === 'or' })) };
 }
 
@@ -645,11 +654,226 @@ function defaultSheetName(grid: Grid, existing: string[]): string {
 }
 
 /** Where the list goes on a new sheet copied from `template`: in place of the template's own patients. */
-function newSheetPlace(grid: Grid, template: SheetData): { cell: string; oldLength: number } {
-  if (grid.fromSheet === template.name && grid.pasteAt) return { cell: grid.pasteAt, oldLength: grid.padTo };
+function newSheetPlace(grid: Grid, template: SheetData, sameFile = true): { cell: string; oldLength: number } {
+  if (sameFile && grid.fromSheet === template.name && grid.pasteAt) return { cell: grid.pasteAt, oldLength: grid.padTo };
   const block = findListBlock(template, state.settings.layout);
   if (block) return { cell: block.cell, oldLength: block.rows.length };
   return { cell: state.settings.layout.pasteStart || 'B5', oldLength: 0 };
+}
+
+// ---- Save to a new Excel file -------------------------------------------------------
+
+const TEMPLATE_KEY = 'theatre-list-prepper.template';
+
+function toBase64(bytes: Uint8Array): string {
+  let text = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(text);
+}
+
+/** A template file chosen before, if this computer kept it. */
+async function loadStoredTemplate(): Promise<void> {
+  try {
+    const raw = storage?.getItem(TEMPLATE_KEY);
+    if (!raw) return;
+    const { name, data } = JSON.parse(raw) as { name: string; data: string };
+    const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+    state.template = { name, book: await openWorkbook(bytes.buffer as ArrayBuffer) };
+  } catch {
+    // Nothing kept, or it can't be read any more: choose it again when needed.
+  }
+}
+
+function hasPatients(book: Workbook): boolean {
+  try {
+    return book.sheets.some((s) => findListBlock(s, state.settings.layout));
+  } catch {
+    return false;
+  }
+}
+
+/** The sheet to copy for a new list: one with the list's column headings and no patients, if there is one. */
+function bestTemplateSheet(book: Workbook): string {
+  const headings = new Set(state.settings.layout.columns.map((c) => c.heading.trim().toLowerCase()).filter(Boolean));
+  const hasHeadings = (s: SheetData) => s.rows.some((r) => r.filter((c) => headings.has(c.trim().toLowerCase())).length >= 3);
+  const empty = (s: SheetData) => {
+    try {
+      return !findListBlock(s, state.settings.layout);
+    } catch {
+      return true;
+    }
+  };
+  return (book.sheets.find((s) => hasHeadings(s) && empty(s)) ?? book.sheets.find(hasHeadings) ?? book.sheets[0])?.name ?? '';
+}
+
+/** Where a new file's layout can come from: the loaded file's sheets, and the template's. */
+function newFileSources(): { key: string; label: string; book: Workbook; sheet: string; sameFile: boolean }[] {
+  const out: { key: string; label: string; book: Workbook; sheet: string; sameFile: boolean }[] = [];
+  const wb = state.workbook;
+  if (wb?.book) for (const s of wb.book.sheets) out.push({ key: `file:${s.name}`, label: `${s.name} (in ${wb.name})`, book: wb.book, sheet: s.name, sameFile: true });
+  const tpl = state.template;
+  if (tpl) for (const s of tpl.book.sheets) out.push({ key: `template:${s.name}`, label: `${s.name} (template ${tpl.name})`, book: tpl.book, sheet: s.name, sameFile: false });
+  return out;
+}
+
+function defaultNewFileSource(grid: Grid): string {
+  const wb = state.workbook;
+  if (wb?.book && grid.fromWorkbook === wb && grid.fromSheet) return `file:${grid.fromSheet}`;
+  if (state.template) return `template:${bestTemplateSheet(state.template.book)}`;
+  if (wb?.book) return `file:${bestTemplateSheet(wb.book)}`;
+  return '';
+}
+
+function openNewFile(grid: Grid): void {
+  state.saveMenuOpen = false;
+  state.newSheet = null;
+  const base = grid.sheetOnly ? grid.combined.slotName : `Theatre list ${defaultSheetName(grid, [])}`;
+  state.newFile = { name: `${base.replace(/[\\/:*?"<>|]/g, '-')}.xlsx`, source: defaultNewFileSource(grid), error: '' };
+  render();
+  app.querySelector<HTMLInputElement>('.new-file input')?.select();
+}
+
+/** Chooses a template file for new lists. It's kept on this computer, unless it has patients in it. */
+function chooseTemplate(): void {
+  pickFile('.xlsx,.xlsm', async (file) => {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const book = await openWorkbook(bytes.buffer as ArrayBuffer);
+      state.template = { name: file.name, book };
+      const kept = !hasPatients(book);
+      if (kept) {
+        try {
+          storage?.setItem(TEMPLATE_KEY, JSON.stringify({ name: file.name, data: toBase64(bytes) }));
+        } catch {
+          // Storage full or blocked: it's used this time only.
+        }
+      }
+      if (state.newFile) {
+        state.newFile.source = `template:${bestTemplateSheet(book)}`;
+        state.newFile.error = kept ? '' : `${file.name} has patients in it, so it’s used this time but not kept on this computer.`;
+      }
+    } catch (e) {
+      if (state.newFile) state.newFile.error = e instanceof WorkbookError ? `${file.name}: ${e.message}` : `Couldn’t read ${file.name}.`;
+    }
+    render();
+  });
+}
+
+function forgetTemplate(): void {
+  state.template = null;
+  try {
+    storage?.removeItem(TEMPLATE_KEY);
+  } catch {
+    // Nothing kept.
+  }
+  if (state.newFile) state.newFile.source = defaultNewFileSource(state.grid!);
+  render();
+}
+
+/** Saves a new file (Save As where the browser can, else a download). */
+async function writeNewFile(name: string, bytes: Uint8Array): Promise<{ how: 'as'; name: string; handle: FileSystemFileHandle } | { how: 'downloaded'; name: string } | { how: 'cancelled' }> {
+  const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker;
+  if (picker) {
+    const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+    if (activation && !activation.isActive) {
+      const next = await askInPage(`${name} is ready.`, [
+        { label: 'Choose where to save…', value: 'pick' as const, primary: true },
+        { label: 'Download it', value: 'download' as const },
+        { label: 'Cancel', value: 'cancel' as const },
+      ]);
+      if (next === 'cancel') return { how: 'cancelled' };
+      if (next === 'download') {
+        downloadBlob(name, new Blob([bytes as BlobPart], { type: XLSX_TYPE }));
+        return { how: 'downloaded', name };
+      }
+    }
+    try {
+      const handle = await picker({ suggestedName: name, types: [{ description: 'Excel workbook', accept: { [XLSX_TYPE]: ['.xlsx'] } }] });
+      const problem = await writeTo(handle, bytes);
+      if (!problem) return { how: 'as', name: handle.name, handle };
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return { how: 'cancelled' };
+    }
+  }
+  downloadBlob(name, new Blob([bytes as BlobPart], { type: XLSX_TYPE }));
+  return { how: 'downloaded', name };
+}
+
+/**
+ * Saves this list in a new Excel file: a copy of the template (or the chosen sheet's file) with only
+ * that sheet and any sheets without lists (like instructions), the list in place of its patients,
+ * and its heading filled in. With no file loaded, the new file becomes this list's file.
+ */
+async function saveToNewFile(grid: Grid): Promise<void> {
+  try {
+    await saveToNewFileNow(grid);
+  } catch (e) {
+    saveFailed(e);
+  }
+}
+
+async function saveToNewFileNow(grid: Grid): Promise<void> {
+  const form = state.newFile;
+  if (!form) return;
+  const source = newFileSources().find((s) => s.key === form.source);
+  const name = form.name.trim().replace(/[\\/:*?"<>|]/g, '-');
+  if (!source || !name) {
+    form.error = !source ? 'Choose a template, or a sheet to copy the layout of.' : 'Give the new file a name.';
+    render();
+    return;
+  }
+  const fileName = /\.xls[xm]$/i.test(name) ? name : `${name}.xlsx`;
+  savingNotice(`Making ${fileName}…`);
+  const { book, sheet } = source;
+  const template = book.sheets.find((s) => s.name === sheet)!;
+  const { cell, oldLength } = newSheetPlace(grid, template, source.sameFile);
+  const edit = { sheet, cell, rows: copyBlock(grid.rows, state.settings.layout, oldLength) };
+  const heading = headingFor(grid, template, sheet, cell);
+  const keep = book.sheets
+    .filter((s) => {
+      if (s.name === sheet) return true;
+      try {
+        return !findListBlock(s, state.settings.layout);
+      } catch {
+        return true;
+      }
+    })
+    .map((s) => s.name);
+  let result;
+  try {
+    result = await saveWorkbook(book, [edit, ...heading.edits], [], { keepOnly: keep, activeSheet: sheet });
+  } catch (e) {
+    form.error = e instanceof WorkbookError ? e.message : `Couldn’t make the new file${e instanceof Error ? ` (${e.message})` : ''}.`;
+    state.saveReport = null;
+    render();
+    return;
+  }
+  const outcome = await writeNewFile(fileName, result.bytes);
+  if (outcome.how === 'cancelled') {
+    state.saveReport = { ok: false, text: 'Not saved.' };
+    render();
+    return;
+  }
+  state.newFile = null;
+  const where = `It’s on sheet “${sheet}”, from ${cell}.${headingNote(heading.cells)}`;
+  // With no file loaded, the new one becomes this list's file, so Save keeps it up to date.
+  let adopted = '';
+  if (!state.workbook) {
+    const newBook = await openWorkbook(result.bytes.buffer as ArrayBuffer);
+    const handle = outcome.how === 'as' ? outcome.handle : null;
+    const wb: SheetFile = { name: outcome.name, sheets: [...newBook.sheets], book: newBook, handle, lastModified: handle ? ((await handle.getFile().catch(() => null))?.lastModified ?? null) : null };
+    state.workbook = wb;
+    for (const g of state.grids.values()) g.fromWorkbook = wb;
+    grid.fromSheet = sheet;
+    grid.pasteAt = cell;
+    grid.padTo = edit.rows.length;
+    adopted = ` From now on, Save updates ${outcome.name}${handle ? '' : ' (choose the downloaded file when asked)'}.`;
+  }
+  state.saveReport =
+    outcome.how === 'as'
+      ? { ok: true, text: `Saved this list as a new file, ${outcome.name}. ${where}${adopted}` }
+      : { ok: false, text: `This list was saved as a new file, ${outcome.name}, in your Downloads folder (it may be named like “${outcome.name.replace(/\.xls([xm])$/i, ' (1).xls$1')}”). ${where}${adopted}` };
+  render();
 }
 
 function openNewSheet(grid: Grid): void {
@@ -659,6 +883,7 @@ function openNewSheet(grid: Grid): void {
   const withList = book.sheets.find((s) => findListBlock(s, state.settings.layout));
   const copyOf = grid.fromSheet && names.includes(grid.fromSheet) ? grid.fromSheet : (withList ?? book.sheets[0])?.name ?? '';
   state.saveMenuOpen = false;
+  state.newFile = null;
   state.newSheet = { name: defaultSheetName(grid, names), copyOf, error: '' };
   render();
   app.querySelector<HTMLInputElement>('.new-sheet input')?.select();
@@ -1536,6 +1761,7 @@ function renderPrep(): HTMLElement | null {
     toolbar,
     renderSaveReport(),
     renderNewSheet(grid),
+    renderNewFile(grid),
     grid.sheetOnly
       ? h('p', { class: 'source-bar muted' }, 'Working from your prepped sheet, without a run sheet: times, New, Moved and the Medical Records email need the run sheet.')
       : renderSource(grid),
@@ -1550,7 +1776,18 @@ function renderPrep(): HTMLElement | null {
  */
 function renderSaveMenu(grid: Grid): HTMLElement | null {
   const wb = state.workbook;
-  if (!wb?.book) return null;
+  if (!wb?.book) {
+    return h(
+      'button',
+      {
+        class: state.newFile ? 'on' : '',
+        disabled: Boolean(state.saveReport?.busy || state.saveReport?.actions),
+        title: 'Saves this list in a new Excel file made from your template',
+        onclick: () => openNewFile(grid),
+      },
+      'Save to a new Excel file…',
+    );
+  }
   const linked = grid.fromWorkbook === wb && Boolean(grid.fromSheet);
   const others = workbookEdits(wb).length - 1;
   const how = wb.handle ? 'Saves over the file (your browser may ask first).' : 'Asks where to save: choose the file you opened to replace it.';
@@ -1576,7 +1813,7 @@ function renderSaveMenu(grid: Grid): HTMLElement | null {
     h(
       'button',
       {
-        class: state.saveMenuOpen || state.newSheet ? 'split-more on' : 'split-more',
+        class: state.saveMenuOpen || state.newSheet || state.newFile ? 'split-more on' : 'split-more',
         title: 'More ways to save',
         'aria-label': 'More ways to save',
         'aria-haspopup': 'menu',
@@ -1597,6 +1834,7 @@ function renderSaveMenu(grid: Grid): HTMLElement | null {
               )
             : null,
           item('Save as a new sheet…', 'Adds a sheet with this list, copying the headings and formatting of one of your sheets.', () => openNewSheet(grid)),
+          item('Save to a new Excel file…', 'A separate file with just this list, made from your template or one of these sheets.', () => openNewFile(grid)),
           h('p', { class: 'menu-note' }, `${how} Close the file in Excel first.`),
         )
       : null,
@@ -1617,6 +1855,59 @@ function renderSaveReport(): HTMLElement | null {
       : report.busy
         ? null
         : h('button', { class: 'link', onclick: () => ((state.saveReport = null), render()) }, 'Dismiss'),
+  );
+}
+
+/** The "Save to a new Excel file" form: its name, and the template (or sheet) to make it from. */
+function renderNewFile(grid: Grid): HTMLElement | null {
+  const form = state.newFile;
+  if (!form) return null;
+  const sources = newFileSources();
+  const busy = Boolean(state.saveReport?.busy || state.saveReport?.actions);
+  const source = h(
+    'select',
+    { 'aria-label': 'Make it from', onchange: (e: Event) => ((form.source = (e.target as HTMLSelectElement).value), render()) },
+    sources.map((s) => h('option', { value: s.key }, s.label)),
+  );
+  source.value = form.source;
+  return h(
+    'div',
+    { class: 'update-open new-sheet new-file' },
+    h(
+      'p',
+      {},
+      h('strong', {}, 'Save to a new Excel file. '),
+      'Makes a separate file with just this list, laid out like your template: its headings, column widths, colours, dropdowns and print settings, with the list in place of its patients and the heading filled in. Sheets without patients (like instructions) come along too.',
+    ),
+    h(
+      'div',
+      { class: 'inline-form' },
+      h(
+        'label',
+        {},
+        'File name ',
+        h('input', {
+          type: 'text',
+          value: form.name,
+          size: 34,
+          oninput: (e: Event) => (form.name = (e.target as HTMLInputElement).value),
+          onkeydown: (e: Event) => {
+            if ((e as KeyboardEvent).key === 'Enter') void saveToNewFile(grid);
+          },
+        }),
+      ),
+      sources.length ? h('label', {}, 'Make it from ', source) : null,
+      h('button', { class: sources.length ? 'link' : '', onclick: chooseTemplate }, sources.length ? 'Choose a template file…' : 'Choose your template file…'),
+      state.template ? h('button', { class: 'link', title: 'Stop keeping the template on this computer', onclick: forgetTemplate }, 'Forget template') : null,
+    ),
+    h(
+      'div',
+      { class: 'inline-form' },
+      h('button', { class: 'primary', disabled: busy || !sources.length, onclick: () => void saveToNewFile(grid) }, state.saveReport?.busy ? 'Saving…' : 'Save new file'),
+      h('button', { class: 'ghost', onclick: () => ((state.newFile = null), render()) }, 'Cancel'),
+      h('span', { class: 'hint small' }, state.template ? `Template: ${state.template.name}, kept on this computer only.` : 'A template you choose is kept on this computer only (never if it has patients in it).'),
+    ),
+    form.error ? h('p', { class: 'error', role: 'alert' }, form.error) : null,
   );
 }
 
@@ -1933,6 +2224,7 @@ document.addEventListener('keydown', (e) => {
   }
 });
 render();
+void loadStoredTemplate();
 
 // Newer settings from another device (if signed in to sync) replace these once they arrive.
 pullBeforeStart(SYNC_APP, STORAGE_KEY).then((result) => {

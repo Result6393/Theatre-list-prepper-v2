@@ -84,7 +84,14 @@ export interface SaveResult {
  * formatting is kept, new cells take the formatting of the cell above, and formula cells are never
  * overwritten. Every other part of the file (other sheets, styles, column widths) is copied as it was.
  */
-export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: NewSheet[] = []): Promise<SaveResult> {
+export interface SaveOptions {
+  /** For a new file: keep only these sheets (in their order); the rest are removed. */
+  keepOnly?: string[];
+  /** The sheet the file opens on (and the only selected tab). */
+  activeSheet?: string;
+}
+
+export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: NewSheet[] = [], options: SaveOptions = {}): Promise<SaveResult> {
   let changed = 0;
   let formulas = 0;
   const replaced = new Map<string, string>();
@@ -149,10 +156,137 @@ export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: Ne
     const patched = patchSheet(xml, changes);
     changed += patched.changed;
     formulas += patched.formulas;
-    replaced.set(path, patched.xml);
+    // A list that runs past the old one takes its colours, dropdowns and print area along.
+    const lastRow = startRow + edit.rows.reduce((last, cells, i) => (cells.some((v) => v !== '') ? i : last), -1);
+    const isList = edit.rows.length > 1;
+    replaced.set(path, isList ? extendRanges(patched.xml, startRow, lastRow) : patched.xml);
+    if (isList) {
+      const index = sheetOrder(await current('xl/workbook.xml')).indexOf(edit.sheet);
+      replaced.set('xl/workbook.xml', extendPrintArea(await current('xl/workbook.xml'), edit.sheet, index, startRow, lastRow));
+    }
   }
-  const written = await Promise.all(entries.map(async (e) => (replaced.has(e.name) ? deflateEntry(e, replaced.get(e.name)!) : e)));
+  let kept = entries;
+  if (options.keepOnly) kept = await keepOnlySheets(entries, paths, replaced, current, options.keepOnly, options.activeSheet ?? options.keepOnly[0]);
+  const written = await Promise.all(kept.map(async (e) => (replaced.has(e.name) ? deflateEntry(e, replaced.get(e.name)!) : e)));
   return { bytes: writeZip(written), changed, formulas };
+}
+
+/** "xl/worksheets/sheet1.xml" → "xl/worksheets/_rels/sheet1.xml.rels" */
+function relsPathOf(path: string): string {
+  const at = path.lastIndexOf('/');
+  return `${path.slice(0, at + 1)}_rels/${path.slice(at + 1)}.rels`;
+}
+
+/** A relationship's target as a part name, e.g. "../comments1.xml" from a sheet → "xl/comments1.xml". */
+function resolveTarget(from: string, target: string): string {
+  if (target.startsWith('/')) return target.slice(1);
+  const parts = from.split('/').slice(0, -1);
+  for (const piece of target.split('/')) {
+    if (piece === '..') parts.pop();
+    else if (piece !== '.') parts.push(piece);
+  }
+  return parts.join('/');
+}
+
+/**
+ * Removes every sheet but `keep` from the workbook, with what belongs only to them (their notes,
+ * drawings and so on), their print areas and other per-sheet names, and the calculation chain
+ * (Excel rebuilds it). The file opens on `active`, the only selected tab.
+ */
+async function keepOnlySheets(
+  entries: ZipEntry[],
+  paths: Map<string, string>,
+  replaced: Map<string, string>,
+  current: (path: string) => Promise<string>,
+  keep: string[],
+  active: string,
+): Promise<ZipEntry[]> {
+  const workbookPath = 'xl/workbook.xml';
+  const relsPath = 'xl/_rels/workbook.xml.rels';
+  let workbook = await current(workbookPath);
+  let rels = await current(relsPath);
+  const names = new Set(entries.map((e) => e.name));
+  const order = sheetOrder(workbook);
+  const removed = order.filter((n) => !keep.includes(n));
+  const keptOrder = order.filter((n) => keep.includes(n));
+  const drop = new Set<string>();
+
+  // Parts each removed sheet uses (notes, drawings…), unless something we keep uses them too.
+  const usedBy = new Map<string, Set<string>>();
+  for (const name of names) {
+    if (!name.endsWith('.rels')) continue;
+    const source = name.replace(/_rels\/([^/]+)\.rels$/, '$1');
+    for (const rel of tags(await current(name), 'Relationship')) {
+      if (attr(rel, 'TargetMode') === 'External') continue;
+      const target = resolveTarget(source, attr(rel, 'Target') ?? '');
+      if (!usedBy.has(target)) usedBy.set(target, new Set());
+      usedBy.get(target)!.add(source);
+    }
+  }
+  const dropPart = (part: string) => {
+    if (drop.has(part) || !names.has(part)) return;
+    drop.add(part);
+    const partRels = relsPathOf(part);
+    if (names.has(partRels)) {
+      drop.add(partRels);
+      for (const [target, sources] of usedBy) {
+        if (sources.has(part) && [...sources].every((s) => s === part || drop.has(s))) dropPart(target);
+      }
+    }
+  };
+
+  for (const sheet of removed) {
+    const path = paths.get(sheet);
+    const tag = tags(workbook, 'sheet').find((t) => decode(attr(t, 'name') ?? '') === sheet);
+    if (!tag) continue;
+    const rid = tag.match(/\s\w+:id="([^"]+)"/)?.[1];
+    workbook = workbook.replace(tag, '');
+    if (rid) rels = rels.replace(new RegExp(`<(?:\\w+:)?Relationship\\b[^>]*\\sId="${rid}"[^>]*/>`), '');
+    if (path) dropPart(path);
+  }
+
+  // Per-sheet names follow their sheet to its new position; those of removed sheets go.
+  const quotedRemoved = removed.map((n) => [`'${n.replace(/'/g, "''")}'!`, `${n}!`]).flat();
+  workbook = workbook.replace(/<(?:\w+:)?definedName\b[^>]*>[^<]*<\/(?:\w+:)?definedName>/g, (whole) => {
+    const local = whole.match(/localSheetId="(\d+)"/)?.[1];
+    if (local !== undefined) {
+      const at = keptOrder.indexOf(order[Number(local)]);
+      return at === -1 ? '' : whole.replace(/localSheetId="\d+"/, `localSheetId="${at}"`);
+    }
+    return quotedRemoved.some((q) => whole.includes(q)) ? '' : whole;
+  });
+  workbook = workbook.replace(/<((?:\w+:)?)definedNames\b[^>]*>\s*<\/\1definedNames>/, '');
+  const activeAt = Math.max(0, keptOrder.indexOf(active));
+  workbook = workbook.replace(/<((?:\w+:)?)workbookView\b([^>]*?)(\/?)>/g, (_, p: string, attrs: string, close: string) => {
+    const a = attrs.replace(/\s(activeTab|firstSheet)="\d+"/g, '');
+    return `<${p}workbookView${a} activeTab="${activeAt}"${close}>`;
+  });
+
+  // Excel rebuilds the calculation chain; an old one listing removed sheets would need repairing.
+  for (const rel of tags(rels, 'Relationship')) {
+    if (/calcChain/.test(attr(rel, 'Type') ?? '')) {
+      rels = rels.replace(rel, '');
+      drop.add(resolveTarget(workbookPath, attr(rel, 'Target') ?? ''));
+    }
+  }
+  replaced.set(workbookPath, workbook);
+  replaced.set(relsPath, rels);
+
+  // Only the sheet the file opens on is a selected tab.
+  for (const sheet of keptOrder) {
+    const path = paths.get(sheet);
+    if (!path) continue;
+    let xml = (await current(path)).replace(/\stabSelected="(?:1|true)"/g, '');
+    if (sheet === active) xml = xml.replace(/<((?:\w+:)?)sheetView\b/, (m) => `${m} tabSelected="1"`);
+    replaced.set(path, xml);
+  }
+
+  const typesPath = '[Content_Types].xml';
+  let types = await current(typesPath);
+  for (const part of drop) types = types.replace(new RegExp(`<(?:\\w+:)?Override\\b[^>]*PartName="/${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*/>`), '');
+  replaced.set(typesPath, types);
+  for (const part of drop) replaced.delete(part);
+  return entries.filter((e) => !drop.has(e.name));
 }
 
 /** A sheet to add, starting as a copy of another (its headings, formatting and formulas). */
@@ -233,6 +367,49 @@ function appendChild(xml: string, parent: string, child: string): string {
   const empty = new RegExp(`<((?:\\w+:)?)${parent}\\b([^>]*?)\\s*/>`);
   if (empty.test(xml)) return xml.replace(empty, (_, p: string, attrs: string) => `<${p}${parent}${attrs}>${child}</${p}${parent}>`);
   throw new WorkbookError(`This workbook is missing its ${parent} list.`);
+}
+
+/**
+ * One cell range, or a space-separated list of them, with those on the list's rows carried down to
+ * `lastRow`. With `fromAbove`, a range that starts higher up (like a print area from A1) counts too.
+ */
+function extendRefs(refs: string, blockStart: number, lastRow: number, fromAbove = false): string {
+  return refs
+    .split(/\s+/)
+    .map((ref) => {
+      const m = ref.match(/^(\$?[A-Z]{1,3}\$?)(\d+):(\$?[A-Z]{1,3}\$?)(\d+)$/i);
+      if (!m) return ref;
+      const top = Number(m[2]);
+      const bottom = Number(m[4]);
+      const onList = (fromAbove || top >= blockStart) && bottom >= blockStart && bottom < lastRow;
+      return onList ? `${m[1]}${top}:${m[3]}${lastRow}` : ref;
+    })
+    .join(' ');
+}
+
+/** Conditional formatting and dropdowns (data validation) on the list's rows reach its new last row. */
+function extendRanges(xml: string, blockStart: number, lastRow: number): string {
+  return xml
+    .replace(/(<(?:\w+:)?(?:conditionalFormatting|dataValidation)\b[^>]*?\ssqref=")([^"]*)"/g, (_, open: string, refs: string) => `${open}${extendRefs(refs, blockStart, lastRow)}"`)
+    .replace(/(<(\w+:)?sqref>)([^<]*)(<\/\2?sqref>)/g, (_, open: string, _p: string, refs: string, close: string) => `${open}${extendRefs(refs, blockStart, lastRow)}${close}`);
+}
+
+/** The sheets' names in tab order. */
+function sheetOrder(workbook: string): string[] {
+  return tags(workbook, 'sheet').map((t) => decode(attr(t, 'name') ?? ''));
+}
+
+/** The sheet's print area covers the list's new last row. */
+function extendPrintArea(workbook: string, sheet: string, index: number, blockStart: number, lastRow: number): string {
+  return workbook.replace(/(<(?:\w+:)?definedName\b[^>]*>)([^<]*)(<\/(?:\w+:)?definedName>)/g, (whole, open: string, text: string, close: string) => {
+    if (!/name="_xlnm\.Print_Area"/.test(open)) return whole;
+    const local = open.match(/localSheetId="(\d+)"/)?.[1];
+    const quoted = `'${sheet.replace(/'/g, "''")}'`;
+    const forThisSheet = local !== undefined ? Number(local) === index : text.startsWith(`${quoted}!`) || text.startsWith(`${sheet}!`);
+    if (!forThisSheet) return whole;
+    const updated = text.replace(/!(\$?[A-Z]{1,3}\$?\d+:\$?[A-Z]{1,3}\$?\d+)/gi, (_m, range: string) => `!${extendRefs(range, blockStart, lastRow, true)}`);
+    return `${open}${updated}${close}`;
+  });
 }
 
 /** The edit applied to the sheet's values in memory (no file is written). */
@@ -316,10 +493,31 @@ function patchSheet(xml: string, changes: Change[]): { xml: string; changed: num
     }
     return undefined;
   };
+  /**
+   * A row below the old list starts as a copy of the row above it: its height, its formatting, and
+   * formulas that don't point at other cells (like the "#" column's =ROW()-4), so a longer list
+   * looks and numbers like the rest.
+   */
+  const newRow = (r: number, blockStart: number): SheetRow => {
+    let above: SheetRow | undefined;
+    for (let a = r - 1; a >= blockStart && !above; a--) above = rows.get(a);
+    if (!above) return { r, open: `<${prefix}row r="${r}">`, prefix, cells: [] };
+    const open = above.open.replace(/\sr="\d+"/, ` r="${r}"`);
+    const cells = above.cells.flatMap(({ col, xml: c }) => {
+      const ref = `${columnName(col)}${r}`;
+      const formula = c.match(/<((?:\w+:)?)f\b([^>]*)>([^<]*)<\/\1f>/);
+      if (formula && !/\bt="shared"/.test(formula[2]) && !/\$?[A-Z]{1,3}\$?\d+/.test(formula[3])) {
+        return [{ col, xml: `<${prefix}c r="${ref}"${attr(c, 's') ? ` s="${attr(c, 's')}"` : ''}><${formula[1]}f${formula[2]}>${formula[3]}</${formula[1]}f></${prefix}c>` }];
+      }
+      const style = attr(c, 's');
+      return style ? [{ col, xml: `<${prefix}c r="${ref}" s="${style}"/>` }] : [];
+    });
+    return { r, open, prefix, cells };
+  };
   for (const change of changes) {
     let row = rows.get(change.row);
     if (!row) {
-      row = { r: change.row, open: `<${prefix}row r="${change.row}">`, prefix, cells: [] };
+      row = newRow(change.row, change.blockStart);
       rows.set(change.row, row);
     }
     const at = row.cells.findIndex((c) => c.col === change.col);
