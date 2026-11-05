@@ -8,6 +8,8 @@ export interface SheetData {
   name: string;
   /** Cell text by row and column, from A1; empty cells are ''. */
   rows: string[][];
+  /** Merged ranges, e.g. "B1:C1". */
+  merges?: string[];
 }
 
 /** An opened workbook: its sheets' values, plus the file's parts so changes can be saved into it. */
@@ -50,7 +52,8 @@ export async function openWorkbook(data: ArrayBuffer): Promise<Workbook> {
     const path = id ? targets.get(id) : undefined;
     const xml = path ? await text(path) : undefined;
     if (path && xml) {
-      sheets.push({ name, rows: parseSheet(xml, shared) });
+      const merges = tags(xml, 'mergeCell').map((m) => attr(m, 'ref')).filter((r): r is string => Boolean(r));
+      sheets.push({ name, rows: parseSheet(xml, shared), merges });
       paths.set(name, path);
     }
   }
@@ -64,6 +67,8 @@ export interface SheetEdit {
   sheet: string;
   cell: string;
   rows: string[][];
+  /** Write whole numbers as numbers even in cells that were empty (e.g. the OR number). */
+  numbers?: boolean;
 }
 
 export interface SaveResult {
@@ -102,7 +107,7 @@ export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: Ne
     entries.push({ ...templateEntry, name: path, nameBytes: new TextEncoder().encode(path) });
     replaced.set(path, copyableSheet(await current(templatePath)));
     paths.set(add.name, path);
-    sheets.push({ name: add.name, rows: template.rows.map((r) => [...r]) });
+    sheets.push({ name: add.name, rows: template.rows.map((r) => [...r]), merges: template.merges });
 
     const relsPath = 'xl/_rels/workbook.xml.rels';
     const rels = await current(relsPath);
@@ -137,7 +142,7 @@ export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: Ne
     edit.rows.forEach((cells, i) =>
       cells.forEach((value, j) => {
         const current = sheet.rows[startRow - 1 + i]?.[startCol + j] ?? '';
-        if (value !== current) changes.push({ row: startRow + i, col: startCol + j, value, blockStart: startRow });
+        if (value !== current) changes.push({ row: startRow + i, col: startCol + j, value, blockStart: startRow, number: edit.numbers });
       }),
     );
     if (!changes.length) continue;
@@ -243,7 +248,7 @@ export function withEdit(sheet: SheetData, edit: SheetEdit): SheetData {
     cells.forEach((value, j) => (row[startCol + j] = value));
   });
   for (const row of rows) while (row.length < width) row.push('');
-  return { name: sheet.name, rows };
+  return { name: sheet.name, rows, merges: sheet.merges };
 }
 
 /** Text in cells below the old block that a longer block would write over. */
@@ -267,6 +272,7 @@ interface Change {
   value: string;
   /** First row of the block, for borrowing the formatting of the cell above. */
   blockStart: number;
+  number?: boolean;
 }
 
 interface SheetRow {
@@ -323,7 +329,7 @@ function patchSheet(xml: string, changes: Change[]): { xml: string; changed: num
       continue;
     }
     const style = (old ? attr(old, 's') : undefined) ?? styleAbove(change.row, change.col, change.blockStart);
-    const wasNumber = Boolean(old && /<(?:\w+:)?v>/.test(old) && (attr(old, 't') ?? 'n') === 'n');
+    const wasNumber = Boolean(change.number || (old && /<(?:\w+:)?v>/.test(old) && (attr(old, 't') ?? 'n') === 'n'));
     const cell = cellXml(prefix, `${columnName(change.col)}${change.row}`, style, change.value, wasNumber);
     if (cell === null) {
       if (at >= 0) row.cells.splice(at, 1);
