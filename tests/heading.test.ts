@@ -25,12 +25,12 @@ describe('filling in a sheet’s heading', () => {
   });
 
   it('fills empty cells in a blank template, with labels ending in a colon', () => {
-    const rows = [['Consultant:', '', 'Date:', '', 'Theatre:', '', 'Session:', ''], [], columns];
+    const rows = [['Consultant:', '', 'Date:', '', 'Theatre:', '', 'AM/PM:', ''], [], columns];
     expect(simple(headingCells(sheet(rows), 3, values, layout))).toEqual([
       ['Consultant', 'B1', 'Willow'],
       ['Date', 'D1', '15/10/2026'],
       ['Theatre', 'F1', '4'],
-      ['Session', 'H1', 'AM'],
+      ['AM/PM', 'H1', 'AM'],
     ]);
   });
 
@@ -61,6 +61,19 @@ describe('filling in a sheet’s heading', () => {
     expect(simple(headingCells(merged, 2, values, layout))).toEqual([
       ['Consultant', 'D1', 'Willow'],
       ['Date', 'G1', '15/10/2026'],
+    ]);
+  });
+
+  it('fills the theatre-list template: Hospital / OR, and Session with its times', () => {
+    // Laid out like the user's template: labels merged across two cells, values in the yellow cell after.
+    const rows = [['Consultant:', '', '', '', 'Date:', '', 'Hospital / OR:', '', 'Session:', '', ''], [], [], columns];
+    const template = { name: 'List', rows, merges: ['A1:B1', 'I1:J1', 'A2:B2', 'F2:G2', 'H2:K2'] };
+    const full = { ...values, hospital: 'TEH', times: '8:00–12:00' };
+    expect(simple(headingCells(template, 4, full, layout))).toEqual([
+      ['Consultant', 'C1', 'Willow'],
+      ['Date', 'F1', '15/10/2026'],
+      ['Hospital / OR', 'H1', 'TEH OR 4'],
+      ['Session', 'K1', 'AM 8:00–12:00'],
     ]);
   });
 

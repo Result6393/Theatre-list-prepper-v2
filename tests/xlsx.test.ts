@@ -144,7 +144,39 @@ describe('saving changes into the workbook', () => {
     expect(result).toMatchObject({ changed: 1, formulas: 1 }); // B6 already says LEFT
     const xml = await sheetText(result.bytes, 'xl/worksheets/sheet1.xml');
     expect(xml).toContain('<c r="A6" s="1"><f>ROW()-4</f><v>2</v></c>');
-    expect(xml).toMatch(/<row r="7"><c r="B7" s="3" t="inlineStr"><is><t xml:space="preserve">RIGHT<\/t><\/is><\/c><\/row><row r="9">/);
+    // Row 7 is new: it copies row 6's numbering formula and formatting, then takes the value.
+    expect(xml).toMatch(/<row r="7"><c r="A7" s="1"><f>ROW\(\)-4<\/f><\/c><c r="B7" s="3" t="inlineStr"><is><t xml:space="preserve">RIGHT<\/t><\/is><\/c><\/row><row r="9">/);
+  });
+
+  it('carries a template’s row height, numbering, colours, dropdowns and print area down a longer list', async () => {
+    const sheetXml =
+      '<worksheet><sheetData>' +
+      '<row r="4"><c r="B4" t="s"><v>0</v></c></row>' +
+      '<row r="5" ht="73.5" customHeight="true"><c r="A5" s="11" t="n"><f aca="false">ROW()-4</f><v>1</v></c><c r="B5" s="12"/><c r="C5" s="13"/><c r="D5" s="14"><f>B5&amp;C5</f></c></row>' +
+      '<row r="6" ht="73.5" customHeight="true"><c r="A6" s="11" t="n"><f aca="false">ROW()-4</f><v>2</v></c><c r="B6" s="12"/><c r="C6" s="13"/></row>' +
+      '</sheetData><conditionalFormatting sqref="A5:B6"><cfRule type="expression" priority="2"><formula>$B5="RIGHT"</formula></cfRule></conditionalFormatting>' +
+      '<conditionalFormatting sqref="A1:K2"><cfRule type="expression" priority="1"><formula>TRUE</formula></cfRule></conditionalFormatting>' +
+      '<dataValidations count="1"><dataValidation type="list" sqref="B5:B6 I5:I6"><formula1>"RIGHT,LEFT"</formula1></dataValidation></dataValidations></worksheet>';
+    const workbook = '<workbook xmlns:r="r"><sheets><sheet name="List" sheetId="1" r:id="rId1"/></sheets><definedNames>' +
+      '<definedName localSheetId="0" name="_xlnm.Print_Area">List!$A$1:$K$6</definedName><definedName localSheetId="0" name="_xlnm.Print_Titles">List!$1:$4</definedName></definedNames></workbook>';
+    const book = await openWorkbook(await makeZip({
+      '[Content_Types].xml': '<Types/>',
+      'xl/workbook.xml': workbook,
+      'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+      'xl/sharedStrings.xml': '<sst><si><t>Eye</t></si></sst>',
+      'xl/worksheets/sheet1.xml': sheetXml,
+    }));
+    const rows = [['RIGHT', 'a'], ['LEFT', 'b'], ['LEFT', 'c'], ['RIGHT', 'd']];
+    const result = await saveWorkbook(book, [{ sheet: 'List', cell: 'B5', rows }]);
+    const xml = await sheetText(result.bytes, 'xl/worksheets/sheet1.xml');
+    expect(xml).toContain('<row r="8" ht="73.5" customHeight="true"><c r="A8" s="11"><f aca="false">ROW()-4</f></c><c r="B8" s="12" t="inlineStr">');
+    expect(xml).not.toContain('<c r="D8"'); // formulas that point at cells aren't copied
+    expect(xml).toContain('<conditionalFormatting sqref="A5:B8">');
+    expect(xml).toContain('<conditionalFormatting sqref="A1:K2">');
+    expect(xml).toContain('sqref="B5:B8 I5:I8"');
+    const wb = await sheetText(result.bytes, 'xl/workbook.xml');
+    expect(wb).toContain('name="_xlnm.Print_Area">List!$A$1:$K$8<');
+    expect(wb).toContain('name="_xlnm.Print_Titles">List!$1:$4<');
   });
 
   it('warns about text a longer list would write over', async () => {
@@ -300,5 +332,57 @@ describe('saving a list as a new sheet', () => {
     expect(sheetNameProblem('  ', [])).toMatch(/name/);
     const book = await openWorkbook(await makeZip(files()));
     await expect(saveWorkbook(book, [], [{ name: 'Wed OR4', copyOf: 'Wed OR4' }])).rejects.toThrow(/already/);
+  });
+});
+
+describe('a new file from a template', () => {
+  const files = () => ({
+    '[Content_Types].xml':
+      '<Types><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="main"/>' +
+      '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="ws"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="ws"/><Override PartName="/xl/worksheets/sheet3.xml" ContentType="ws"/>' +
+      '<Override PartName="/xl/comments1.xml" ContentType="c"/><Override PartName="/xl/comments2.xml" ContentType="c"/><Override PartName="/xl/calcChain.xml" ContentType="cc"/></Types>',
+    'xl/workbook.xml':
+      '<workbook xmlns:r="r"><bookViews><workbookView firstSheet="1" activeTab="2"/></bookViews><sheets>' +
+      '<sheet name="Wed OR4" sheetId="1" r:id="rId1"/><sheet name="How to use" sheetId="2" r:id="rId2"/><sheet name="Thu OR1" sheetId="3" r:id="rId3"/></sheets>' +
+      '<definedNames><definedName localSheetId="0" name="_xlnm.Print_Area">\'Wed OR4\'!$A$1:$K$14</definedName><definedName localSheetId="2" name="_xlnm.Print_Area">\'Thu OR1\'!$A$1:$K$14</definedName>' +
+      '<definedName name="Old">\'Wed OR4\'!$C$1</definedName><definedName name="Lenses">\'How to use\'!$A$1:$A$9</definedName></definedNames></workbook>',
+    'xl/_rels/workbook.xml.rels':
+      '<Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="worksheet" Target="worksheets/sheet2.xml"/>' +
+      '<Relationship Id="rId3" Type="worksheet" Target="worksheets/sheet3.xml"/><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain" Target="calcChain.xml"/></Relationships>',
+    'xl/sharedStrings.xml': '<sst><si><t>x</t></si></sst>',
+    'xl/calcChain.xml': '<calcChain/>',
+    'xl/worksheets/sheet1.xml': '<worksheet><sheetViews><sheetView tabSelected="1"/></sheetViews><sheetData><row r="5"><c r="C5" t="inlineStr"><is><t>1000001 OLD, One 70F</t></is></c></row></sheetData><legacyDrawing r:id="rId1"/></worksheet>',
+    'xl/worksheets/_rels/sheet1.xml.rels': '<Relationships><Relationship Id="rId1" Type="comments" Target="../comments1.xml"/></Relationships>',
+    'xl/comments1.xml': '<comments/>',
+    'xl/worksheets/sheet2.xml': '<worksheet><sheetViews><sheetView/></sheetViews><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>How to use</t></is></c></row></sheetData></worksheet>',
+    'xl/worksheets/sheet3.xml': '<worksheet><sheetViews><sheetView tabSelected="true"/></sheetViews><sheetData><row r="5"><c r="C5" t="inlineStr"><is><t>1000002 OLD, Two 70F</t></is></c></row></sheetData><legacyDrawing r:id="rId1"/></worksheet>',
+    'xl/worksheets/_rels/sheet3.xml.rels': '<Relationships><Relationship Id="rId1" Type="comments" Target="../comments2.xml"/></Relationships>',
+    'xl/comments2.xml': '<comments/>',
+  });
+
+  it('keeps the chosen sheet and the help sheet, removing the other lists cleanly', async () => {
+    const book = await openWorkbook(await makeZip(files()));
+    const result = await saveWorkbook(book, [{ sheet: 'Thu OR1', cell: 'C5', rows: [['2000001 NEW, Nina 60F']] }], [], { keepOnly: ['Thu OR1', 'How to use'], activeSheet: 'Thu OR1' });
+    const saved = await openWorkbook(result.bytes.buffer as ArrayBuffer);
+    expect(saved.sheets.map((s) => s.name)).toEqual(['How to use', 'Thu OR1']);
+    expect(saved.sheets[1].rows[4][2]).toBe('2000001 NEW, Nina 60F');
+    const names = saved.entries.map((e) => e.name);
+    expect(names).not.toContain('xl/worksheets/sheet1.xml');
+    expect(names).not.toContain('xl/worksheets/_rels/sheet1.xml.rels');
+    expect(names).not.toContain('xl/comments1.xml');
+    expect(names).not.toContain('xl/calcChain.xml');
+    expect(names).toContain('xl/comments2.xml');
+    const wb = await sheetText(result.bytes, 'xl/workbook.xml');
+    expect(wb).toContain('<workbookView activeTab="1"/>');
+    expect(wb).toContain('<definedName localSheetId="1" name="_xlnm.Print_Area">\'Thu OR1\'!$A$1:$K$14</definedName>');
+    expect(wb).not.toContain('Wed OR4');
+    expect(wb).toContain('name="Lenses"');
+    const rels = await sheetText(result.bytes, 'xl/_rels/workbook.xml.rels');
+    expect(rels).not.toMatch(/rId1"|calcChain/);
+    const types = await sheetText(result.bytes, '[Content_Types].xml');
+    expect(types).not.toMatch(/sheet1\.xml|comments1|calcChain/);
+    expect(types).toContain('/xl/comments2.xml');
+    expect(await sheetText(result.bytes, 'xl/worksheets/sheet2.xml')).not.toContain('tabSelected');
+    expect(await sheetText(result.bytes, 'xl/worksheets/sheet3.xml')).toContain('<sheetView tabSelected="1"/>');
   });
 });

@@ -8,7 +8,7 @@ import type { SheetData } from './xlsx';
  * the old list's consultant and date.
  */
 
-export type HeadingField = 'consultant' | 'date' | 'or' | 'ampm';
+export type HeadingField = 'consultant' | 'date' | 'or' | 'hospitalOr' | 'ampm' | 'session';
 
 export interface HeadingValues {
   consultant: string;
@@ -18,6 +18,10 @@ export interface HeadingValues {
   or: string;
   /** "AM", "PM" or "AM + PM" */
   ampm: string;
+  /** Hospital code from the run sheet's theatre, e.g. "SSEH" (for a "Hospital / OR" label). */
+  hospital?: string;
+  /** "8:00–12:00" (for a "Session" label, with AM/PM). */
+  times?: string;
 }
 
 export interface HeadingCell {
@@ -36,7 +40,9 @@ const LABELS: [HeadingField, RegExp][] = [
   ['consultant', /^(consultant|surgeon)$/i],
   ['date', /^(date|list date|day)$/i],
   ['or', /^(or|theatre|theater|operating room)$/i],
-  ['ampm', /^(am\s*\/\s*pm|am\s*-\s*pm|am\s+or\s+pm|session)$/i],
+  ['hospitalOr', /^(hospital\s*(\/|&|and)\s*(or|theatre)|hospital|site)$/i],
+  ['ampm', /^(am\s*\/\s*pm|am\s*-\s*pm|am\s+or\s+pm)$/i],
+  ['session', /^(session|session times?|times?)$/i],
 ];
 
 function fieldOf(text: string): HeadingField | null {
@@ -124,6 +130,15 @@ function valueFor(field: HeadingField, values: HeadingValues, current: string): 
   const now = current.trim();
   if (field === 'consultant') return values.consultant ? { cell: values.consultant, text: values.consultant } : null;
   if (field === 'ampm') return values.ampm ? { cell: values.ampm, text: values.ampm } : null;
+  if (field === 'session') {
+    // "Session" is the session and its times, e.g. "AM 8:00–12:00".
+    const session = [values.ampm, values.times].filter(Boolean).join(' ');
+    return session ? { cell: session, text: session } : null;
+  }
+  if (field === 'hospitalOr') {
+    const place = [values.hospital, values.or].filter(Boolean).join(' ');
+    return place ? { cell: place, text: place } : null;
+  }
   if (field === 'or') {
     if (!values.or) return null;
     // A sheet that writes just the number next to "OR" (or "Theatre") gets just the number.
