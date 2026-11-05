@@ -10,6 +10,7 @@ import { ParseError, parseTable, type Table } from './parse';
 import { findingGroups, hasToken, isLensSurgery, promptColumns, readLens, readTarget, toggleFinding, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
+import { headingCells, type HeadingCell } from './heading';
 import { openWorkbook, overwrittenBelow, saveWorkbook, sheetNameProblem, withEdit, WorkbookError, type SheetData, type SheetEdit, type Workbook } from './xlsx';
 import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore } from './settings';
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
@@ -616,6 +617,23 @@ function reportSave(outcome: SaveOutcome, what: string, extra = ''): void {
   render();
 }
 
+/**
+ * The sheet's Consultant, Date, OR and AM/PM, filled in from the run sheet (lists from the run sheet
+ * only: a list straight from your file has nothing newer to put there).
+ */
+function headingFor(grid: Grid, sheet: SheetData | undefined, sheetName: string, listCell: string): { cells: HeadingCell[]; edits: SheetEdit[] } {
+  if (!sheet || grid.sheetOnly || !grid.sessions.length) return { cells: [], edits: [] };
+  const { consultant, date, or, ampm } = grid.combined;
+  const listRow = Number(listCell.match(/\d+/)?.[0] ?? 1) - 1;
+  const cells = headingCells(sheet, listRow, { consultant, date, or, ampm }, state.settings.layout);
+  return { cells, edits: cells.map((c) => ({ sheet: sheetName, cell: c.cell, rows: [[c.value]], numbers: c.field === 'or' })) };
+}
+
+/** " Heading filled in: Consultant Willow, Date 14/10/2026, OR 4, AM/PM AM." */
+function headingNote(cells: HeadingCell[]): string {
+  return cells.length ? ` Heading filled in: ${cells.map((c) => `${c.label} ${c.shown}`).join(', ')}.` : '';
+}
+
 /** A name for a new sheet for this list, e.g. "OR 4 AM 14-10", not already used. */
 function defaultSheetName(grid: Grid, existing: string[]): string {
   const c = grid.combined;
@@ -693,8 +711,10 @@ async function saveAsNewSheetNow(grid: Grid): Promise<void> {
     }
   }
   let result;
+  let heading: { cells: HeadingCell[]; edits: SheetEdit[] } = { cells: [], edits: [] };
   try {
-    result = await saveWorkbook(book, [edit], [{ name, copyOf: template.name }]);
+    heading = headingFor(grid, template, name, cell);
+    result = await saveWorkbook(book, [edit, ...heading.edits], [{ name, copyOf: template.name }]);
   } catch (e) {
     form.error = e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}${e instanceof Error ? ` (${e.message})` : ''}.`;
     state.saveReport = null;
@@ -718,7 +738,7 @@ async function saveAsNewSheetNow(grid: Grid): Promise<void> {
   grid.pasteAt = cell;
   grid.padTo = edit.rows.length;
   state.newSheet = null;
-  reportSave(outcome, `This list was`, ` It’s on the new sheet “${name}”, from ${cell}.`);
+  reportSave(outcome, `This list was`, ` It’s on the new sheet “${name}”, from ${cell}.${headingNote(heading.cells)}`);
 }
 
 /** Lists from your prepped file, each with the block it writes back: the most recent wins per sheet. */
@@ -751,6 +771,7 @@ async function saveToWorkbookNow(): Promise<void> {
   savingNotice(`Saving into ${wb.name}…`);
   const book = wb.book;
   const edits = workbookEdits(wb);
+  const headings = edits.map(({ grid, edit }) => headingFor(grid, book.sheets.find((s) => s.name === edit.sheet), edit.sheet, edit.cell));
   if (!edits.length) {
     state.saveReport = { ok: false, text: 'None of your lists came from this file yet, so there’s nothing to save into it. Use “Save as a new sheet…” (▾) instead.' };
     render();
@@ -773,7 +794,7 @@ async function saveToWorkbookNow(): Promise<void> {
 
   let result;
   try {
-    result = await saveWorkbook(book, edits.map((e) => e.edit));
+    result = await saveWorkbook(book, [...edits.map((e) => e.edit), ...headings.flatMap((h) => h.edits)]);
   } catch (e) {
     state.saveReport = { ok: false, text: e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}${e instanceof Error ? ` (${e.message})` : ''}.` };
     render();
@@ -793,7 +814,7 @@ async function saveToWorkbookNow(): Promise<void> {
   const changes = `${result.changed} change${result.changed === 1 ? '' : 's'}`;
   const sheets = edits.map((e) => `“${e.edit.sheet}”`).join(', ');
   const formulas = result.formulas ? ` Formula cells were left as they were (${result.formulas}).` : '';
-  reportSave(outcome, `${changes[0].toUpperCase()}${changes.slice(1)} (sheet${edits.length === 1 ? '' : 's'} ${sheets})`, formulas);
+  reportSave(outcome, `${changes[0].toUpperCase()}${changes.slice(1)} (sheet${edits.length === 1 ? '' : 's'} ${sheets})`, `${formulas}${headingNote(headings.flatMap((h) => h.cells))}`);
 }
 
 /**
