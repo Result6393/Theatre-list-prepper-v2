@@ -93,6 +93,10 @@ const state = {
   updateError: '',
   emailMenuOpen: false,
   saveMenuOpen: false,
+  /** Phone: the ⋯ menu in the bottom bar (Update, Email). */
+  moreMenuOpen: false,
+  /** Phone: patient cards opened for editing, by row. */
+  openCards: new Set<string>(),
   saveReport: null as SaveReport | null,
   /** The "Save as a new sheet" form, while it's open. */
   newSheet: null as { name: string; copyOf: string; error: string } | null,
@@ -111,6 +115,11 @@ const state = {
 };
 
 const app = document.getElementById('app')!;
+
+/** Phones get patient cards and a bottom bar instead of the wide table. */
+const phoneQuery = window.matchMedia('(max-width: 760px)');
+const isPhone = () => phoneQuery.matches;
+phoneQuery.addEventListener('change', () => render());
 
 /** Saves settings on this device and, if signed in to sync, to your other devices. */
 function persist(): void {
@@ -211,6 +220,7 @@ function openSelection(): void {
   state.updateError = '';
   state.emailMenuOpen = false;
   state.saveMenuOpen = false;
+  state.moreMenuOpen = false;
   state.newSheet = null;
   state.newFile = null;
   // With your prepped sheet chosen, each list is updated from it the first time it's opened.
@@ -412,6 +422,7 @@ function openSheet(): void {
   state.updateOpen = false;
   state.emailMenuOpen = false;
   state.saveMenuOpen = false;
+  state.moreMenuOpen = false;
   state.newSheet = null;
   state.newFile = null;
   if (!wb || !block) {
@@ -1622,24 +1633,27 @@ function renderPrep(): HTMLElement | null {
   const rowName = (r: GridRow) => r.patient?.name || (keyIndex >= 0 ? r.cells[keyIndex] : '') || 'this patient';
   const combinedLists = grid.sessions.length > 1;
 
-  const renderRow = (r: GridRow, index: number) => {
+  const whoOf = (r: GridRow) => {
     const p = r.patient;
-    const isCancelled = r.status === 'cancelled';
     const list = p ? grid.listOf.get(p) : undefined;
-    const who = [
+    return [
       combinedLists && list ? `${list.or} ${list.ampm}` : '',
       p && list && p.consultantSurname && p.consultantSurname !== list.consultant ? p.consultantSurname : '',
     ].filter(Boolean).join(' · ');
-    const badges = [
+  };
+  const badgesOf = (r: GridRow) => {
+    const isCancelled = r.status === 'cancelled';
+    return [
       r.status === 'new' ? h('span', { class: 'badge badge-new', title: 'Added to the list since your sheet: needs prep' }, 'New') : null,
       r.reinstated ? h('span', { class: 'badge badge-new', title: 'Was cancelled on your sheet and is back on the run sheet' }, 'Back on list') : null,
       r.movedFrom !== undefined ? h('span', { class: 'badge badge-moved', title: 'The order changed: this patient has moved' }, `Moved, was #${r.movedFrom}`) : null,
       isCancelled ? h('span', { class: 'badge badge-cancelled' }, 'Cancelled') : null,
       r.note ? h('div', { class: 'who' }, r.note) : null,
     ];
-    const prompts = isCancelled ? null : renderPrompts(r);
-    const gripKey = `${rowKey(r)}:grip`;
-    const grip = isCancelled
+  };
+  /** The ⠿ handle: drag to move (pointer, so fingers work too), or ↑ ↓ keys. */
+  const gripOf = (r: GridRow, index: number, items: string) =>
+    r.status === 'cancelled'
       ? null
       : h(
           'button',
@@ -1647,10 +1661,11 @@ function renderPrep(): HTMLElement | null {
             class: 'grip',
             title: 'Drag to move (or use the ↑ ↓ keys)',
             'aria-label': `Move ${rowName(r)}: use the up and down arrow keys`,
-            'data-key': gripKey,
+            'data-key': `${rowKey(r)}:grip`,
+            onclick: (e: Event) => e.stopPropagation(),
             onpointerdown: (e: Event) =>
               startDrag(e as PointerEvent, {
-                items: [...app.querySelectorAll<HTMLElement>('tbody.patient.active')],
+                items: [...app.querySelectorAll<HTMLElement>(items)],
                 from: index,
                 label: rowName(r),
                 onDrop: (from, to) => moveRow(grid, from, to),
@@ -1664,44 +1679,40 @@ function renderPrep(): HTMLElement | null {
           },
           '⠿',
         );
-    const classes = [
-      'patient',
-      isCancelled ? 'row-cancelled' : 'active',
+  const tickOf = (r: GridRow) =>
+    h('input', {
+      type: 'checkbox',
+      checked: r.included,
+      title: r.status === 'cancelled' ? 'Untick to leave this cancelled patient off the copy' : 'Untick to leave this patient off the copy and the email',
+      'aria-label': `Include ${rowName(r)}`,
+      onclick: (e: Event) => e.stopPropagation(),
+      onchange: (e: Event) => {
+        r.included = (e.target as HTMLInputElement).checked;
+        render();
+      },
+    });
+  const classesOf = (r: GridRow) =>
+    [
+      r.status === 'cancelled' ? 'row-cancelled' : 'active',
       r.included ? '' : 'excluded',
       r.status === 'new' || r.reinstated ? 'row-new' : '',
-    ];
-    const main = h(
-      'tr',
-      {},
-      h(
-        'td',
-        { class: 'handle' },
-        grip,
-        h('input', {
-          type: 'checkbox',
-          checked: r.included,
-          title: isCancelled ? 'Untick to leave this cancelled patient off the copy' : 'Untick to leave this patient off the copy and the email',
-          'aria-label': `Include ${rowName(r)}`,
-          onchange: (e: Event) => {
-            r.included = (e.target as HTMLInputElement).checked;
-            render();
-          },
-        }),
-      ),
-      h('td', { class: 'time', title: p?.consultant ?? '' }, h('div', { class: 'time-value' }, p?.time ?? ''), who ? h('div', { class: 'who' }, who) : null, ...badges),
-      layout.columns.map((c, col) => {
-        const area = h('textarea', {
+    ].filter(Boolean);
+  /** A column's text box for a row, with the run sheet's newer value to Use or Keep, if any. */
+  const editorOf = (r: GridRow, col: number, hasPrompts: boolean, onEdit: (target: HTMLTextAreaElement) => void) => {
+    const c = layout.columns[col];
+    const area = h('textarea', {
           class: 'cell',
           rows: 1,
           value: r.cells[col],
           'aria-label': `${c.heading} for ${rowName(r)}`,
           'data-key': `${rowKey(r)}:cell${col}`,
+          id: `cell-${rowKey(r)}-${col}`,
           // Leaving an edited cell redraws the prompts, so typing "PXF" by hand lights up its button too.
-          onchange: prompts ? () => setTimeout(render) : undefined,
+          onchange: hasPrompts ? () => setTimeout(render) : undefined,
           oninput: (e: Event) => {
             const target = e.target as HTMLTextAreaElement;
             r.cells[col] = target.value;
-            target.parentElement!.className = cellClass(c.source, target.value);
+            onEdit(target);
             autoGrow(target);
           },
         });
@@ -1721,12 +1732,26 @@ function renderPrep(): HTMLElement | null {
                   h('button', { class: 'mini', title: 'Keep what’s on your sheet', onclick: () => (delete r.changes[col], render()) }, 'Keep'),
                 ),
               );
+    return { area, change };
+  };
+
+  const renderRow = (r: GridRow, index: number) => {
+    const p = r.patient;
+    const who = whoOf(r);
+    const prompts = r.status === 'cancelled' ? null : renderPrompts(r);
+    const main = h(
+      'tr',
+      {},
+      h('td', { class: 'handle' }, gripOf(r, index, 'tbody.patient.active'), tickOf(r)),
+      h('td', { class: 'time', title: p?.consultant ?? '' }, h('div', { class: 'time-value' }, p?.time ?? ''), who ? h('div', { class: 'who' }, who) : null, ...badgesOf(r)),
+      layout.columns.map((c, col) => {
+        const { area, change } = editorOf(r, col, Boolean(prompts), (target) => (target.parentElement!.className = cellClass(c.source, target.value)));
         return h('td', { class: cellClass(c.source, r.cells[col]), style: `min-width:${columnWidth(c.source)}px` }, area, change);
       }),
     );
     return h(
       'tbody',
-      { class: classes.filter(Boolean).join(' ') },
+      { class: ['patient', ...classesOf(r)].join(' ') },
       main,
       prompts ? h('tr', { class: 'prompt-row' }, h('td', { colspan: 2 }), h('td', { colspan: layout.columns.length }, prompts)) : null,
     );
@@ -1747,9 +1772,130 @@ function renderPrep(): HTMLElement | null {
     cancelled.map((r) => renderRow(r, -1)),
   );
 
+  const phone = isPhone();
+  const colOf = (source: string) => layout.columns.findIndex((c) => c.source === source);
+  const eyeCol = colOf('field:eye');
+  const procCol = Math.max(colOf('field:procedure'), colOf('field:procedureRaw'));
+  const alertCol = colOf('field:alerts');
+
+  /** Phone: one card per patient. Closed, it's a summary; tap it to edit each column in full width. */
+  const renderCard = (r: GridRow, index: number) => {
+    const key = rowKey(r);
+    const open = state.openCards.has(key);
+    const p = r.patient;
+    const eye = eyeCol >= 0 ? r.cells[eyeCol].trim().toUpperCase() : '';
+    const title = (keyIndex >= 0 ? r.cells[keyIndex] : '') || p?.patient || rowName(r);
+    const procedure = procCol >= 0 ? r.cells[procCol] : p?.procedure ?? '';
+    const alerts = alertCol >= 0 ? r.cells[alertCol].trim() : '';
+    const sub = [procedure, p?.time, whoOf(r)].filter(Boolean).join(' · ');
+    const toggle = () => {
+      if (open) state.openCards.delete(key);
+      else state.openCards.add(key);
+      render();
+    };
+    const prompts = r.status === 'cancelled' || !open ? null : renderPrompts(r);
+    const promptCols = promptColumns(layout, state.settings.prompts);
+    const eyeButtons =
+      eyeCol >= 0
+        ? h(
+            'div',
+            { class: 'eye-choice', role: 'group', 'aria-label': `Eye for ${rowName(r)}` },
+            [['RIGHT', 'Right'], ['LEFT', 'Left'], ['BOTH', 'Both']].map(([value, label]) =>
+              h(
+                'button',
+                {
+                  class: `eye-btn eye-btn-${value.toLowerCase()}${eye === value ? ' on' : ''}`,
+                  'aria-pressed': eye === value ? 'true' : 'false',
+                  'data-key': `${key}:eye:${value}`,
+                  onclick: () => ((r.cells[eyeCol] = eye === value ? '' : value), render()),
+                },
+                label,
+              ),
+            ),
+          )
+        : null;
+    const body = open
+      ? h(
+          'div',
+          { class: 'pcard-body' },
+          layout.columns.map((c, col) => {
+            if (col === eyeCol) return h('div', { class: 'pfield' }, h('span', { class: 'pfield-label' }, c.heading || 'Eye'), eyeButtons, r.changes[col] !== undefined ? editorOf(r, col, false, () => undefined).change : null);
+            const { area, change } = editorOf(r, col, Boolean(prompts), () => undefined);
+            // The prompts sit under the box they fill in: findings under Diagnosis, lens and target under Implants.
+            const near = prompts && col === promptCols.findings ? renderPrompts(r, 'findings') : prompts && col === promptCols.lens ? renderPrompts(r, 'lens') : null;
+            return h('div', { class: `pfield ${cellClass(c.source, r.cells[col])}` }, h('label', { class: 'pfield-label', for: `cell-${rowKey(r)}-${col}` }, c.heading || `Column ${col + 1}`), area, change, near);
+          }),
+          r.status === 'cancelled'
+            ? null
+            : h(
+                'div',
+                { class: 'pcard-move' },
+                h('button', { disabled: index <= 0, 'data-key': `${key}:up`, onclick: () => moveRow(grid, index, index - 1) }, '↑ Move up'),
+                h('button', { disabled: index >= active.length - 1, 'data-key': `${key}:down`, onclick: () => moveRow(grid, index, index + 1) }, '↓ Move down'),
+                h('button', { class: 'ghost', onclick: toggle }, 'Done'),
+              ),
+        )
+      : null;
+    return h(
+      'div',
+      { class: ['pcard', ...classesOf(r), open ? 'open' : ''].filter(Boolean).join(' ') },
+      h(
+        'div',
+        {
+          class: 'pcard-head',
+          role: 'button',
+          tabindex: 0,
+          'aria-expanded': open ? 'true' : 'false',
+          onclick: toggle,
+          onkeydown: (e: Event) => {
+            if ((e as KeyboardEvent).key === 'Enter' || (e as KeyboardEvent).key === ' ') {
+              e.preventDefault();
+              toggle();
+            }
+          },
+        },
+        gripOf(r, index, '.pcard.active'),
+        h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}` }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?'),
+        h(
+          'div',
+          { class: 'pcard-title' },
+          h('div', { class: 'pcard-name' }, title.split('\n')[0]),
+          sub ? h('div', { class: 'pcard-sub' }, sub.split('\n')[0]) : null,
+          h('div', { class: 'pcard-badges' }, ...badgesOf(r)),
+        ),
+        tickOf(r),
+      ),
+      alerts && !open ? h('div', { class: 'pcard-alert' }, alerts.split('\n').join(' · ')) : null,
+      body,
+    );
+  };
+
+  const cards = h(
+    'div',
+    { class: 'pcards' },
+    active.map(renderCard),
+    cancelled.length ? h('div', { class: 'pcards-cancelled' }, `Cancelled: not on the latest run sheet (${cancelled.length}). Copied below the list under a CANCELLED row; untick any you don’t want to keep.`) : null,
+    cancelled.map((r) => renderCard(r, -1)),
+  );
+  const allOpen = grid.rows.length > 0 && grid.rows.every((r) => state.openCards.has(rowKey(r)));
+  const openAll = h(
+    'div',
+    { class: 'pcards-tools' },
+    h('label', {}, h('input', { type: 'checkbox', checked: active.length > 0 && active.every((r) => r.included), onchange: (e: Event) => {
+      const on = (e.target as HTMLInputElement).checked;
+      for (const r of active) r.included = on;
+      render();
+    } }), ` ${count} of ${active.length} ticked`),
+    h('button', { class: 'link', onclick: () => {
+      if (allOpen) state.openCards.clear();
+      else for (const r of grid.rows) state.openCards.add(rowKey(r));
+      render();
+    } }, allOpen ? 'Close all' : 'Open all'),
+  );
+
   return h(
     'section',
-    { class: 'step prep' },
+    { class: phone ? 'step prep phone' : 'step prep' },
     h(
       'div',
       { class: 'prep-head' },
@@ -1758,7 +1904,7 @@ function renderPrep(): HTMLElement | null {
         : h('h2', {}, h('span', { class: 'num' }, '3'), listName(combined)),
       grid.sheetOnly ? null : factChips,
     ),
-    toolbar,
+    phone ? renderPhoneBar(grid, count, cancelledCount) : toolbar,
     renderSaveReport(),
     renderNewSheet(grid),
     renderNewFile(grid),
@@ -1766,7 +1912,53 @@ function renderPrep(): HTMLElement | null {
       ? h('p', { class: 'source-bar muted' }, 'Working from your prepped sheet, without a run sheet: times, New, Moved and the Medical Records email need the run sheet.')
       : renderSource(grid),
     renderUpdate(grid),
-    h('div', { class: 'table-wrap' }, table),
+    phone ? [openAll, cards] : h('div', { class: 'table-wrap' }, table),
+  );
+}
+
+/** Phone: Copy, Save and ⋯ (Update, Email) in a bar along the bottom, within reach of a thumb. */
+function renderPhoneBar(grid: Grid, count: number, cancelledCount: number): HTMLElement {
+  const ticked = tickedPatients(grid).length;
+  const hasRecipients = medicalRecordsEmail(grid).to.length > 0;
+  const item = (label: string, detail: string, onclick: () => void, disabled = false) =>
+    h('button', { class: 'menu-item', role: 'menuitem', disabled, onclick }, h('span', {}, label), h('span', { class: 'menu-detail' }, detail));
+  const run = (action: () => void) => () => {
+    state.moreMenuOpen = false;
+    action();
+  };
+  return h(
+    'div',
+    { class: 'phone-bar' },
+    h('button', { class: 'primary', disabled: count + cancelledCount === 0, onclick: () => copyRows(grid) }, `Copy ${count}${cancelledCount ? ` + ${cancelledCount}` : ''}`),
+    renderSaveMenu(grid),
+    h(
+      'div',
+      { class: 'menu-wrap' },
+      h(
+        'button',
+        {
+          class: state.moreMenuOpen ? 'on' : '',
+          'aria-haspopup': 'menu',
+          'aria-expanded': state.moreMenuOpen ? 'true' : 'false',
+          'aria-label': 'More: update from your sheet, email Medical Records',
+          onclick: () => ((state.moreMenuOpen = !state.moreMenuOpen), (state.saveMenuOpen = false), (state.emailMenuOpen = false), render()),
+        },
+        '⋯',
+      ),
+      state.moreMenuOpen
+        ? h(
+            'div',
+            { class: 'menu', role: 'menu' },
+            grid.sheetOnly ? null : item(grid.summary ? 'Update again from my sheet…' : 'Update from my sheet…', 'List changed? Keep your notes', run(() => openUpdate())),
+            h('p', { class: 'menu-note' }, `Email Medical Records for ${emailSummary(grid)}:`),
+            item('Outlook on the web', 'Opens a draft in a new tab', run(() => void emailMedicalRecords(grid)), !ticked || !hasRecipients),
+            item('Email app', 'The email app on this phone', run(() => void emailInApp(grid)), !ticked || !hasRecipients),
+            canShare ? item('Share…', 'Text only: add the address yourself', run(() => void shareEmail(grid)), !ticked) : null,
+            item('Copy email text', 'To paste into any email', run(() => void copyEmailText(grid)), !ticked),
+            hasRecipients ? null : h('p', { class: 'menu-note' }, 'Add the Medical Records address in Settings to open a draft.'),
+          )
+        : null,
+    ),
   );
 }
 
@@ -1785,7 +1977,8 @@ function renderSaveMenu(grid: Grid): HTMLElement | null {
         title: 'Saves this list in a new Excel file made from your template',
         onclick: () => openNewFile(grid),
       },
-      'Save to a new Excel file…',
+      h('span', { class: 'label-long' }, 'Save to a new Excel file…'),
+      h('span', { class: 'label-short' }, 'Save…'),
     );
   }
   const linked = grid.fromWorkbook === wb && Boolean(grid.fromSheet);
@@ -1808,7 +2001,8 @@ function renderSaveMenu(grid: Grid): HTMLElement | null {
         title: linked ? `Saves the cells you changed into sheet “${grid.fromSheet}” of ${wb.name}. ${how}` : `This list isn’t in ${wb.name} yet: save it as a new sheet.`,
         onclick: () => (linked ? saveHere() : openNewSheet(grid)),
       },
-      linked ? `Save to ${wb.name}` : `Save as a new sheet in ${wb.name}…`,
+      h('span', { class: 'label-long' }, linked ? `Save to ${wb.name}` : `Save as a new sheet in ${wb.name}…`),
+      h('span', { class: 'label-short' }, linked ? 'Save' : 'Save…'),
     ),
     h(
       'button',
@@ -2068,7 +2262,8 @@ function isLensRow(r: GridRow): boolean {
 }
 
 /** One-click findings, lens and target under a lens patient. Each click edits the cell itself. */
-function renderPrompts(r: GridRow): HTMLElement | null {
+/** The prompts under a patient; `only` gives just the findings (Diagnosis) or the lens and target (Implants). */
+function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | null {
   const { prompts, layout } = state.settings;
   if (!prompts.enabled || !isLensRow(r)) return null;
   const cols = promptColumns(layout, prompts);
@@ -2094,7 +2289,7 @@ function renderPrompts(r: GridRow): HTMLElement | null {
     });
 
   const parts: HTMLElement[] = [];
-  if (cols.findings !== -1) {
+  if (cols.findings !== -1 && only !== 'lens') {
     const col = cols.findings;
     const cell = r.cells[col];
     parts.push(
@@ -2110,7 +2305,7 @@ function renderPrompts(r: GridRow): HTMLElement | null {
       ),
     );
   }
-  if (cols.lens !== -1) {
+  if (cols.lens !== -1 && only !== 'findings') {
     const col = cols.lens;
     const cell = r.cells[col];
     const pick = readLens(cell, prompts.lenses);
@@ -2143,7 +2338,7 @@ function renderPrompts(r: GridRow): HTMLElement | null {
     );
     parts.push(lens, targetSet);
   }
-  return h('div', { class: 'prompts' }, parts);
+  return parts.length ? h('div', { class: 'prompts' }, parts) : null;
 }
 
 const COLUMN_WIDTHS: Record<string, number> = {
@@ -2210,16 +2405,18 @@ document.addEventListener('drop', (e) => {
 
 // Close the email menu on a click elsewhere or Escape.
 document.addEventListener('pointerdown', (e) => {
-  if ((state.emailMenuOpen || state.saveMenuOpen) && !(e.target as HTMLElement).closest('.menu-wrap')) {
+  if ((state.emailMenuOpen || state.saveMenuOpen || state.moreMenuOpen) && !(e.target as HTMLElement).closest('.menu-wrap')) {
     state.emailMenuOpen = false;
     state.saveMenuOpen = false;
+    state.moreMenuOpen = false;
     render();
   }
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && (state.emailMenuOpen || state.saveMenuOpen)) {
+  if (e.key === 'Escape' && (state.emailMenuOpen || state.saveMenuOpen || state.moreMenuOpen)) {
     state.emailMenuOpen = false;
     state.saveMenuOpen = false;
+    state.moreMenuOpen = false;
     render();
   }
 });

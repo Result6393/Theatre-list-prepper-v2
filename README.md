@@ -16,6 +16,14 @@ Turns a whole day's theatre run sheet (SurgiNet SN006A export) into rows for one
 
 Click any of Consultant, Date, OR or Session above the list to copy it for your sheet's header.
 
+## On a phone
+
+On a narrow screen the list becomes a stack of patient cards instead of a wide table, so there's no scrolling sideways:
+
+- Each card shows the eye (R / L / B), the patient, procedure and time, any New / Moved / Cancelled badge, and alerts. Tap it to open it: every column is a full-width box, the eye is three big buttons, and the cataract prompts sit under the box they fill in (findings under Diagnosis, lens and target under Implants). **Open all** opens every card.
+- Move a patient by dragging its ⠿ handle with your finger, or with **↑ Move up** / **↓ Move down** in the open card.
+- **Copy**, **Save** and **⋯** (Update from my sheet, Email Medical Records) are in a bar at the bottom of the screen.
+
 ## Cataract prompts
 
 Under each cataract or lens patient there's a row of one-click prompts. They're reminders only: nothing is mandatory, and nothing goes on the sheet unless you pick it. They stay faded until you point at (or type in) that patient, and anything you've picked always shows.
