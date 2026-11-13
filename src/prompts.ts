@@ -116,6 +116,32 @@ export function toggleFinding(cell: string, group: FindingGroup, token: string, 
   return out;
 }
 
+// ---- First or second eye --------------------------------------------------------
+
+export type EyeOrder = 'first' | 'second';
+
+const EYE_ORDER = /\b(1st|first|2nd|second)\s+eye\b\.?[ \t]*/gi;
+
+/** "1st eye" or "2nd eye" anywhere in the cell (e.g. "NS2. 1st eye. Macula ok."), also as "first"/"second". */
+export function readEyeOrder(cell: string): EyeOrder | null {
+  const m = /\b(1st|first|2nd|second)\s+eye\b/i.exec(cell);
+  if (!m) return null;
+  return /^(1st|first)$/i.test(m[1]) ? 'first' : 'second';
+}
+
+/** Puts "1st eye" or "2nd eye" on its own line at the top (replacing any old mention), or removes it. */
+export function writeEyeOrder(cell: string, order: EyeOrder | null): string {
+  const lines = (cell ? cell.split('\n') : []).flatMap((line) => {
+    if (readEyeOrder(line) === null) return [line];
+    // Take the old mention out; a line that was only that mention goes altogether.
+    const cut = line.replace(EYE_ORDER, '').replace(/([,;])(\s*[,;])+/g, '$1').replace(/\s+([,;])/g, '$1').replace(/^[\s,;.]+/, '').replace(/[ \t]{2,}/g, ' ').replace(/[\s,;]+$/, '');
+    return cut.trim() ? [cut] : [];
+  });
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  if (order) lines.unshift(order === 'first' ? '1st eye' : '2nd eye');
+  return lines.join('\n');
+}
+
 // ---- Lens and target ------------------------------------------------------------
 
 export interface LensPick {

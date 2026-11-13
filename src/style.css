@@ -1423,3 +1423,50 @@ tbody.patient:focus-within .prompt-input {
     width: 100%;
   }
 }
+
+/* Allergy to check: red until the details are typed (or acknowledged) */
+
+td.allergy-pending,
+.pfield.allergy-pending {
+  background: var(--right-bg);
+  box-shadow: inset 0 0 0 2px var(--danger);
+}
+
+td.allergy-pending textarea,
+.pfield.allergy-pending textarea {
+  color: var(--right-text);
+  font-weight: 700;
+}
+
+td.allergy-ack,
+.pfield.allergy-ack {
+  background: var(--alert-bg);
+}
+
+.ack-btn {
+  display: block;
+  margin: 2px 0 0;
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* The moment the details are typed the cell stops being red, so its button goes with it. */
+td:not(.allergy-pending) > .ack-btn {
+  display: none;
+}
+
+.badge-allergy {
+  background: var(--danger);
+  color: #fff;
+  font-weight: 700;
+}
+
+.allergy-banner {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 2px solid var(--danger);
+  border-radius: 6px;
+  background: var(--right-bg);
+  color: var(--right-text);
+}

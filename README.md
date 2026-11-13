@@ -24,10 +24,15 @@ On a narrow screen the list becomes a stack of patient cards instead of a wide t
 - Move a patient by dragging its ⠿ handle with your finger, or with **↑ Move up** / **↓ Move down** in the open card.
 - **Copy**, **Save** and **⋯** (Update from my sheet, Email Medical Records) are in a bar at the bottom of the screen.
 
+## Allergies
+
+When the run sheet says a patient has an allergy (`Y`) but not what it is, their *Drops / allergies* box turns **red**, with an **Allergy: add details** badge, an **Acknowledge** button, and a banner over the list naming them. It stops being red when you type the details in the box (or press Acknowledge to say you've seen it and will add them later; the box then goes amber). Copying for Excel or saving into a file asks first if any ticked patient still has an allergy with no details. Nothing about allergies is stored: it's worked out from the run sheet and your box each time.
+
 ## Cataract prompts
 
 Under each cataract or lens patient there's a row of one-click prompts. They're reminders only: nothing is mandatory, and nothing goes on the sheet unless you pick it. They stay faded until you point at (or type in) that patient, and anything you've picked always shows.
 
+- **1st / 2nd eye:** two buttons, `1st` and `2nd`, put `1st eye` or `2nd eye` on its own line at the top of *Diagnosis & relevant history* (picking the other one switches it; click again to take it out). It also recognises `1st eye` / `2nd eye` you typed yourself, anywhere in the box.
 - **Findings:** `PXF`, `Guttata`, dilation (`Good` / `Mod` / `Poor`, pick one), `Phacodonesis`, `Tamsulosin`. Each click adds it to *Diagnosis & relevant history* on one line (e.g. `PXF, Poor dilation`); click again to take it out.
 - **Lens:** `DCB00`, `DIB00`, `ZCU…`, `CNA0T…`. Toric lenses get a box for the number (e.g. `4` → `CNA0T4`), and any lens a box for the power (`21.5` → `+21.5D`). It goes on the first line of *Implants / to order*.
 - **Target:** one click for `Plano`, or type one with its sign (e.g. `-0.5` → `Target -0.50`). Goes under the lens.
