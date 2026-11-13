@@ -24,6 +24,8 @@ export interface GridRow {
   movedFrom?: number;
   /** Was in your cancelled rows and is back on the run sheet. */
   reinstated?: boolean;
+  /** You've seen this patient's allergy (the run sheet says Y), even without typing the details. */
+  allergyAck?: boolean;
   /** Run-sheet values (by column) that differ from what's on your sheet, for you to check. */
   changes: Record<number, string>;
   /** For a cancelled row: the list the patient is on now, if they moved to another one. */

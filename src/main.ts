@@ -2,12 +2,13 @@ import './style.css';
 import { copyHtml, copyText, htmlTableRows, toTsv } from './clipboard';
 import { autoGrow, downloadBlob, h } from './dom';
 import { startDrag } from './drag';
+import { allergyColumn, allergyPending, lacksAllergyDetails, pendingAllergies } from './allergy';
 import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, outlookComposeUrl, weekdayLabel } from './email';
 import { extractSessions, type Patient, type Session } from './extract';
 import { combineSessions, listOfPatient, orderedSelection } from './lists';
 import { copyBlock, findInSheet, findListBlock, findPreppedRows, freshRows, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
-import { findingGroups, hasToken, isLensSurgery, promptColumns, readLens, readTarget, toggleFinding, writeLens, writeTarget } from './prompts';
+import { findingGroups, hasToken, isLensSurgery, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
 import { headingCells, type HeadingCell } from './heading';
@@ -816,6 +817,7 @@ async function writeNewFile(name: string, bytes: Uint8Array): Promise<{ how: 'as
  * and its heading filled in. With no file loaded, the new file becomes this list's file.
  */
 async function saveToNewFile(grid: Grid): Promise<void> {
+  if (!(await allergiesChecked([grid], 'Save'))) return;
   try {
     await saveToNewFileNow(grid);
   } catch (e) {
@@ -902,6 +904,7 @@ function openNewSheet(grid: Grid): void {
 
 /** Saves this list as a new sheet in your Excel file, copying another sheet's layout. */
 async function saveAsNewSheet(grid: Grid): Promise<void> {
+  if (!(await allergiesChecked([grid], 'Save'))) return;
   try {
     await saveAsNewSheetNow(grid);
   } catch (e) {
@@ -993,6 +996,7 @@ function workbookEdits(wb: SheetFile): { grid: Grid; edit: SheetEdit }[] {
  * an updated copy with the same name.
  */
 async function saveToWorkbook(): Promise<void> {
+  if (state.workbook && !(await allergiesChecked(workbookEdits(state.workbook).map((e) => e.grid), 'Save'))) return;
   try {
     await saveToWorkbookNow();
   } catch (e) {
@@ -1257,7 +1261,28 @@ function summaryText(s: MergeSummary): string {
 }
 
 
+/**
+ * Before a list leaves the app (copy or save), asks if ticked patients still have an allergy with no
+ * details. Asked in the page, like the save questions, so it can't be hidden by the browser.
+ */
+async function allergiesChecked(grids: Grid[], what: string): Promise<boolean> {
+  const col = allergyColumn(state.settings.layout);
+  const waiting = grids.reduce((n, g) => n + pendingAllergies(activeRows(g), col).length, 0);
+  if (!waiting) return true;
+  const go = await askInPage(
+    `${waiting} ticked patient${waiting === 1 ? ' has' : 's have'} an allergy with no details yet (red in the list). ${what} anyway?`,
+    [
+      { label: 'Go back and check', value: false, primary: true },
+      { label: `${what} anyway`, value: true },
+    ],
+  );
+  state.saveReport = null;
+  render();
+  return go;
+}
+
 async function copyRows(grid: Grid): Promise<void> {
+  if (!(await allergiesChecked([grid], 'Copy'))) return;
   const { layout } = state.settings;
   const rows = copyBlock(grid.rows, layout, grid.padTo);
   if (layout.includeHeadings) rows.unshift(layout.columns.map((c) => c.heading));
@@ -1629,6 +1654,7 @@ function renderPrep(): HTMLElement | null {
     ),
   );
 
+  const allergyCol = allergyColumn(layout);
   const keyIndex = layout.columns.findIndex((c) => c.source === 'field:patient' || c.source === 'field:name' || c.source === 'field:mrn');
   const rowName = (r: GridRow) => r.patient?.name || (keyIndex >= 0 ? r.cells[keyIndex] : '') || 'this patient';
   const combinedLists = grid.sessions.length > 1;
@@ -1644,6 +1670,9 @@ function renderPrep(): HTMLElement | null {
   const badgesOf = (r: GridRow) => {
     const isCancelled = r.status === 'cancelled';
     return [
+      allergyPending(r, allergyCol)
+        ? h('span', { class: 'badge badge-allergy', title: 'The run sheet says this patient has an allergy. Acknowledge it and type the details.' }, 'Allergy: add details')
+        : null,
       r.status === 'new' ? h('span', { class: 'badge badge-new', title: 'Added to the list since your sheet: needs prep' }, 'New') : null,
       r.reinstated ? h('span', { class: 'badge badge-new', title: 'Was cancelled on your sheet and is back on the run sheet' }, 'Back on list') : null,
       r.movedFrom !== undefined ? h('span', { class: 'badge badge-moved', title: 'The order changed: this patient has moved' }, `Moved, was #${r.movedFrom}`) : null,
@@ -1697,6 +1726,46 @@ function renderPrep(): HTMLElement | null {
       r.included ? '' : 'excluded',
       r.status === 'new' || r.reinstated ? 'row-new' : '',
     ].filter(Boolean);
+  /** A cell's colour class. The allergy cell is red until the details are typed (or acknowledged). */
+  const classFor = (r: GridRow, col: number, value: string) => {
+    if (col === allergyCol && r.patient?.allergyPending && r.status !== 'cancelled') {
+      if (allergyPending(r, allergyCol)) return 'allergy-pending';
+      if (r.allergyAck && lacksAllergyDetails(value)) return 'allergy-ack';
+    }
+    return cellClass(layout.columns[col].source, value);
+  };
+  /** "Acknowledge" under a red allergy box: you've seen it, and will add the details later. */
+  const acknowledgeOf = (r: GridRow, col: number) =>
+    col === allergyCol && allergyPending(r, col)
+      ? h(
+          'button',
+          {
+            class: 'mini ack-btn',
+            title: 'I have seen this allergy (type the details in the box above, or acknowledge it now)',
+            'data-key': `${rowKey(r)}:ack`,
+            onclick: () => {
+              r.allergyAck = true;
+              // An emptied box would lose the fact that there's an allergy at all.
+              if (!r.cells[col].trim() && r.patient) r.cells[col] = r.patient.allergy;
+              render();
+            },
+          },
+          '✓ Acknowledge',
+        )
+      : null;
+  /** A banner over the list while ticked patients still have an allergy to check. */
+  const allergyBanner = () => {
+    const pending = pendingAllergies(active, allergyCol);
+    if (!pending.length) return null;
+    const many = pending.length > 1;
+    return h(
+      'div',
+      { class: 'allergy-banner', role: 'alert' },
+      h('strong', {}, `⚠ ${pending.length} patient${many ? 's have' : ' has'} an allergy to check: `),
+      pending.map(rowName).join('; '),
+      '. Type the details in the red box, or press Acknowledge.',
+    );
+  };
   /** A column's text box for a row, with the run sheet's newer value to Use or Keep, if any. */
   const editorOf = (r: GridRow, col: number, hasPrompts: boolean, onEdit: (target: HTMLTextAreaElement) => void) => {
     const c = layout.columns[col];
@@ -1708,7 +1777,7 @@ function renderPrep(): HTMLElement | null {
           'data-key': `${rowKey(r)}:cell${col}`,
           id: `cell-${rowKey(r)}-${col}`,
           // Leaving an edited cell redraws the prompts, so typing "PXF" by hand lights up its button too.
-          onchange: hasPrompts ? () => setTimeout(render) : undefined,
+          onchange: hasPrompts || col === allergyCol ? () => setTimeout(render) : undefined,
           oninput: (e: Event) => {
             const target = e.target as HTMLTextAreaElement;
             r.cells[col] = target.value;
@@ -1745,8 +1814,8 @@ function renderPrep(): HTMLElement | null {
       h('td', { class: 'handle' }, gripOf(r, index, 'tbody.patient.active'), tickOf(r)),
       h('td', { class: 'time', title: p?.consultant ?? '' }, h('div', { class: 'time-value' }, p?.time ?? ''), who ? h('div', { class: 'who' }, who) : null, ...badgesOf(r)),
       layout.columns.map((c, col) => {
-        const { area, change } = editorOf(r, col, Boolean(prompts), (target) => (target.parentElement!.className = cellClass(c.source, target.value)));
-        return h('td', { class: cellClass(c.source, r.cells[col]), style: `min-width:${columnWidth(c.source)}px` }, area, change);
+        const { area, change } = editorOf(r, col, Boolean(prompts), (target) => (target.parentElement!.className = classFor(r, col, target.value)));
+        return h('td', { class: classFor(r, col, r.cells[col]), style: `min-width:${columnWidth(c.source)}px` }, area, change, acknowledgeOf(r, col));
       }),
     );
     return h(
@@ -1823,7 +1892,7 @@ function renderPrep(): HTMLElement | null {
             const { area, change } = editorOf(r, col, Boolean(prompts), () => undefined);
             // The prompts sit under the box they fill in: findings under Diagnosis, lens and target under Implants.
             const near = prompts && col === promptCols.findings ? renderPrompts(r, 'findings') : prompts && col === promptCols.lens ? renderPrompts(r, 'lens') : null;
-            return h('div', { class: `pfield ${cellClass(c.source, r.cells[col])}` }, h('label', { class: 'pfield-label', for: `cell-${rowKey(r)}-${col}` }, c.heading || `Column ${col + 1}`), area, change, near);
+            return h('div', { class: `pfield ${classFor(r, col, r.cells[col])}` }, h('label', { class: 'pfield-label', for: `cell-${rowKey(r)}-${col}` }, c.heading || `Column ${col + 1}`), area, change, acknowledgeOf(r, col), near);
           }),
           r.status === 'cancelled'
             ? null
@@ -1912,6 +1981,7 @@ function renderPrep(): HTMLElement | null {
       ? h('p', { class: 'source-bar muted' }, 'Working from your prepped sheet, without a run sheet: times, New, Moved and the Medical Records email need the run sheet.')
       : renderSource(grid),
     renderUpdate(grid),
+    allergyBanner(),
     phone ? [openAll, cards] : h('div', { class: 'table-wrap' }, table),
   );
 }
@@ -2292,10 +2362,19 @@ function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | nu
   if (cols.findings !== -1 && only !== 'lens') {
     const col = cols.findings;
     const cell = r.cells[col];
+    const order = readEyeOrder(cell);
+    const eyeOrder = h(
+      'span',
+      { class: 'segmented' },
+      h('span', { class: 'prompt-label' }, 'Eye'),
+      chip('1st', order === 'first', () => set(col, writeEyeOrder(cell, order === 'first' ? null : 'first')), '1st eye: goes at the top of the box'),
+      chip('2nd', order === 'second', () => set(col, writeEyeOrder(cell, order === 'second' ? null : 'second')), '2nd eye: goes at the top of the box'),
+    );
     parts.push(
       h(
         'span',
         { class: 'prompt-set' },
+        eyeOrder,
         findingGroups(prompts.findings).map((g) => {
           const chips = g.options.map((o) =>
             chip(o.short, hasToken(cell, o.token), () => set(col, toggleFinding(cell, g, o.token, prompts.findings)), o.token),

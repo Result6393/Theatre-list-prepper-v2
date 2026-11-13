@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { defaultLayout } from '../src/layout';
 import {
   addToken, defaultPrompts, findingGroups, formatPower, formatTarget, hasToken, promptColumns, readLens, readTarget,
-  removeToken, toggleFinding, writeLens, writeTarget,
+  readEyeOrder, removeToken, toggleFinding, writeEyeOrder, writeLens, writeTarget,
 } from '../src/prompts';
 import { defaultSettings, importSettings } from '../src/settings';
 
@@ -106,5 +106,41 @@ describe('prompt settings', () => {
     expect(importSettings(JSON.stringify(old)).prompts).toEqual(defaultPrompts());
     const custom = importSettings('{"prompts":{"enabled":false,"lenses":["SN60WF"]}}').prompts;
     expect(custom).toEqual({ ...defaultPrompts(), enabled: false, lenses: ['SN60WF'] });
+  });
+});
+
+describe('first or second eye', () => {
+  it('reads 1st or 2nd eye from anywhere in the cell, in either spelling', () => {
+    expect(readEyeOrder('NS2. 1st eye. Macula ok.')).toBe('first');
+    expect(readEyeOrder('Cantonese interpreter\n2nd eye')).toBe('second');
+    expect(readEyeOrder('First eye')).toBe('first');
+    expect(readEyeOrder('second EYE, PXF')).toBe('second');
+    expect(readEyeOrder('NS2, macula ok')).toBeNull();
+    expect(readEyeOrder('')).toBeNull();
+  });
+
+  it('puts it on its own line at the top, above what is already there', () => {
+    expect(writeEyeOrder('Cantonese interpreter\nDiabetic', 'first')).toBe('1st eye\nCantonese interpreter\nDiabetic');
+    expect(writeEyeOrder('', 'second')).toBe('2nd eye');
+  });
+
+  it('switches 1st to 2nd without leaving the old mention behind', () => {
+    expect(writeEyeOrder('1st eye\nDiabetic', 'second')).toBe('2nd eye\nDiabetic');
+    expect(writeEyeOrder('NS2. 1st eye. Macula ok.', 'second')).toBe('2nd eye\nNS2. Macula ok.');
+  });
+
+  it('removes it when you pick it again, keeping everything else', () => {
+    expect(writeEyeOrder('1st eye\nDiabetic\nPXF', null)).toBe('Diabetic\nPXF');
+    expect(writeEyeOrder('NS2, 2nd eye, PXF', null)).toBe('NS2, PXF');
+    expect(writeEyeOrder('NS2, 2nd eye', null)).toBe('NS2');
+    expect(writeEyeOrder('2nd eye', null)).toBe('');
+    expect(writeEyeOrder('', null)).toBe('');
+  });
+
+  it('leaves findings and lens text alone', () => {
+    const cell = writeEyeOrder(toggle('Diabetic', 'PXF'), 'first');
+    expect(cell).toBe('1st eye\nDiabetic\nPXF');
+    expect(toggle(cell, 'Guttata')).toBe('1st eye\nDiabetic\nPXF, Guttata');
+    expect(writeEyeOrder(cell, 'second')).toBe('2nd eye\nDiabetic\nPXF');
   });
 });

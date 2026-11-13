@@ -17,6 +17,8 @@ export interface Patient {
   diabetic: string;
   history: string;
   allergy: string;
+  /** The run sheet says the patient has an allergy (Y) but not what it is. */
+  allergyPending: boolean;
   alerts: string;
   hospitalFlags: string[];
   planNotes: string;
@@ -135,6 +137,7 @@ function extractPatient(row: Record<string, string>, id: string, options: Extrac
     diabetic: notes.diabetic,
     history: [notes.interpreter, notes.diabetic].filter(Boolean).join('\n'),
     allergy: formatAllergy(row.ALLERGY ?? ''),
+    allergyPending: /^y(es)?$/i.test((row.ALLERGY ?? '').trim()),
     alerts: formatAlerts(row.CLINICAL_ALERT ?? ''),
     hospitalFlags,
     planNotes: [...hospitalFlags.map((h) => `${h} patient`), ...notes.leftover].join('\n'),
