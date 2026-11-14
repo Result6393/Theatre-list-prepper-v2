@@ -12,7 +12,7 @@ import { lensEmailHtml, lensEmailText, lensLines, type LensItem } from './lensli
 import { absentText, cycleFinding, findingGroups, findingState, hasToken, isLensSurgery, lensCode, readGrading, writeGrading, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
-import { headingCells, type HeadingCell } from './heading';
+import { headingCells, readHeading, type HeadingCell } from './heading';
 import { imageKey, openWorkbook, overwrittenBelow, saveWorkbook, sheetNameProblem, withEdit, WorkbookError, type OcrRecord, type SheetData, type SheetEdit, type Workbook } from './xlsx';
 import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore } from './settings';
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
@@ -781,10 +781,45 @@ function defaultNewFileSource(grid: Grid): string {
 function openNewFile(grid: Grid): void {
   state.saveMenuOpen = false;
   state.newSheet = null;
-  const base = grid.sheetOnly ? grid.combined.slotName : `Theatre list ${defaultSheetName(grid, [])}`;
-  state.newFile = { name: `${base.replace(/[\\/:*?"<>|]/g, '-')}.xlsx`, source: defaultNewFileSource(grid), error: '' };
+  state.newFile = { name: suggestedFileName(grid), source: defaultNewFileSource(grid), error: '' };
   render();
   app.querySelector<HTMLInputElement>('.new-file input')?.select();
+}
+
+/**
+ * A name for a new file from the list: its date (as 2026-10-14, so files sort by date), OR, AM/PM and
+ * consultant, e.g. "2026-10-14 OR 4 AM Smith.xlsx". For a list from your prepped file, these come
+ * from the sheet's heading (Consultant, Date, OR…) when there's no run sheet.
+ */
+function suggestedFileName(grid: Grid): string {
+  const c = grid.combined;
+  let { consultant, date, or, ampm } = c;
+  const sheet = grid.fromSheet ? state.workbook?.sheets.find((x) => x.name === grid.fromSheet) : undefined;
+  if (sheet && grid.pasteAt) {
+    const heading = readHeading(sheet, Number(grid.pasteAt.match(/\d+/)?.[0] ?? 1) - 1, state.settings.layout);
+    consultant ||= heading.consultant ?? '';
+    date ||= heading.date ?? '';
+    or ||= heading.or ? (/^\d+$/.test(heading.or) ? `OR ${heading.or}` : heading.or) : '';
+    ampm ||= heading.ampm ?? '';
+  }
+  const day = (date.split(' + ')[0] ?? '').replace(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, (_, d: string, m: string, y: string) => `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`);
+  const parts = [day, or, ampm, consultant].filter((p) => p && p.trim());
+  const base = parts.length >= 2 ? parts.join(' ') : grid.sheetOnly ? [c.slotName, ...parts].filter(Boolean).join(' ') : `Theatre list ${defaultSheetName(grid, [])}`;
+  return `${base.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim()}.xlsx`;
+}
+
+/** "Save as a new sheet…" and "Save to a new Excel file…" as a pop-up, so they're seen wherever you are on the page. */
+function renderSaveForms(): HTMLElement | null {
+  const grid = state.grid;
+  if (!grid || (!state.newFile && !state.newSheet)) return null;
+  const form = renderNewFile(grid) ?? renderNewSheet(grid);
+  if (!form) return null;
+  const close = () => ((state.newFile = null), (state.newSheet = null), render());
+  return h(
+    'div',
+    { class: 'reorder-backdrop', onclick: (e: Event) => e.target === e.currentTarget && close() },
+    h('div', { class: 'save-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': state.newFile ? 'Save to a new Excel file' : 'Save as a new sheet' }, form),
+  );
 }
 
 /** Chooses a template file for new lists. It's kept on this computer, unless it has patients in it. */
@@ -1433,7 +1468,7 @@ function render(): void {
           done: closeSettings,
         }))
       : h('main', {}, renderSetup(), renderPrep()),
-    ...[state.view === 'main' ? renderViewer() : null, state.view === 'main' ? renderReorder() : null].filter((v): v is HTMLElement => v !== null),
+    ...[state.view === 'main' ? renderViewer() : null, state.view === 'main' ? renderReorder() : null, state.view === 'main' ? renderSaveForms() : null].filter((v): v is HTMLElement => v !== null),
     h(
       'div',
       { class: 'toast-area', role: 'status', 'aria-live': 'polite' },
@@ -2213,8 +2248,6 @@ function renderPrep(): HTMLElement | null {
     ),
     phone ? renderPhoneBar(grid, count, cancelledCount) : toolbar,
     renderSaveReport(),
-    renderNewSheet(grid),
-    renderNewFile(grid),
     grid.sheetOnly
       ? h('p', { class: 'source-bar muted' }, 'Working from your prepped sheet, without a run sheet: times, New, Moved and the Medical Records email need the run sheet.')
       : renderSource(grid),
@@ -3948,6 +3981,12 @@ document.addEventListener('paste', (e) => {
   void addReports(r, files);
 });
 document.addEventListener('keydown', (e) => {
+  if ((state.newFile || state.newSheet) && e.key === 'Escape' && !state.saveReport?.busy) {
+    state.newFile = null;
+    state.newSheet = null;
+    render();
+    return;
+  }
   if (state.reorderOpen && e.key === 'Escape') {
     state.reorderOpen = false;
     render();
