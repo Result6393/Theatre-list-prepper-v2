@@ -33,20 +33,37 @@ export function startDrag(event: PointerEvent, options: DragOptions): void {
   grip.setPointerCapture(event.pointerId);
   event.preventDefault();
 
+  // Where everything was when the drag started (in page coordinates), so the gap that opens up
+  // doesn't move the insertion points while you drag.
+  const rects = items.map((el) => {
+    const box = el.getBoundingClientRect();
+    return { top: box.top + scrollY, bottom: box.bottom + scrollY };
+  });
+  const spacing = items.length > 1 ? Math.max(0, rects[1].top - rects[0].bottom) : 0;
+  const room = rects[from].bottom - rects[from].top + spacing;
+
   /** Insertion point: before item i (0..items.length). */
   const insertionAt = (y: number) => {
+    const at = y + scrollY;
     for (let i = 0; i < items.length; i++) {
-      const box = items[i].getBoundingClientRect();
-      if (y < box.top + box.height / 2) return i;
+      if (at < (rects[i].top + rects[i].bottom) / 2) return i;
     }
     return items.length;
   };
 
+  /**
+   * The patients between the old and new place slide over to open a gap where the dragged one will
+   * land, and the dragged one moves into it (shown as a dashed outline), as in a sortable list.
+   */
   const mark = () => {
-    for (const item of items) item.classList.remove('drop-before', 'drop-after');
-    if (target === from || target === from + 1) return;
-    if (target < items.length) items[target].classList.add('drop-before');
-    else items[items.length - 1].classList.add('drop-after');
+    const to = target > from ? target - 1 : target;
+    items.forEach((el, i) => {
+      let shift = 0;
+      if (i === from) shift = to > from ? rects[to].bottom - rects[from].bottom : to < from ? rects[to].top - rects[from].top : 0;
+      else if (to > from && i > from && i <= to) shift = -room;
+      else if (to < from && i >= to && i < from) shift = room;
+      el.style.transform = shift ? `translateY(${shift}px)` : '';
+    });
   };
 
   const tick = () => {
@@ -66,6 +83,7 @@ export function startDrag(event: PointerEvent, options: DragOptions): void {
     if (!dragging) {
       if (Math.abs(pointerY - startY) < START_DISTANCE) return;
       dragging = true;
+      for (const item of items) item.classList.add('drag-shift');
       source.classList.add('dragging');
       document.body.classList.add('is-dragging');
       document.body.append(ghost);
@@ -84,7 +102,10 @@ export function startDrag(event: PointerEvent, options: DragOptions): void {
     ghost.remove();
     document.body.classList.remove('is-dragging');
     source.classList.remove('dragging');
-    for (const item of items) item.classList.remove('drop-before', 'drop-after');
+    for (const item of items) {
+      item.classList.remove('drag-shift');
+      item.style.transform = '';
+    }
     if (!drop || !dragging) return;
     const to = target > from ? target - 1 : target;
     if (to !== from) options.onDrop(from, to);

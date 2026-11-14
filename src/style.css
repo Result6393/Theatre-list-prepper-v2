@@ -2383,3 +2383,37 @@ input.grade-input.needs-info {
   display: grid;
   font-weight: 600;
 }
+
+/* Dragging to reorder: the others slide apart to open a gap where the patient will land, and the
+   dragged patient sits in it as a dashed outline. */
+.drag-shift {
+  transition: transform 140ms ease;
+}
+
+.prep-card.dragging,
+.reorder-item.dragging,
+.pcard.dragging {
+  position: relative;
+  z-index: 2;
+  opacity: 1;
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+
+.prep-card.dragging > *,
+.pcard.dragging > *,
+.reorder-item.dragging > * {
+  opacity: 0.45;
+}
+
+tbody.dragging {
+  opacity: 1;
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+tbody.dragging td {
+  background: var(--accent-soft);
+  opacity: 0.6;
+}
