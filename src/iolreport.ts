@@ -222,7 +222,10 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
 export function readReport(words: OcrWord[]): ReportReading | null {
   const rows = rowsOf(words.filter((w) => w.text.trim()));
   // OD and OS head the two eyes' halves, in large type on the same line (OCR may read them as "0D", "O5"…).
-  const eyeWord = (w: OcrWord) => w.text.replace(/[^A-Za-z0-9]/g, '').toUpperCase().replace(/[0Q]/g, 'O').replace(/5/g, 'S');
+  // Large type only: "[OD]" in a warning ("[OD] Attention: …") isn't a heading.
+  const typical = median(words.map((w) => w.y1 - w.y0));
+  const eyeWord = (w: OcrWord) =>
+    w.y1 - w.y0 > typical * 1.6 ? w.text.replace(/[.,:;]+$/, '').toUpperCase().replace(/[0Q]/g, 'O').replace(/5/g, 'S') : '';
   let headings: { row: number; od?: OcrWord; os?: OcrWord; middle: number } | null = null;
   rows.forEach((r, i) => {
     const od = r.words.find((w) => eyeWord(w) === 'OD');
@@ -230,18 +233,33 @@ export function readReport(words: OcrWord[]): ReportReading | null {
     if (od && os && od.x1 < os.x0 && !headings) headings = { row: i, od, os, middle: (od.x1 + os.x0) / 2 };
   });
   if (!headings) {
-    // Without them, the centred title ("IOL calculation", "Eye status", "Biometric values") marks the
-    // middle; failing that, the formula lines ("- Barrett … -") centred over the lens tables of both eyes.
-    const titleRow = rows.findIndex((r) => /IOL\s*calculation|eye\s*status|biometric\s*values/i.test(text(r.words)));
+    // Without them, the centred titles ("IOL calculation", "Eye status", "Biometric values") mark the
+    // middle: lines of just those words, not a sentence that mentions them ("This IOL calculation contains…").
+    // Failing that, the formula lines ("- Barrett … -") centred over the lens tables of both eyes.
+    const titleWords = /^(IOL|I0L|calculation|eye|status|biometric|values|[O0Q]D|[O0Q]S)$/i;
+    const titles = rows
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => /IOL\s*calculation|eye\s*status|biometric\s*values/i.test(text(r.words)) && r.words.filter((w) => !titleWords.test(w.text.replace(/[^A-Za-z0-9]/g, ''))).length === 0);
     const isBarrett = (w: OcrWord) => /^barr?ett$/i.test(w.text.replace(/[^A-Za-z]/g, ''));
     const formulas = rows.findIndex((r) => r.words.filter(isBarrett).length >= 2);
-    if (titleRow !== -1) {
-      const words = rows[titleRow].words.filter((w) => /^(IOL|calculation|eye|status|biometric|values)$/i.test(w.text.replace(/[^A-Za-z]/g, '')));
-      headings = { row: titleRow, middle: (Math.min(...words.map((w) => w.x0)) + Math.max(...words.map((w) => w.x1))) / 2 };
+    if (titles.length) {
+      const middles = titles.map(({ r }) => {
+        const t = r.words.filter((w) => /^(IOL|I0L|calculation|eye|status|biometric|values)$/i.test(w.text.replace(/[^A-Za-z0-9]/g, '')));
+        return (Math.min(...t.map((w) => w.x0)) + Math.max(...t.map((w) => w.x1))) / 2;
+      });
+      headings = { row: titles[0].i, middle: median(middles) };
     } else if (formulas !== -1) {
       const centres = rows[formulas].words.filter(isBarrett).map(centre).sort((a, b) => a - b);
       headings = { row: Math.max(0, formulas - 18), middle: (centres[Math.floor(centres.length / 2) - 1] + centres[Math.floor(centres.length / 2)]) / 2 };
     } else return null;
+  }
+  const found = headings as { row: number; od?: OcrWord; os?: OcrWord; middle: number };
+  // With one heading read, still mark it on the screenshot.
+  if (!found.od || !found.os) {
+    for (const w of rows[found.row]?.words ?? []) {
+      if (eyeWord(w) === 'OD' && centre(w) < found.middle) found.od = w;
+      if (eyeWord(w) === 'OS' && centre(w) > found.middle) found.os = w;
+    }
   }
   const { row: headingRow, od, os, middle } = headings as { row: number; od?: OcrWord; os?: OcrWord; middle: number };
 
@@ -265,8 +283,8 @@ export function readReport(words: OcrWord[]): ReportReading | null {
   const measured = header.findIndex((r) => /date\s*of\s*measurement/i.test(text(r.words)));
   const warnings = header
     .slice(measured + 1)
-    .map((r) => text(r.words).replace(/^[\W_]+/, '').trim())
-    .filter((line) => (line.match(/[A-Za-z]{3,}/g) ?? []).length >= 3 && !/IOL calculation|Physician|Operator/i.test(line));
+    .map((r) => text(r.words).replace(/^[^\w[]+/, '').trim())
+    .filter((line) => (line.match(/[A-Za-z]{3,}/g) ?? []).length >= 3 && !/^\W*IOL\s*calculation\W*$/i.test(line));
 
   const body = rows.slice(headingRow + 1);
   const minX = Math.min(...words.map((w) => w.x0));
@@ -276,8 +294,11 @@ export function readReport(words: OcrWord[]): ReportReading | null {
   // "OD" / "OS" with "right" / "left" under them.
   const under = (big: OcrWord, word: RegExp) =>
     body.slice(0, 2).flatMap((r) => r.words).find((w) => word.test(w.text) && w.x0 < big.x1 + (big.x1 - big.x0) && w.x1 > big.x0 - (big.x1 - big.x0));
-  if (od) right.headingWords = [od, under(od, /^r[il1]ght$/i)].filter((w): w is OcrWord => Boolean(w));
-  if (os) left.headingWords = [os, under(os, /^[l1I]eft$/i)].filter((w): w is OcrWord => Boolean(w));
+  // Without the big heading (OCR can garble it), the small "right" / "left" under it is marked.
+  const small = (word: RegExp, side: 'right' | 'left') =>
+    rows.slice(headingRow, headingRow + 3).flatMap((r) => r.words).find((w) => word.test(w.text) && (side === 'right' ? centre(w) < middle : centre(w) > middle));
+  right.headingWords = (od ? [od, under(od, /^r[il1]ght$/i)] : [small(/^r[il1]ght$/i, 'right')]).filter((w): w is OcrWord => Boolean(w));
+  left.headingWords = (os ? [os, under(os, /^[l1I]eft$/i)] : [small(/^[l1I]eft$/i, 'left')]).filter((w): w is OcrWord => Boolean(w));
   return {
     name,
     id: id.replace(/[^A-Za-z0-9]/g, ''),
