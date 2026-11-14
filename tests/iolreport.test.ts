@@ -86,6 +86,17 @@ describe('reading an IOL calculation report', () => {
     expect(missing.right?.target).toBe(-0.5);
   });
 
+  it('reads a report with lens tables for one eye only (the other already operated on)', () => {
+    // The left eye's tables gone (its target stays), with and without the OD / OS headings.
+    const oneEye = REPORT.filter((w) => w.y0 < 7 * 30 || w.x0 < 860);
+    for (const words of [oneEye, oneEye.filter((w) => w.text !== 'OD' && w.text !== 'OS')]) {
+      const r = readReport(words)!;
+      expect(r.right?.tables.map((t) => t.rows.length)).toEqual([4, 4, 2]);
+      expect(r.left?.tables ?? []).toEqual([]);
+      expect(checkLens(r, lens({})).facts).toEqual(['Right eye: DCB00 +20.50 → predicted −0.33']);
+    }
+  });
+
   it('isn’t fooled by a page that isn’t an IOL calculation', () => {
     expect(readReport(page([[[0, 'Biometry'], [20, 'AL: 23.53 mm']]]))).toBeNull();
   });

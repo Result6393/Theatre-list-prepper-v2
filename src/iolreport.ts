@@ -230,16 +230,18 @@ export function readReport(words: OcrWord[]): ReportReading | null {
     if (od && os && od.x1 < os.x0 && !headings) headings = { row: i, od, os, middle: (od.x1 + os.x0) / 2 };
   });
   if (!headings) {
-    // Without them, the formula lines ("- Barrett … -"), centred over each lens's table, split the eyes:
-    // four tables (two an eye) or a toric calculation each.
+    // Without them, the centred title ("IOL calculation", "Eye status", "Biometric values") marks the
+    // middle; failing that, the formula lines ("- Barrett … -") centred over the lens tables of both eyes.
+    const titleRow = rows.findIndex((r) => /IOL\s*calculation|eye\s*status|biometric\s*values/i.test(text(r.words)));
     const isBarrett = (w: OcrWord) => /^barr?ett$/i.test(w.text.replace(/[^A-Za-z]/g, ''));
-    const at = rows.findIndex((r) => r.words.filter(isBarrett).length >= 2);
-    if (at === -1) return null;
-    const centres = rows[at].words.filter(isBarrett).map(centre).sort((a, b) => a - b);
-    const middle = (centres[Math.floor(centres.length / 2) - 1] + centres[Math.floor(centres.length / 2)]) / 2;
-    // The calculation starts at its title, or else a few lines above the first lens heading.
-    const title = rows.findIndex((r) => /IOL\s*calculation|eye\s*status/i.test(text(r.words)));
-    headings = { row: title !== -1 && title < at ? title : Math.max(0, at - 18), middle };
+    const formulas = rows.findIndex((r) => r.words.filter(isBarrett).length >= 2);
+    if (titleRow !== -1) {
+      const words = rows[titleRow].words.filter((w) => /^(IOL|calculation|eye|status|biometric|values)$/i.test(w.text.replace(/[^A-Za-z]/g, '')));
+      headings = { row: titleRow, middle: (Math.min(...words.map((w) => w.x0)) + Math.max(...words.map((w) => w.x1))) / 2 };
+    } else if (formulas !== -1) {
+      const centres = rows[formulas].words.filter(isBarrett).map(centre).sort((a, b) => a - b);
+      headings = { row: Math.max(0, formulas - 18), middle: (centres[Math.floor(centres.length / 2) - 1] + centres[Math.floor(centres.length / 2)]) / 2 };
+    } else return null;
   }
   const { row: headingRow, od, os, middle } = headings as { row: number; od?: OcrWord; os?: OcrWord; middle: number };
 
@@ -453,6 +455,10 @@ function constantFor(code: string, constants: LensConstant[]): LensConstant | nu
 /** Predicted refraction at a power, between the table's rows (or beyond its ends, along its slope). */
 function refractionAt(rows: LensRow[], power: number): { ref: number; low: LensRow; high: LensRow } {
   const sorted = [...rows].sort((a, b) => a.power - b.power);
+  if (sorted.length < 2) {
+    const only = sorted[0] ?? { model: '', power, ref: NaN };
+    return { ref: only.ref, low: only, high: only };
+  }
   let i = sorted.findIndex((r) => r.power >= power);
   if (i <= 0) i = 1;
   const low = sorted[Math.min(i, sorted.length - 1) - 1];
@@ -481,7 +487,7 @@ export function estimateLens(
   if (!own) return null;
   let reference: { table: LensTable; code: string; a: number } | null = null;
   for (const table of eye.tables) {
-    if (table.toric || table.rows.length < 2) continue;
+    if (table.toric || table.rows.length < 2) continue;  // needs two rows to read between
     const k = constants.find((c) => {
       const base = c.pattern.includes('x') ? c.pattern.slice(0, c.pattern.indexOf('x')) : c.pattern;
       return base.length >= 3 && canonical(table.title).includes(canonical(base)) && !c.pattern.includes('x');

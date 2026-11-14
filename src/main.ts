@@ -2922,7 +2922,12 @@ function reportStatus(r: GridRow): ReportStatus | null {
   const read = states.filter((s): s is ReadReport => typeof s === 'object').map((s) => s.reading);
   const combined = combineReadings(read);
   if (!combined) return { state: states.includes('failed') ? 'failed' : 'unreadable' };
-  return { state: 'checked', check: checkLens(combined, pickedLens(r), parseConstants(state.settings.prompts.constants)) };
+  try {
+    return { state: 'checked', check: checkLens(combined, pickedLens(r), parseConstants(state.settings.prompts.constants)) };
+  } catch (e) {
+    console.error('Couldn’t check the lens against the report', e);
+    return { state: 'unreadable' };
+  }
 }
 
 const CHECK_ICON: Record<string, string> = { ok: '✓', warn: '⚠', error: '⛔', none: '' };
