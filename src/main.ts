@@ -1734,11 +1734,7 @@ function renderPrep(): HTMLElement | null {
         'Copy lens list',
       );
     })(),
-    h(
-      'button',
-      { disabled: active.length < 2, title: 'Change the order of the patients in a short list', 'data-key': 'reorder', onclick: () => ((state.reorderOpen = true), render()) },
-      '⇅ Reorder',
-    ),
+    renderReorderButton(active.length),
     renderLockAll(grid),
     h('span', { class: 'toolbar-count muted' }, `${count} of ${active.length} ticked`),
     renderViewSwitch(),
@@ -1798,34 +1794,6 @@ function renderPrep(): HTMLElement | null {
       r.note ? h('div', { class: 'who' }, r.note) : null,
     ];
   };
-  /** The ⠿ handle: drag to move (pointer, so fingers work too), or ↑ ↓ keys. */
-  const gripOf = (r: GridRow, index: number, items: string) =>
-    r.status === 'cancelled'
-      ? null
-      : h(
-          'button',
-          {
-            class: 'grip',
-            title: 'Drag to move (or use the ↑ ↓ keys)',
-            'aria-label': `Move ${rowName(r)}: use the up and down arrow keys`,
-            'data-key': `${rowKey(r)}:grip`,
-            onclick: (e: Event) => e.stopPropagation(),
-            onpointerdown: (e: Event) =>
-              startDrag(e as PointerEvent, {
-                items: [...app.querySelectorAll<HTMLElement>(items)],
-                from: index,
-                label: rowName(r),
-                onDrop: (from, to) => moveRow(grid, from, to),
-              }),
-            onkeydown: (e: Event) => {
-              const key = (e as KeyboardEvent).key;
-              if (key !== 'ArrowUp' && key !== 'ArrowDown') return;
-              e.preventDefault();
-              moveRow(grid, index, key === 'ArrowUp' ? index - 1 : index + 1);
-            },
-          },
-          '⠿',
-        );
   const tickOf = (r: GridRow) =>
     h('input', {
       type: 'checkbox',
@@ -1939,7 +1907,7 @@ function renderPrep(): HTMLElement | null {
     const main = h(
       'tr',
       {},
-      h('td', { class: 'handle' }, index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null, r.status === 'cancelled' ? null : lockToggle(r), isLocked(r) ? null : gripOf(r, index, 'tbody.patient.active'), tickOf(r)),
+      h('td', { class: 'handle' }, index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null, r.status === 'cancelled' ? null : lockToggle(r), tickOf(r)),
       h('td', { class: 'time', title: p?.consultant ?? '' }, h('div', { class: 'time-value' }, p?.time ?? ''), who ? h('div', { class: 'who' }, who) : null, ...badgesOf(r)),
       layout.columns.map((c, col) => {
         const { area, change } = editorOf(r, col, Boolean(prompts), (target) => (target.parentElement!.className = classFor(r, col, target.value)));
@@ -2042,8 +2010,6 @@ function renderPrep(): HTMLElement | null {
             : h(
                 'div',
                 { class: 'pcard-move' },
-                isLocked(r) ? null : h('button', { disabled: index <= 0, 'data-key': `${key}:up`, onclick: () => moveRow(grid, index, index - 1) }, '↑ Move up'),
-                isLocked(r) ? null : h('button', { disabled: index >= active.length - 1, 'data-key': `${key}:down`, onclick: () => moveRow(grid, index, index + 1) }, '↓ Move down'),
                 h('button', { class: 'ghost lock-keep', onclick: toggle }, 'Done'),
               ),
         )
@@ -2068,7 +2034,6 @@ function renderPrep(): HTMLElement | null {
         },
         index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
         r.status === 'cancelled' ? null : lockToggle(r),
-        isLocked(r) ? null : gripOf(r, index, '.pcard.active'),
         h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}` }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?'),
         h(
           'div',
@@ -2168,7 +2133,6 @@ function renderPrep(): HTMLElement | null {
         // Where the patient is on the theatre list.
         index >= 0 ? h('span', { class: 'pc-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
         cancelledRow ? null : lockToggle(r),
-        locked ? null : gripOf(r, index, 'article.prep-card.active'),
         tickOf(r),
         eyeSwitch,
         h('div', { class: 'pc-title' }, nameField, sub ? h('div', { class: 'pc-sub' }, sub) : null),
@@ -2233,7 +2197,7 @@ function renderPrep(): HTMLElement | null {
       for (const r of active) r.included = on;
       render();
     } }), ` ${count} of ${active.length} ticked`),
-    renderLockAll(grid),
+    h('span', { class: 'pcards-actions' }, renderReorderButton(active.length), renderLockAll(grid)),
   );
 
   return h(
@@ -2260,6 +2224,15 @@ function renderPrep(): HTMLElement | null {
       : null,
     allergyBanner(),
     phone ? [openAll, cards] : state.tableView ? h('div', { class: 'table-wrap' }, table) : prepCards,
+  );
+}
+
+/** ⇅ Reorder: the only place to change the patients' order. */
+function renderReorderButton(patients: number): HTMLElement {
+  return h(
+    'button',
+    { disabled: patients < 2, title: 'Change the order of the patients in a short list', 'data-key': 'reorder', onclick: () => ((state.reorderOpen = true), (state.moreMenuOpen = false), render()) },
+    '⇅ Reorder',
   );
 }
 
@@ -2473,6 +2446,7 @@ function renderPhoneBar(grid: Grid, count: number, cancelledCount: number): HTML
             item('Copy email text', 'To paste into any email', run(() => void copyEmailText(grid)), !ticked),
             hasRecipients ? null : h('p', { class: 'menu-note' }, 'Add the Medical Records address in Settings to open a draft.'),
             lensItems(grid) ? item('Copy lens list', 'Patients and lenses, for the theatre coordinator', run(() => void copyLensList(grid))) : null,
+            item('Reorder', 'Change the order of the patients', run(() => ((state.reorderOpen = true), render()))),
             item('Copy summary', 'The prepped list, to paste into an email', run(() => void copySummary(grid))),
             item('Print / save as PDF', 'The prepped list as a page', run(() => printSummary(grid))),
           )

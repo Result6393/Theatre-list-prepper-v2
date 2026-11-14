@@ -2576,3 +2576,13 @@ button.lock-toggle.on {
 .pcard-move {
   justify-content: flex-end;
 }
+
+.pcards-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.pcards-actions button {
+  padding: 4px 8px;
+  font-size: 0.85rem;
+}
