@@ -165,14 +165,49 @@ export function readEyeOrder(cell: string): EyeOrder | null {
 
 /** Puts "1st eye" or "2nd eye" on its own line at the top (replacing any old mention), or removes it. */
 export function writeEyeOrder(cell: string, order: EyeOrder | null): string {
-  const lines = (cell ? cell.split('\n') : []).flatMap((line) => {
+  return writeHeader(cell, order, readGrading(cell));
+}
+
+// ---- Cataract grade ---------------------------------------------------------------
+
+/** The top line: "1st eye: NS2+ C1", or "Cataract: NS2+ C1" before the eye is picked. */
+const HEADER_EYE = /^\s*(1st|first|2nd|second)\s+eye\b[\s:.,;–-]*(.*)$/i;
+const HEADER_GRADE = /^\s*cataract\s*:\s*(.*)$/i;
+
+function isHeader(line: string): boolean {
+  return HEADER_EYE.test(line) || HEADER_GRADE.test(line);
+}
+
+/** The cataract grade at the top of the box: after "1st eye:" / "2nd eye:", or on a "Cataract:" line. */
+export function readGrading(cell: string): string {
+  const top = cell.split('\n').find((line) => line.trim()) ?? '';
+  const m = top.match(HEADER_EYE) ?? top.match(HEADER_GRADE);
+  return m ? (m[m.length - 1] ?? '').trim() : '';
+}
+
+export function writeGrading(cell: string, grading: string): string {
+  return writeHeader(cell, readEyeOrder(cell), grading.trim());
+}
+
+/**
+ * The box starts with which eye it is and the cataract grade ("1st eye: NS2+ C1"), then the findings
+ * and history. Rewrites that top line, taking out any other mention of 1st / 2nd eye.
+ */
+function writeHeader(cell: string, order: EyeOrder | null, grading: string): string {
+  const all = cell ? cell.split('\n') : [];
+  const firstText = all.findIndex((line) => line.trim());
+  const lines = all.flatMap((line, i) => {
+    if (i === firstText && isHeader(line)) return [];
     if (readEyeOrder(line) === null) return [line];
     // Take the old mention out; a line that was only that mention goes altogether.
     const cut = line.replace(EYE_ORDER, '').replace(/([,;])(\s*[,;])+/g, '$1').replace(/\s+([,;])/g, '$1').replace(/^[\s,;.]+/, '').replace(/[ \t]{2,}/g, ' ').replace(/[\s,;]+$/, '');
     return cut.trim() ? [cut] : [];
   });
   while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
-  if (order) lines.unshift(order === 'first' ? '1st eye' : '2nd eye');
+  while (lines.length && !lines[0].trim()) lines.shift();
+  const eye = order === 'first' ? '1st eye' : order === 'second' ? '2nd eye' : '';
+  const header = eye ? `${eye}${grading ? `: ${grading}` : ''}` : grading ? `Cataract: ${grading}` : '';
+  if (header) lines.unshift(header);
   return lines.join('\n');
 }
 

@@ -9,7 +9,7 @@ import { combineSessions, listOfPatient, orderedSelection } from './lists';
 import { copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, keepReports, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
 import { lensEmailHtml, lensEmailText, lensLines, type LensItem } from './lenslist';
-import { absentText, cycleFinding, findingGroups, findingState, hasToken, isLensSurgery, lensCode, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
+import { absentText, cycleFinding, findingGroups, findingState, hasToken, isLensSurgery, lensCode, readGrading, writeGrading, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
 import { headingCells, type HeadingCell } from './heading';
@@ -122,6 +122,8 @@ const state = {
   notice: null as { text: string; error: boolean } | null,
   /** A patient's IOL report open full screen (for timeout): the row, and which screenshot. */
   viewer: null as Viewer | null,
+  /** A screenshot whose × was pressed: asking beside it whether to remove it. */
+  confirmRemove: null as { key: string; index: number } | null,
   /** Desktop: the list as a table like your sheet, instead of a card per patient. */
   tableView: (() => {
     try {
@@ -2629,6 +2631,7 @@ function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | nu
         'span',
         { class: 'prompt-set' },
         eyeOrder,
+        gradingInput(r, col, 'prompt-input'),
         findingGroups(prompts.findings).map((g) => {
           if (g.options.length === 1) {
             // One click: present; the next: not present; the next: not recorded.
@@ -2727,9 +2730,26 @@ function toDoOf(r: GridRow, examCol: number, findingsCol: number, lensCol: numbe
   const lens = prompts.enabled && isLensRow(r);
   const todo: string[] = [];
   if (lens && findingsCol >= 0 && !readEyeOrder(r.cells[findingsCol] ?? '')) todo.push('1st/2nd eye');
+  if (lens && findingsCol >= 0 && !readGrading(r.cells[findingsCol] ?? '')) todo.push('grade');
   if (examCol >= 0 && !(r.cells[examCol] ?? '').trim()) todo.push('VA/IOP');
   if (lens && lensCol >= 0 && !pickedLens(r).code) todo.push('lens');
   return todo;
+}
+
+/** The cataract grade, written after 1st / 2nd eye at the top of the diagnosis box; shaded until filled in. */
+function gradingInput(r: GridRow, col: number, cls: string): HTMLElement {
+  const grading = readGrading(r.cells[col] ?? '');
+  return h('input', {
+    type: 'text',
+    class: `${cls} grade-input${grading ? '' : ' needs-info'}`,
+    style: 'width:11em',
+    value: grading,
+    placeholder: 'Cataract grade',
+    title: 'Cataract grade (e.g. NS2+ C1): goes after 1st / 2nd eye at the top of the diagnosis box',
+    'aria-label': `Cataract grade for ${rowLabel(r)}`,
+    'data-key': `${rowKey(r)}:grade`,
+    onchange: (e: Event) => setCell(r, col, writeGrading(r.cells[col] ?? '', (e.target as HTMLInputElement).value)),
+  });
 }
 
 /** Writes a cell from a control, redrawing after the event (so a Tab to the next box lands first). */
@@ -2753,9 +2773,14 @@ function renderFindingControls(r: GridRow, col: number): HTMLElement {
     { class: 'pc-controls' },
     h(
       'div',
-      { class: order ? 'seg' : 'seg needs', role: 'group', 'aria-label': 'First or second eye', title: order ? '' : 'Pick 1st or 2nd eye' },
-      seg('1st eye', order === 'first', () => setCell(r, col, writeEyeOrder(cell, order === 'first' ? null : 'first')), 'chip:1st'),
-      seg('2nd eye', order === 'second', () => setCell(r, col, writeEyeOrder(cell, order === 'second' ? null : 'second')), 'chip:2nd'),
+      { class: 'pc-row' },
+      h(
+        'div',
+        { class: order ? 'seg' : 'seg needs', role: 'group', 'aria-label': 'First or second eye', title: order ? '' : 'Pick 1st or 2nd eye' },
+        seg('1st eye', order === 'first', () => setCell(r, col, writeEyeOrder(cell, order === 'first' ? null : 'first')), 'chip:1st'),
+        seg('2nd eye', order === 'second', () => setCell(r, col, writeEyeOrder(cell, order === 'second' ? null : 'second')), 'chip:2nd'),
+      ),
+      gradingInput(r, col, 'pc-input'),
     ),
     h(
       'div',
@@ -2929,18 +2954,11 @@ function renderReportBlock(r: GridRow): HTMLElement {
     h(
       'div',
       { class: 'pc-thumbs' },
-      reports.map((image, i) =>
-        h(
-          'span',
-          { class: 'report-thumb' },
-          h('button', { class: 'report-open', title: 'Open full screen, e.g. to check at timeout', 'data-key': `${rowKey(r)}:report:${i}`, onclick: () => openViewer(r, i) }, h('img', { src: imageUrl(image), alt: `IOL report ${i + 1} for ${rowLabel(r)}` })),
-          h('button', { class: 'report-remove', title: 'Remove this screenshot', 'aria-label': `Remove IOL report ${i + 1} for ${rowLabel(r)}`, onclick: () => void removeReport(r, i) }, '×'),
-        ),
-      ),
+      reports.map((image, i) => reportThumb(r, image, i)),
       h('button', { class: 'chip', 'data-key': `${rowKey(r)}:report:add`, title: 'Add another screenshot (or click here and paste)', onclick: () => input.click() }, '+'),
       input,
     ),
-    h('div', { class: 'pc-check' }, renderReportStatus(r)),
+    h('div', { class: 'pc-check' }, renderReportStatus(r), ' ', readAgainButton(r, 'Re-read')),
   );
 }
 
@@ -3011,19 +3029,37 @@ async function addReports(r: GridRow, files: Blob[]): Promise<void> {
   say(`Added ${what} for ${rowLabel(r)}. ${reportSaveHint()}`);
 }
 
-async function removeReport(r: GridRow, index: number): Promise<void> {
-  const go = await askInPage(`Remove this IOL report screenshot for ${rowLabel(r)}?`, [
-    { label: 'Remove', value: true, primary: true },
-    { label: 'Keep it', value: false },
-  ]);
-  state.saveReport = null;
-  if (go && r.reports) {
-    r.reports = r.reports.filter((_, i) => i !== index);
-    if (state.viewer && state.viewer.key === rowKey(r)) state.viewer = r.reports.length ? { ...state.viewer, index: Math.min(index, r.reports.length - 1) } : null;
-    say(`Removed. ${reportSaveHint().replace('keep it in', 'take it out of')}`);
-    return;
-  }
+/** Removing a screenshot asks right beside it (Remove / Keep), not at the top of the page. */
+function removeReport(r: GridRow, index: number): void {
+  state.confirmRemove = { key: rowKey(r), index };
   render();
+}
+
+function confirmRemoveReport(r: GridRow, index: number): void {
+  state.confirmRemove = null;
+  if (!r.reports) return render();
+  r.reports = r.reports.filter((_, i) => i !== index);
+  if (state.viewer && state.viewer.key === rowKey(r)) state.viewer = r.reports.length ? { ...state.viewer, index: Math.min(state.viewer.index, r.reports.length - 1) } : null;
+  say(`Removed. ${reportSaveHint().replace('keep it in', 'take it out of')}`);
+}
+
+/** A screenshot's thumbnail, with × to remove it (asking beside it first). */
+function reportThumb(r: GridRow, image: ReportImage, i: number): HTMLElement {
+  const asking = state.confirmRemove?.key === rowKey(r) && state.confirmRemove.index === i;
+  return h(
+    'span',
+    { class: asking ? 'report-thumb asking' : 'report-thumb' },
+    h('button', { class: 'report-open', title: 'Open full screen, e.g. to check at timeout', 'data-key': `${rowKey(r)}:report:${i}`, onclick: () => openViewer(r, i) }, h('img', { src: imageUrl(image), alt: `IOL report ${i + 1} for ${rowLabel(r)}` })),
+    asking
+      ? h(
+          'span',
+          { class: 'confirm-remove', role: 'group', 'aria-label': 'Remove this screenshot?' },
+          h('span', {}, 'Remove?'),
+          h('button', { class: 'mini danger', 'data-key': `${rowKey(r)}:remove-yes:${i}`, onclick: () => confirmRemoveReport(r, i) }, 'Remove'),
+          h('button', { class: 'mini', 'data-key': `${rowKey(r)}:remove-no:${i}`, onclick: () => ((state.confirmRemove = null), render()) }, 'Keep'),
+        )
+      : h('button', { class: 'report-remove', title: 'Remove this screenshot', 'aria-label': `Remove IOL report ${i + 1} for ${rowLabel(r)}`, 'data-key': `${rowKey(r)}:remove:${i}`, onclick: () => removeReport(r, i) }, '×'),
+  );
 }
 
 function openViewer(r: GridRow, index: number): void {
@@ -3088,18 +3124,7 @@ function renderReports(r: GridRow): HTMLElement | null {
       title: 'Paste a screenshot of the IOL report here (click, then Ctrl+V), or drop one on it',
     },
     h('span', { class: 'prompt-label' }, 'IOL report'),
-    reports.map((image, i) =>
-      h(
-        'span',
-        { class: 'report-thumb' },
-        h(
-          'button',
-          { class: 'report-open', title: 'Open full screen, e.g. to check at timeout', 'data-key': `${key}:report:${i}`, onclick: () => openViewer(r, i) },
-          h('img', { src: imageUrl(image), alt: `IOL report ${i + 1} for ${rowLabel(r)}` }),
-        ),
-        h('button', { class: 'report-remove', title: 'Remove this screenshot', 'aria-label': `Remove IOL report ${i + 1} for ${rowLabel(r)}`, onclick: () => void removeReport(r, i) }, '×'),
-      ),
-    ),
+    reports.map((image, i) => reportThumb(r, image, i)),
     h(
       'button',
       { class: 'chip', 'data-key': `${key}:report:add`, title: 'Choose a screenshot of the IOL report, or click here and paste one with Ctrl+V', onclick: () => input.click() },
@@ -3166,6 +3191,7 @@ function renderViewer(): HTMLElement | null {
               h('button', { 'data-key': 'viewer:next', disabled: v.index >= reports.length - 1, 'aria-label': 'Next screenshot', onclick: () => go(v.index + 1) }, '›'),
             ]
           : null,
+        readAgainButton(r, 'Re-read this report', 'ghost'),
         h(
           'button',
           { 'data-key': 'viewer:size', onclick: () => ((state.viewer = { ...v, actualSize: !v.actualSize }), render()) },
@@ -3317,12 +3343,13 @@ function unreadText(state: ReportStatus['state']): string {
 }
 
 /** Reads a row's screenshots again from scratch (e.g. after the app was updated). */
-function readAgainButton(r: GridRow): HTMLElement {
+function readAgainButton(r: GridRow, label = 'Read again', cls = 'link'): HTMLElement {
   return h(
     'button',
     {
-      class: 'link',
-      'data-key': `${rowKey(r)}:read-again`,
+      class: cls,
+      title: 'Read the screenshot again from scratch',
+      'data-key': `${rowKey(r)}:read-again:${label}`,
       onclick: () => {
         for (const image of r.reports ?? []) {
           readings.delete(image);
@@ -3331,7 +3358,7 @@ function readAgainButton(r: GridRow): HTMLElement {
         render();
       },
     },
-    'Read again',
+    label,
   );
 }
 
