@@ -103,6 +103,8 @@ const state = {
   emailMenuOpen: false,
   /** The Summary menu (copy for email, print / save as PDF). */
   summaryMenuOpen: false,
+  /** The short list for changing the order of the patients. */
+  reorderOpen: false,
   saveMenuOpen: false,
   /** Phone: the ⋯ menu in the bottom bar (Update, Email). */
   moreMenuOpen: false,
@@ -1431,7 +1433,7 @@ function render(): void {
           done: closeSettings,
         }))
       : h('main', {}, renderSetup(), renderPrep()),
-    ...[state.view === 'main' ? renderViewer() : null].filter((v): v is HTMLElement => v !== null),
+    ...[state.view === 'main' ? renderViewer() : null, state.view === 'main' ? renderReorder() : null].filter((v): v is HTMLElement => v !== null),
     h(
       'div',
       { class: 'toast-area', role: 'status', 'aria-live': 'polite' },
@@ -1732,7 +1734,13 @@ function renderPrep(): HTMLElement | null {
         'Copy lens list',
       );
     })(),
+    h(
+      'button',
+      { disabled: active.length < 2, title: 'Change the order of the patients in a short list', 'data-key': 'reorder', onclick: () => ((state.reorderOpen = true), render()) },
+      '⇅ Reorder',
+    ),
     h('span', { class: 'toolbar-count muted' }, `${count} of ${active.length} ticked`),
+    renderViewSwitch(),
   );
 
   const columnCount = layout.columns.length + 2;
@@ -2213,7 +2221,6 @@ function renderPrep(): HTMLElement | null {
         ? h('h2', {}, h('span', { class: 'num' }, '3'), combined.slotName, h('span', { class: 'muted heading-note' }, ` from ${grid.fromWorkbook?.name ?? 'your sheet'}`))
         : h('h2', {}, h('span', { class: 'num' }, '3'), listName(combined)),
       grid.sheetOnly ? null : factChips,
-      phone ? null : renderViewSwitch(),
     ),
     phone ? renderPhoneBar(grid, count, cancelledCount) : toolbar,
     renderSaveReport(),
@@ -2228,7 +2235,61 @@ function renderPrep(): HTMLElement | null {
   );
 }
 
-/** Desktop, top right of the list: Standard (a card per patient) or Compact (the columns as a table, like your sheet). */
+/** A short list of the patients to put in order (drag, or ↑ ↓), instead of scrolling through the cards. */
+function renderReorder(): HTMLElement | null {
+  const grid = state.grid;
+  if (!state.reorderOpen || !grid) return null;
+  const { layout } = state.settings;
+  const procCol = layout.columns.findIndex((c) => c.source === 'field:procedure' || c.source === 'field:procedureRaw');
+  const active = activeRows(grid);
+  const close = () => ((state.reorderOpen = false), render());
+  return h(
+    'div',
+    { class: 'reorder-backdrop', onclick: (e: Event) => e.target === e.currentTarget && close() },
+    h(
+      'div',
+      { class: 'reorder', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Change the order of the patients' },
+      h('div', { class: 'reorder-head' }, h('h3', {}, 'Order on the list'), h('span', { class: 'pc-muted' }, 'Drag ⠿, or use ↑ ↓'), h('button', { class: 'primary', 'data-key': 'reorder:done', onclick: close }, 'Done')),
+      h(
+        'ol',
+        { class: 'reorder-list' },
+        active.map((r, index) => {
+          const eye = pickedLens(r).eye;
+          const procedure = (procCol >= 0 ? r.cells[procCol] : r.patient?.procedure ?? '').split('\n')[0];
+          return h(
+            'li',
+            { class: 'reorder-item' },
+            h('span', { class: 'pc-num' }, String(index + 1)),
+            h(
+              'button',
+              {
+                class: 'grip',
+                title: 'Drag to move (or use the ↑ ↓ keys)',
+                'aria-label': `Move ${rowLabel(r)}`,
+                'data-key': `reorder:grip:${rowKey(r)}`,
+                onpointerdown: (e: Event) =>
+                  startDrag(e as PointerEvent, { items: [...app.querySelectorAll<HTMLElement>('.reorder-item')], from: index, label: rowLabel(r), onDrop: (from, to) => moveRow(grid, from, to) }),
+                onkeydown: (e: Event) => {
+                  const key = (e as KeyboardEvent).key;
+                  if (key !== 'ArrowUp' && key !== 'ArrowDown') return;
+                  e.preventDefault();
+                  moveRow(grid, index, key === 'ArrowUp' ? index - 1 : index + 1);
+                },
+              },
+              '⠿',
+            ),
+            h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}` }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?'),
+            h('span', { class: 'reorder-name' }, rowLabel(r), h('span', { class: 'pc-muted' }, [r.patient?.time, procedure].filter(Boolean).join(' · '))),
+            h('button', { class: 'mini', disabled: index === 0, 'aria-label': `Move ${rowLabel(r)} up`, 'data-key': `reorder:up:${rowKey(r)}`, onclick: () => moveRow(grid, index, index - 1) }, '↑'),
+            h('button', { class: 'mini', disabled: index === active.length - 1, 'aria-label': `Move ${rowLabel(r)} down`, 'data-key': `reorder:down:${rowKey(r)}`, onclick: () => moveRow(grid, index, index + 1) }, '↓'),
+          );
+        }),
+      ),
+    ),
+  );
+}
+
+/** In the toolbar (which stays in view): Standard (a card per patient) or Compact (the columns as a table, like your sheet). */
 function renderViewSwitch(): HTMLElement {
   const choose = (table: boolean) => {
     state.tableView = table;
@@ -3792,6 +3853,11 @@ document.addEventListener('paste', (e) => {
   void addReports(r, files);
 });
 document.addEventListener('keydown', (e) => {
+  if (state.reorderOpen && e.key === 'Escape') {
+    state.reorderOpen = false;
+    render();
+    return;
+  }
   const v = state.viewer;
   if (v) {
     const count = state.grid?.rows.find((r) => rowKey(r) === v.key)?.reports?.length ?? 0;
