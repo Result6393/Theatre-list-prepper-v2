@@ -47,7 +47,7 @@ const REPORT = page([
   two('--- +1.36 3° Emmetropia', '--- +1.32 167° Emmetropia'),
 ]);
 
-const lens = (over: Partial<PickedLens>): PickedLens => ({ eye: 'RIGHT', code: 'DCB00', power: 20.5, target: -0.5, mrn: '1000001', surname: 'SMITH', ...over });
+const lens = (over: Partial<PickedLens>): PickedLens => ({ eye: 'RIGHT', code: 'DCB00', power: 20.5, target: -0.5, mrn: '1000001', surname: 'SMITH', givenName: 'Jan', ...over });
 
 describe('reading an IOL calculation report', () => {
   const report = readReport(REPORT)!;
@@ -129,13 +129,28 @@ describe('checking the lens you picked against the report', () => {
     expect(checkLens(report, lens({ code: 'CNA0T4', family: { base: 'CNA0T', number: '4' } })).flags[0].text).toBe('CNA0T4 isn’t on the right eye’s side of the report (add its A-constant in Settings to estimate it).');
   });
 
-  it('flags a report for someone else', () => {
-    expect(checkLens(report, lens({ mrn: '2000002', surname: 'JONES' })).flags.map((f) => f.text)).toEqual([
-      'The report is for patient ID 1000001, not 2000002.',
-      'The report’s name (SMITH, Jan) doesn’t match JONES.',
-    ]);
-    // A letter misread by OCR in a long name is allowed.
-    expect(checkLens({ ...report, name: 'SMlTHERS, Jan' }, lens({ surname: 'SMITHERS' })).level).toBe('ok');
+  it('flags a report with another patient’s name, first and as an error; a different ID is only a note', () => {
+    const wrong = checkLens(report, lens({ mrn: '2000002', surname: 'JONES', givenName: 'Kim' }));
+    expect(wrong.level).toBe('error');
+    expect(wrong.nameMismatch).toBe('NAME MISMATCH: the report is for “SMITH, Jan”, not “JONES, Kim”. Check you have this patient’s report.');
+    expect(wrong.flags[0].text).toBe(wrong.nameMismatch);
+    expect(wrong.idNote).toMatch(/^The report’s patient ID \(1000001\) isn’t the MRN on the list \(2000002\)/);
+    // Only the ID differs (another system's number): the lens check still passes.
+    expect(checkLens(report, lens({ mrn: '2000002', givenName: 'Jan' })).level).toBe('ok');
+  });
+
+  it('compares the given name too, as family members share a surname', () => {
+    expect(checkLens(report, lens({ givenName: 'Ron' })).nameMismatch).toBeDefined();
+    expect(checkLens(report, lens({ givenName: 'J' })).nameMismatch).toBeUndefined();
+    // A letter misread by OCR in a long name is allowed, and part of a double-barrelled name matches.
+    expect(checkLens({ ...report, name: 'SMlTHERS, Jan' }, lens({ surname: 'SMITHERS', givenName: 'Jan' })).level).toBe('ok');
+    expect(checkLens({ ...report, name: 'SMITH-JONES, Jan' }, lens({ surname: 'SMITH', givenName: 'Jan' })).level).toBe('ok');
+    // A short name must match exactly.
+    expect(checkLens({ ...report, name: 'OH, Ann' }, lens({ surname: 'NG', givenName: 'Ann' })).nameMismatch).toBeDefined();
+  });
+
+  it('says so when the name on the report can’t be read', () => {
+    expect(checkLens({ ...report, name: '' }, lens({})).flags.map((f) => f.text)).toContain('Couldn’t read the patient’s name on the report: check it’s this patient’s.');
   });
 
   it('checks both eyes when the eye isn’t set, and reads several screenshots as one', () => {

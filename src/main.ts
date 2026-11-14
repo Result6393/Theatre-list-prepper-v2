@@ -69,6 +69,9 @@ interface SaveReport {
   actions?: { label: string; primary?: boolean; run: () => void }[];
 }
 
+/** Remembers the desktop list view (cards or table) on this computer. */
+const VIEW_KEY = 'theatre-list-prepper:view';
+
 const storage: KeyValueStore | null = (() => {
   try {
     return window.localStorage;
@@ -119,6 +122,14 @@ const state = {
   notice: null as { text: string; error: boolean } | null,
   /** A patient's IOL report open full screen (for timeout): the row, and which screenshot. */
   viewer: null as Viewer | null,
+  /** Desktop: the list as a table like your sheet, instead of a card per patient. */
+  tableView: (() => {
+    try {
+      return storage?.getItem(VIEW_KEY) === 'table';
+    } catch {
+      return false;
+    }
+  })(),
 };
 
 /** A patient's IOL report open full screen, and the lens being tried in it. */
@@ -2043,6 +2054,123 @@ function renderPrep(): HTMLElement | null {
     );
   };
 
+
+  /** Desktop: one card per patient — name and eye, a compact VA/IOP and drops strip, diagnosis and lens side by side, then the other columns. */
+  const lensCol = promptColumns(layout, state.settings.prompts).lens;
+  const findingsCol = promptColumns(layout, state.settings.prompts).findings;
+  const placed = new Set([eyeCol, keyIndex, examCol, allergyCol, findingsCol, lensCol].filter((c) => c >= 0));
+  const renderPrepCard = (r: GridRow, index: number) => {
+    const key = rowKey(r);
+    const p = r.patient;
+    const cancelledRow = r.status === 'cancelled';
+    const lensRow = !cancelledRow && isLensRow(r);
+    const field = (col: number, compact = false) => {
+      if (col < 0) return null;
+      const c = layout.columns[col];
+      const wrap = h('label', { class: `pc-field ${classFor(r, col, r.cells[col])}${compact ? ' compact' : ''}` });
+      const { area, change } = editorOf(r, col, lensRow, (target) => (wrap.className = `pc-field ${classFor(r, col, target.value)}${compact ? ' compact' : ''}`));
+      if (col === examCol) area.setAttribute('placeholder', 'VA / IOP');
+      wrap.append(h('span', { class: 'pc-label' }, c.heading || `Column ${col + 1}`), area);
+      if (change) wrap.append(change);
+      const ack = acknowledgeOf(r, col);
+      if (ack) wrap.append(ack);
+      return wrap;
+    };
+    const eye = eyeCol >= 0 ? r.cells[eyeCol].trim().toUpperCase() : '';
+    const eyeSwitch =
+      eyeCol >= 0
+        ? h(
+            'div',
+            { class: 'pc-eye', role: 'group', 'aria-label': `Eye for ${rowName(r)}` },
+            [['RIGHT', 'R'], ['LEFT', 'L'], ['BOTH', 'B']].map(([value, label]) =>
+              h(
+                'button',
+                {
+                  class: `eye-btn eye-btn-${value.toLowerCase()}${eye === value ? ' on' : ''}`,
+                  'aria-pressed': eye === value ? 'true' : 'false',
+                  title: value.charAt(0) + value.slice(1).toLowerCase(),
+                  'data-key': `${key}:eye:${value}`,
+                  onclick: () => ((r.cells[eyeCol] = eye === value ? '' : value), render()),
+                },
+                label,
+              ),
+            ),
+          )
+        : null;
+    const procedure = procCol >= 0 ? r.cells[procCol].split('\n')[0] : p?.procedure ?? '';
+    const sub = [p?.time, procedure, whoOf(r)].filter(Boolean).join(' · ');
+    const todo = cancelledRow ? [] : toDoOf(r, examCol, findingsCol, lensCol);
+    const nameField =
+      keyIndex >= 0
+        ? h('textarea', {
+            class: 'pc-name',
+            rows: 1,
+            value: r.cells[keyIndex],
+            'aria-label': `${layout.columns[keyIndex].heading} for ${rowName(r)}`,
+            'data-key': `${key}:cell${keyIndex}`,
+            oninput: (e: Event) => {
+              const target = e.target as HTMLTextAreaElement;
+              r.cells[keyIndex] = target.value;
+              autoGrow(target);
+            },
+          })
+        : h('div', { class: 'pc-name' }, rowName(r));
+    const rest = layout.columns.map((_, col) => col).filter((col) => !placed.has(col));
+    return h(
+      'article',
+      { class: ['prep-card', ...classesOf(r)].join(' ') },
+      h(
+        'div',
+        { class: 'pc-head' },
+        gripOf(r, index, 'article.prep-card.active'),
+        tickOf(r),
+        eyeSwitch,
+        h('div', { class: 'pc-title' }, nameField, sub ? h('div', { class: 'pc-sub' }, sub) : null),
+        h(
+          'div',
+          { class: 'pc-badges' },
+          reportStatus(r)?.check?.nameMismatch ? h('span', { class: 'badge badge-mismatch', role: 'alert' }, '⛔ IOL report: wrong name') : null,
+          ...badgesOf(r),
+          todo.length
+            ? h('span', { class: 'badge badge-todo', title: 'Still to fill in' }, `To do: ${todo.join(' · ')}`)
+            : cancelledRow
+              ? null
+              : h('span', { class: 'badge badge-ready' }, '✓ Ready'),
+        ),
+      ),
+      examCol >= 0 || allergyCol >= 0 ? h('div', { class: 'pc-strip' }, field(examCol, true), field(allergyCol, true)) : null,
+      h(
+        'div',
+        { class: 'pc-body' },
+        findingsCol >= 0
+          ? h('section', { class: 'pc-section' }, lensRow ? renderFindingControls(r, findingsCol) : null, field(findingsCol))
+          : null,
+        lensCol >= 0
+          ? h('section', { class: 'pc-section pc-lens' }, lensRow ? renderLensControls(r, lensCol) : null, field(lensCol), lensRow || r.reports?.length ? renderReportBlock(r) : null)
+          : null,
+      ),
+      rest.length ? h('div', { class: 'pc-foot' }, rest.map((col) => field(col, true))) : null,
+    );
+  };
+  const prepCards = h(
+    'div',
+    { class: 'prep-cards' },
+    h(
+      'div',
+      { class: 'prep-cards-tools' },
+      h('label', {}, h('input', { type: 'checkbox', checked: allTicked, 'aria-label': 'Tick all patients', onchange: (e: Event) => {
+        const on = (e.target as HTMLInputElement).checked;
+        for (const r of active) r.included = on;
+        render();
+      } }), ` Tick all`),
+    ),
+    active.map(renderPrepCard),
+    cancelled.length
+      ? h('div', { class: 'pcards-cancelled' }, `Cancelled: not on the latest run sheet (${cancelled.length}). Copied below the list under a CANCELLED row; untick any you don’t want to keep.`)
+      : null,
+    cancelled.map((r) => renderPrepCard(r, -1)),
+  );
+
   const cards = h(
     'div',
     { class: 'pcards' },
@@ -2076,6 +2204,7 @@ function renderPrep(): HTMLElement | null {
         ? h('h2', {}, h('span', { class: 'num' }, '3'), combined.slotName, h('span', { class: 'muted heading-note' }, ` from ${grid.fromWorkbook?.name ?? 'your sheet'}`))
         : h('h2', {}, h('span', { class: 'num' }, '3'), listName(combined)),
       grid.sheetOnly ? null : factChips,
+      phone ? null : renderViewSwitch(),
     ),
     phone ? renderPhoneBar(grid, count, cancelledCount) : toolbar,
     renderSaveReport(),
@@ -2086,7 +2215,26 @@ function renderPrep(): HTMLElement | null {
       : renderSource(grid),
     renderUpdate(grid),
     allergyBanner(),
-    phone ? [openAll, cards] : h('div', { class: 'table-wrap' }, table),
+    phone ? [openAll, cards] : state.tableView ? h('div', { class: 'table-wrap' }, table) : prepCards,
+  );
+}
+
+/** Desktop, top right of the list: Standard (the columns as a table, like your sheet) or Compact (a card per patient). */
+function renderViewSwitch(): HTMLElement {
+  const choose = (table: boolean) => {
+    state.tableView = table;
+    try {
+      storage?.setItem(VIEW_KEY, table ? 'table' : 'cards');
+    } catch {
+      // Remembering the choice is only a convenience.
+    }
+    render();
+  };
+  return h(
+    'div',
+    { class: 'seg view-switch', role: 'group', 'aria-label': 'View' },
+    h('button', { class: state.tableView ? 'on' : '', 'aria-pressed': state.tableView ? 'true' : 'false', title: 'The columns as a table, like your sheet', onclick: () => choose(true) }, 'Standard'),
+    h('button', { class: state.tableView ? '' : 'on', 'aria-pressed': state.tableView ? 'false' : 'true', title: 'A card per patient', onclick: () => choose(false) }, 'Compact'),
   );
 }
 
@@ -2571,6 +2719,231 @@ function cellClass(source: string, value: string): string {
 }
 
 
+// ---- Patient cards (desktop) ------------------------------------------------------
+
+/** What's still to fill in for a patient: eye order, VA/IOP, the lens. */
+function toDoOf(r: GridRow, examCol: number, findingsCol: number, lensCol: number): string[] {
+  const { prompts } = state.settings;
+  const lens = prompts.enabled && isLensRow(r);
+  const todo: string[] = [];
+  if (lens && findingsCol >= 0 && !readEyeOrder(r.cells[findingsCol] ?? '')) todo.push('1st/2nd eye');
+  if (examCol >= 0 && !(r.cells[examCol] ?? '').trim()) todo.push('VA/IOP');
+  if (lens && lensCol >= 0 && !pickedLens(r).code) todo.push('lens');
+  return todo;
+}
+
+/** Writes a cell from a control, redrawing after the event (so a Tab to the next box lands first). */
+function setCell(r: GridRow, col: number, value: string): void {
+  r.cells[col] = value;
+  setTimeout(render);
+}
+
+/** 1st / 2nd eye, the findings (present / not present / not recorded) and pick-one groups like dilation. */
+function renderFindingControls(r: GridRow, col: number): HTMLElement {
+  const { prompts } = state.settings;
+  const key = rowKey(r);
+  const cell = r.cells[col] ?? '';
+  const order = readEyeOrder(cell);
+  const seg = (label: string, on: boolean, onclick: () => void, k: string, title = '') =>
+    h('button', { class: on ? 'on' : '', 'aria-pressed': on ? 'true' : 'false', 'data-key': `${key}:${k}`, title, onclick }, label);
+  const singles = findingGroups(prompts.findings).filter((g) => g.options.length === 1);
+  const groups = findingGroups(prompts.findings).filter((g) => g.options.length > 1);
+  return h(
+    'div',
+    { class: 'pc-controls' },
+    h(
+      'div',
+      { class: order ? 'seg' : 'seg needs', role: 'group', 'aria-label': 'First or second eye', title: order ? '' : 'Pick 1st or 2nd eye' },
+      seg('1st eye', order === 'first', () => setCell(r, col, writeEyeOrder(cell, order === 'first' ? null : 'first')), 'chip:1st'),
+      seg('2nd eye', order === 'second', () => setCell(r, col, writeEyeOrder(cell, order === 'second' ? null : 'second')), 'chip:2nd'),
+    ),
+    h(
+      'div',
+      { class: 'pills' },
+      singles.map((g) => {
+        const o = g.options[0];
+        const found = findingState(cell, o.token);
+        return h(
+          'button',
+          {
+            class: `pill${found === 'present' ? ' yes' : found === 'absent' ? ' no' : ''}`,
+            'aria-pressed': found === 'present' ? 'true' : found === 'absent' ? 'mixed' : 'false',
+            title: `${o.token}: click for present, again for not present (“${absentText(o.token)}”), again to clear`,
+            'data-key': `${key}:chip:${o.token}`,
+            onclick: () => setCell(r, col, cycleFinding(cell, o.token, prompts.findings)),
+          },
+          found === 'present' ? `✓ ${o.short}` : found === 'absent' ? `✕ No ${o.short}` : o.short,
+        );
+      }),
+    ),
+    groups.map((g) =>
+      h(
+        'div',
+        { class: 'pc-row' },
+        g.label ? h('span', { class: 'pc-muted' }, g.label) : null,
+        h(
+          'div',
+          { class: 'seg', role: 'group', 'aria-label': g.label || 'Pick one' },
+          g.options.map((o) => seg(o.short, hasToken(cell, o.token), () => setCell(r, col, toggleFinding(cell, g, o.token, prompts.findings)), `chip:${o.token}`, o.token)),
+        ),
+      ),
+    ),
+  );
+}
+
+/** Lens model (one dropdown), its number for one like ZCU…, power with − / + in 0.5 steps, and target. */
+function renderLensControls(r: GridRow, col: number): HTMLElement {
+  const { prompts } = state.settings;
+  const key = rowKey(r);
+  const cell = r.cells[col] ?? '';
+  const pick = readLens(cell, prompts.lenses);
+  const target = readTarget(cell);
+  const typed = !pick && pickedLens(r).code;
+  const power = pick ? pick.power.match(/[+-]?\d+(?:\.\d+)?/)?.[0] ?? '' : '';
+  const writePower = (value: string) => pick && setCell(r, col, writeLens(cell, prompts.lenses, { ...pick, power: value }));
+  const step = (delta: number) => {
+    if (!pick) return;
+    const now = power ? Number(power) : suggestedPower(r);
+    writePower(String(Math.round((power ? now + delta : now) * 2) / 2));
+  };
+  const targetValue = target === null ? null : target === 'plano' ? 0 : Number(target.match(/[+-]?\d+(?:\.\d+)?/)?.[0]);
+  const quick: [string, number][] = [['Plano', 0], ['−0.25', -0.25], ['−0.50', -0.5]];
+  const setTarget = (value: string | null) => setCell(r, col, writeTarget(cell, prompts.lenses, value));
+  return h(
+    'div',
+    { class: 'pc-controls' },
+    h(
+      'div',
+      { class: 'pc-row' },
+      h(
+        'select',
+        {
+          class: 'pc-select',
+          'aria-label': 'Lens',
+          'data-key': `${key}:lens`,
+          onchange: (e: Event) => {
+            const l = (e.target as HTMLSelectElement).value;
+            const family = (x: string) => (x.includes('x') ? x.slice(0, x.indexOf('x')) : x);
+            setCell(r, col, writeLens(cell, prompts.lenses, l ? { lens: l, extra: pick && family(pick.lens) === family(l) ? pick.extra : '', power: pick?.power ?? '' } : null));
+          },
+        },
+        h('option', { value: '', selected: !pick }, typed ? `${pickedLens(r).code} (typed)` : 'Choose lens…'),
+        prompts.lenses.map((l) => h('option', { value: l, selected: pick?.lens === l }, l.replace('x', '…'))),
+      ),
+      pick?.lens.includes('x')
+        ? h('input', {
+            type: 'text',
+            class: 'pc-input',
+            style: 'width:4.5em',
+            value: pick.extra,
+            placeholder: 'no.',
+            'aria-label': `Number for ${pick.lens}`,
+            'data-key': `${key}:extra`,
+            onchange: (e: Event) => setCell(r, col, writeLens(r.cells[col], prompts.lenses, { ...pick, extra: (e.target as HTMLInputElement).value.trim() })),
+          })
+        : null,
+      h(
+        'div',
+        { class: `stepper${pick ? '' : ' off'}` },
+        h('button', { 'aria-label': 'Power down 0.5 D', disabled: !pick, 'data-key': `${key}:power-down`, onclick: () => step(-0.5) }, '−'),
+        h('input', {
+          type: 'text',
+          value: pick ? pick.power : '',
+          placeholder: pick ? 'power' : '',
+          disabled: !pick,
+          'aria-label': 'Lens power',
+          'data-key': `${key}:power`,
+          onchange: (e: Event) => writePower((e.target as HTMLInputElement).value),
+        }),
+        h('button', { 'aria-label': 'Power up 0.5 D', disabled: !pick, 'data-key': `${key}:power-up`, onclick: () => step(0.5) }, '+'),
+      ),
+    ),
+    h(
+      'div',
+      { class: 'pc-row' },
+      h('span', { class: 'pc-muted' }, 'Target'),
+      h(
+        'div',
+        { class: 'seg', role: 'group', 'aria-label': 'Target refraction' },
+        quick.map(([label, value]) =>
+          h(
+            'button',
+            {
+              class: targetValue !== null && Math.abs(targetValue - value) < 0.001 ? 'on' : '',
+              'data-key': `${key}:target:${value}`,
+              onclick: () => setTarget(targetValue !== null && Math.abs(targetValue - value) < 0.001 ? null : value === 0 ? 'plano' : String(value)),
+            },
+            label,
+          ),
+        ),
+      ),
+      h('input', {
+        type: 'text',
+        class: 'pc-input',
+        style: 'width:5.5em',
+        value: targetValue !== null && !quick.some(([, v]) => Math.abs(v - targetValue) < 0.001) ? target! : '',
+        placeholder: 'other',
+        'aria-label': 'Other target refraction',
+        'data-key': `${key}:target`,
+        onchange: (e: Event) => setTarget((e.target as HTMLInputElement).value.trim() || null),
+      }),
+    ),
+  );
+}
+
+/** A starting power for − / +: the report's best for the target, if it's been read, or else +20.00. */
+function suggestedPower(r: GridRow): number {
+  const reading = combinedReading(r);
+  if (reading) {
+    const lens = pickedLens(r);
+    const result = simulateLens(reading, lens.eye === 'LEFT' ? 'left' : 'right', { ...lens, power: null }, parseConstants(state.settings.prompts.constants));
+    if (typeof result !== 'string') return result.best.power;
+  }
+  return 20;
+}
+
+/** The IOL report in a card: thumbnails and what the check found, or a box to paste or drop one into. */
+function renderReportBlock(r: GridRow): HTMLElement {
+  const reports = r.reports ?? [];
+  const input = h('input', {
+    type: 'file',
+    accept: 'image/*',
+    multiple: true,
+    hidden: true,
+    onchange: (e: Event) => {
+      const files = [...((e.target as HTMLInputElement).files ?? [])];
+      if (files.length) void addReports(r, files);
+    },
+  });
+  if (!reports.length) {
+    return h(
+      'div',
+      { 'data-report-row': rowKey(r) },
+      h('button', { class: 'dropzone', 'data-key': `${rowKey(r)}:report:add`, title: 'Click, then paste with Ctrl+V; or drop a screenshot here; or click twice to choose a file', ondblclick: () => input.click() }, 'Paste the IOL report here (click, then Ctrl+V), drop it, or double-click to choose a file'),
+      input,
+    );
+  }
+  return h(
+    'div',
+    { class: 'pc-report', 'data-report-row': rowKey(r) },
+    h(
+      'div',
+      { class: 'pc-thumbs' },
+      reports.map((image, i) =>
+        h(
+          'span',
+          { class: 'report-thumb' },
+          h('button', { class: 'report-open', title: 'Open full screen, e.g. to check at timeout', 'data-key': `${rowKey(r)}:report:${i}`, onclick: () => openViewer(r, i) }, h('img', { src: imageUrl(image), alt: `IOL report ${i + 1} for ${rowLabel(r)}` })),
+          h('button', { class: 'report-remove', title: 'Remove this screenshot', 'aria-label': `Remove IOL report ${i + 1} for ${rowLabel(r)}`, onclick: () => void removeReport(r, i) }, '×'),
+        ),
+      ),
+      h('button', { class: 'chip', 'data-key': `${rowKey(r)}:report:add`, title: 'Add another screenshot (or click here and paste)', onclick: () => input.click() }, '+'),
+      input,
+    ),
+    h('div', { class: 'pc-check' }, renderReportStatus(r)),
+  );
+}
+
 // ---- IOL reports -----------------------------------------------------------------
 
 /** A short name for a row: MRN and name, or the first line of its patient cell. */
@@ -2762,9 +3135,11 @@ function renderViewer(): HTMLElement | null {
   const go = (index: number) => ((state.viewer = { ...v, index, actualSize: false }), render());
   const { eye, lens, target } = lensFacts(r);
   const eyeLabel = eye === 'RIGHT' ? 'Right eye' : eye === 'LEFT' ? 'Left eye' : eye === 'BOTH' ? 'Both eyes' : 'Eye not set';
+  const mismatch = reportStatus(r)?.check?.nameMismatch;
   return h(
     'div',
     { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': `IOL report for ${rowLabel(r)}` },
+    mismatch ? h('div', { class: 'mismatch-banner', role: 'alert' }, `⛔ ${mismatch}`) : null,
     h(
       'div',
       { class: 'viewer-head' },
@@ -2903,8 +3278,11 @@ function pickedLens(r: GridRow): PickedLens {
   const target = readTarget(cell);
   const label = rowLabel(r);
   const mrn = r.patient?.mrn ?? label.split(/\s+/)[0] ?? '';
-  const surname = (r.patient?.name ?? label.replace(/^\S+\s+/, '')).split(',')[0].trim();
-  return { eye, code, family, power, target: target === null ? null : target === 'plano' ? 0 : number(target), mrn, surname };
+  const fullName = r.patient?.name ?? label.replace(/^\S+\s+/, '');
+  const surname = fullName.split(',')[0].trim();
+  // The first given name, without an age and sex written after it (e.g. "Ann 70F").
+  const givenName = (fullName.split(',')[1] ?? '').trim().split(/\s+/).find((w) => /^[A-Za-z][A-Za-z'-]*$/.test(w)) ?? '';
+  return { eye, code, family, power, target: target === null ? null : target === 'plano' ? 0 : number(target), mrn, surname, givenName };
 }
 
 interface ReportStatus {
@@ -2963,11 +3341,12 @@ function renderReportStatus(r: GridRow): HTMLElement | null {
   if (!status) return null;
   if (status.state === 'reading') return h('span', { class: 'report-check reading' }, 'Reading the report…');
   if (status.state !== 'checked' || !status.check) return h('span', { class: 'report-check none' }, `${unreadText(status.state)} `, readAgainButton(r));
-  const { level, facts, flags, notes } = status.check;
+  const { level, facts, flags, notes, nameMismatch } = status.check;
+  if (nameMismatch) return h('span', { class: 'report-check error mismatch', role: 'alert' }, `⛔ ${nameMismatch}`);
   const first = flags.find((f) => f.level === 'error') ?? flags[0];
   // Errors stand alone; a warning comes after what the report says.
   const summary = level === 'error' ? first!.text : [...facts, ...(first ? [first.text] : [])].join(' · ');
-  const all = [...facts, ...flags.map((f) => f.text), ...notes].join('\n');
+  const all = [...facts, ...flags.map((f) => f.text), ...notes, status.check.idNote ?? ''].filter(Boolean).join('\n');
   return h('span', { class: `report-check ${level}`, title: all }, `${CHECK_ICON[level]} ${summary}`.trim());
 }
 
@@ -3189,10 +3568,11 @@ function renderViewerCheck(r: GridRow): HTMLElement | null {
   if (!status) return null;
   if (status.state === 'reading') return h('div', { class: 'viewer-check' }, h('div', { class: 'report-check reading' }, 'Reading the report…'));
   if (status.state !== 'checked' || !status.check) return h('div', { class: 'viewer-check' }, h('div', { class: 'report-check none' }, `${unreadText(status.state)} `, readAgainButton(r)));
-  const { facts, flags, notes } = status.check;
+  const { facts, flags, notes, idNote } = status.check;
   return h(
     'div',
     { class: 'viewer-check' },
+    idNote ? h('div', { class: 'report-check note' }, idNote) : null,
     facts.map((f) => h('div', { class: `report-check ${f.includes('(estimated)') ? 'warn' : 'ok'}` }, `${f.includes('(estimated)') ? '≈' : '✓'} Report: ${f}`)),
     flags.map((f) => h('div', { class: `report-check ${f.level}` }, `${CHECK_ICON[f.level]} ${f.text}`)),
     notes.map((n) => h('div', { class: 'report-check note' }, `IOLMaster: ${n}`)),
