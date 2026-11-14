@@ -1080,16 +1080,31 @@ tbody.patient:focus-within .prompt-input {
   border-bottom-left-radius: 0;
 }
 
+/* Pinned to the bottom of the screen, so a save's result (or its question) is seen however far down you are. */
 .save-report {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  z-index: 28;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(860px, calc(100vw - 32px));
   display: flex;
   align-items: baseline;
   gap: 12px;
-  margin: 0 0 10px;
-  padding: 8px 12px;
+  margin: 0;
+  padding: 10px 14px;
   border: 1px solid var(--ok);
-  border-radius: 6px;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
   color: var(--ok);
   font-weight: 600;
+}
+
+/* Brief messages move up out of its way. */
+body:has(.save-report) .toast-area {
+  bottom: 96px;
 }
 
 .save-report.warn {
@@ -1428,6 +1443,9 @@ tbody.patient:focus-within .prompt-input {
     right: 8px;
     bottom: 78px;
     z-index: 25;
+    transform: none;
+    width: auto;
+    max-width: none;
     flex-wrap: wrap;
     background: var(--surface);
     box-shadow: 0 6px 20px rgb(0 0 0 / 0.18);
