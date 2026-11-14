@@ -9,7 +9,7 @@ import { combineSessions, listOfPatient, orderedSelection } from './lists';
 import { copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, keepReports, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
 import { lensEmailHtml, lensEmailText, lensLines, type LensItem } from './lenslist';
-import { findingGroups, hasToken, isLensSurgery, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
+import { findingGroups, hasToken, isLensSurgery, lensCode, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
 import { headingCells, type HeadingCell } from './heading';
@@ -18,6 +18,8 @@ import { defaultSettings, exportSettings, importSettings, loadSettings, saveSett
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
 import { reportImage, type ReportImage } from './report';
+import { checkLens, combineReadings, readReport, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
+import { readWords } from './ocr';
 
 /** The list being prepped: one list, or several ticked together that run on as one. */
 interface Grid {
@@ -2659,7 +2661,7 @@ function renderReports(r: GridRow): HTMLElement | null {
       reports.length ? '+ Add' : '+ Add screenshot',
     ),
     input,
-    reports.length ? null : h('span', { class: 'hint small report-hint' }, 'or paste one (Ctrl+V) into the Implants box'),
+    reports.length ? renderReportStatus(r) : h('span', { class: 'hint small report-hint' }, 'or paste one (Ctrl+V) into the Implants box'),
   );
 }
 
@@ -2705,6 +2707,7 @@ function renderViewer(): HTMLElement | null {
           h('span', { class: lens ? 'viewer-iol' : 'viewer-iol missing' }, lens || 'No lens picked'),
           target ? h('span', { class: 'viewer-target' }, `Target ${target}`) : null,
         ),
+        renderViewerCheck(r),
       ),
       h(
         'div',
@@ -2719,7 +2722,7 @@ function renderViewer(): HTMLElement | null {
         h(
           'button',
           { 'data-key': 'viewer:size', onclick: () => ((state.viewer = { ...v, actualSize: !v.actualSize }), render()) },
-          v.actualSize ? 'Fit to screen' : 'Actual size',
+          v.actualSize ? 'Fit to width' : 'Actual size',
         ),
         h('button', { class: 'primary', 'data-key': 'viewer:close', onclick: close }, 'Close'),
       ),
@@ -2729,6 +2732,116 @@ function renderViewer(): HTMLElement | null {
       { class: v.actualSize ? 'viewer-body actual' : 'viewer-body' },
       h('img', { src: imageUrl(image), alt: `IOL report for ${rowLabel(r)}`, onclick: () => ((state.viewer = { ...v, actualSize: !v.actualSize }), render()) }),
     ),
+  );
+}
+
+
+// ---- Reading the IOL report (OCR) -------------------------------------------------
+
+type ReadState = ReportReading | 'reading' | 'unreadable' | 'failed';
+const readings = new WeakMap<ReportImage, ReadState>();
+let readQueue: Promise<void> = Promise.resolve();
+
+/** Reads a screenshot's report in the background (one at a time), then redraws. */
+function readingOf(image: ReportImage): ReadState {
+  const known = readings.get(image);
+  if (known) return known;
+  readings.set(image, 'reading');
+  readQueue = readQueue.then(async () => {
+    try {
+      const words = await readWords(new Blob([image.bytes as BlobPart], { type: image.type }));
+      readings.set(image, readReport(words) ?? 'unreadable');
+    } catch (e) {
+      console.error('Couldn’t read the IOL report', e);
+      readings.set(image, 'failed');
+    }
+    render();
+  });
+  return 'reading';
+}
+
+/** The lens picked for a row, as the report check needs it. */
+function pickedLens(r: GridRow): PickedLens {
+  const { layout, prompts } = state.settings;
+  const eyeCol = layout.columns.findIndex((c) => c.source === 'field:eye');
+  const eye = (eyeCol >= 0 ? r.cells[eyeCol] : r.patient?.eye ?? '').trim().toUpperCase();
+  const lensCol = promptColumns(layout, prompts).lens;
+  const cell = lensCol >= 0 ? (r.cells[lensCol] ?? '') : '';
+  const pick = readLens(cell, prompts.lenses);
+  const number = (text: string) => {
+    const m = text.match(/[+-]?\d+(?:\.\d+)?/);
+    return m ? Number(m[0]) : null;
+  };
+  let code = '';
+  let power: number | null = null;
+  let family: PickedLens['family'];
+  if (pick) {
+    code = lensCode(pick);
+    power = number(pick.power);
+    if (pick.lens.includes('x')) family = { base: pick.lens.split('x')[0], number: pick.extra };
+  } else {
+    // A lens typed in the box, e.g. "AR40 +19.5D".
+    const line = cell.split('\n').find((l) => l.trim() && !/^target\b/i.test(l.trim())) ?? '';
+    const m = line.match(/\b([A-Z]{2,}[A-Z0-9]*\d[A-Z0-9]*)\b\s*([+-]?\d{1,2}(?:\.\d{1,2})?)?/i);
+    if (m) {
+      code = m[1].toUpperCase();
+      power = m[2] ? Number(m[2]) : null;
+    }
+  }
+  const target = readTarget(cell);
+  const label = rowLabel(r);
+  const mrn = r.patient?.mrn ?? label.split(/\s+/)[0] ?? '';
+  const surname = (r.patient?.name ?? label.replace(/^\S+\s+/, '')).split(',')[0].trim();
+  return { eye, code, family, power, target: target === null ? null : target === 'plano' ? 0 : number(target), mrn, surname };
+}
+
+interface ReportStatus {
+  state: 'reading' | 'unreadable' | 'checked';
+  check?: LensCheck;
+}
+
+/** What the screenshots say about the lens picked, once they've been read. */
+function reportStatus(r: GridRow): ReportStatus | null {
+  const reports = r.reports ?? [];
+  if (!reports.length) return null;
+  const states = reports.map(readingOf);
+  if (states.includes('reading')) return { state: 'reading' };
+  const read = states.filter((s): s is ReportReading => typeof s === 'object');
+  const combined = combineReadings(read);
+  if (!combined) return { state: 'unreadable' };
+  return { state: 'checked', check: checkLens(combined, pickedLens(r)) };
+}
+
+const CHECK_ICON: Record<string, string> = { ok: '✓', warn: '⚠', error: '⛔', none: '' };
+
+/** One line under the thumbnails: what the report says for this lens, or what doesn't match. */
+function renderReportStatus(r: GridRow): HTMLElement | null {
+  const status = reportStatus(r);
+  if (!status) return null;
+  if (status.state === 'reading') return h('span', { class: 'report-check reading' }, 'Reading the report…');
+  if (status.state === 'unreadable' || !status.check) return h('span', { class: 'report-check none' }, 'Couldn’t read it as an IOL calculation: check it by eye.');
+  const { level, facts, flags, notes } = status.check;
+  const first = flags.find((f) => f.level === 'error') ?? flags[0];
+  // Errors stand alone; a warning comes after what the report says.
+  const summary = level === 'error' ? first!.text : [...facts, ...(first ? [first.text] : [])].join(' · ');
+  const all = [...facts, ...flags.map((f) => f.text), ...notes].join('\n');
+  return h('span', { class: `report-check ${level}`, title: all }, `${CHECK_ICON[level]} ${summary}`.trim());
+}
+
+/** In the full-screen view: the check in full, and the report's own warnings. */
+function renderViewerCheck(r: GridRow): HTMLElement | null {
+  const status = reportStatus(r);
+  if (!status) return null;
+  if (status.state === 'reading') return h('div', { class: 'viewer-check' }, h('div', { class: 'report-check reading' }, 'Reading the report…'));
+  if (status.state === 'unreadable' || !status.check) return h('div', { class: 'viewer-check' }, h('div', { class: 'report-check none' }, 'Couldn’t read it as an IOL calculation: check it by eye.'));
+  const { facts, flags, notes } = status.check;
+  return h(
+    'div',
+    { class: 'viewer-check' },
+    facts.map((f) => h('div', { class: 'report-check ok' }, `✓ Report: ${f}`)),
+    flags.map((f) => h('div', { class: `report-check ${f.level}` }, `${CHECK_ICON[f.level]} ${f.text}`)),
+    notes.map((n) => h('div', { class: 'report-check note' }, `IOLMaster: ${n}`)),
+    h('div', { class: 'report-check-hint' }, 'Read from the screenshot by the app. Always check against the report itself.'),
   );
 }
 

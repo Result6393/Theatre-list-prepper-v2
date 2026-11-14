@@ -32,6 +32,24 @@ function inlineIntoHtml(): Plugin {
   };
 }
 
+// `import data from 'file?base64'` gives the file's bytes as base64 text, so binary data (like the
+// OCR engine's language data) is built into the single offline file.
+function binaryAsBase64(): Plugin {
+  return {
+    name: 'binary-as-base64',
+    enforce: 'pre',
+    async resolveId(id, importer) {
+      if (!id.endsWith('?base64')) return null;
+      const resolved = await this.resolve(id.slice(0, -'?base64'.length), importer, { skipSelf: true });
+      return resolved ? `${resolved.id}?base64` : null;
+    },
+    load(id) {
+      if (!id.endsWith('?base64')) return null;
+      return `export default ${JSON.stringify(readFileSync(id.slice(0, -'?base64'.length)).toString('base64'))};`;
+    },
+  };
+}
+
 // Puts the package.json version in the page title.
 function versionInTitle(): Plugin {
   return {
@@ -43,7 +61,7 @@ function versionInTitle(): Plugin {
 export default defineConfig({
   base: './',
   define: { __APP_VERSION__: JSON.stringify(version) },
-  plugins: [versionInTitle(), inlineIntoHtml()],
+  plugins: [binaryAsBase64(), versionInTitle(), inlineIntoHtml()],
   build: {
     cssCodeSplit: false,
     assetsInlineLimit: Number.MAX_SAFE_INTEGER,
