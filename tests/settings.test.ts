@@ -46,3 +46,16 @@ describe('settings storage', () => {
     expect(loadSettings(store)).toEqual(defaultSettings());
   });
 });
+
+describe('lens settings from an older version', () => {
+  it('moves the old default lens list on to the new one (with DIUx), and keeps a list you changed', () => {
+    const old = JSON.parse(exportSettings(defaultSettings()));
+    old.prompts.lenses = ['DCB00', 'DIB00', 'ZCUx', 'CNA0Tx'];
+    delete old.prompts.constants;
+    const updated = importSettings(JSON.stringify(old)).prompts;
+    expect(updated.lenses).toEqual(['DCB00', 'DIB00', 'ZCUx', 'DIUx', 'CNA0Tx']);
+    expect(updated.constants).toEqual(['DCB00 119.3', 'CNA0Tx 119.1']);
+    old.prompts.lenses = ['SN60WF', 'DCB00'];
+    expect(importSettings(JSON.stringify(old)).prompts.lenses).toEqual(['SN60WF', 'DCB00']);
+  });
+});

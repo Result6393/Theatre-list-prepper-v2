@@ -27,7 +27,7 @@ export function defaultPrompts(): PromptSettings {
   return {
     enabled: true,
     findings: ['PXF', 'Guttata', 'Good dilation | Mod dilation | Poor dilation', 'Phacodonesis', 'Tamsulosin'],
-    lenses: ['DCB00', 'DIB00', 'ZCUx', 'CNA0Tx'],
+    lenses: ['DCB00', 'DIB00', 'ZCUx', 'DIUx', 'CNA0Tx'],
     constants: ['DCB00 119.3', 'CNA0Tx 119.1'],
     findingsColumn: '',
     lensColumn: '',

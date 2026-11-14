@@ -18,7 +18,7 @@ import { defaultSettings, exportSettings, importSettings, loadSettings, saveSett
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
 import { reportImage, type ReportImage } from './report';
-import { checkLens, combineReadings, parseConstants, readReport, signed, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
+import { checkLens, combineReadings, parseConstants, readReport, signed, simulateLens, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
 import { readWords } from './ocr';
 
 /** The list being prepped: one list, or several ticked together that run on as one. */
@@ -118,8 +118,26 @@ const state = {
   /** A message under the header, e.g. after importing a settings file. */
   notice: null as { text: string; error: boolean } | null,
   /** A patient's IOL report open full screen (for timeout): the row, and which screenshot. */
-  viewer: null as { key: string; index: number; actualSize: boolean } | null,
+  viewer: null as Viewer | null,
 };
+
+/** A patient's IOL report open full screen, and the lens being tried in it. */
+interface Viewer {
+  key: string;
+  index: number;
+  actualSize: boolean;
+  sim?: SimState;
+}
+
+/** The lens tried in the report view: a lens from Settings (with its number, for one like ZCUx), target and power, as typed. */
+interface SimState {
+  lens: string;
+  number: string;
+  /** '' for the report's own target. */
+  target: string;
+  power: string;
+  side: 'right' | 'left';
+}
 
 const app = document.getElementById('app')!;
 
@@ -2616,8 +2634,42 @@ async function removeReport(r: GridRow, index: number): Promise<void> {
 }
 
 function openViewer(r: GridRow, index: number): void {
-  state.viewer = { key: rowKey(r), index, actualSize: false };
+  state.viewer = { key: rowKey(r), index, actualSize: false, sim: simFromRow(r) };
   render();
+}
+
+/** The simulator starts on the lens, power and target already picked for the patient. */
+function simFromRow(r: GridRow): SimState {
+  const { layout, prompts } = state.settings;
+  const col = promptColumns(layout, prompts).lens;
+  const cell = col >= 0 ? (r.cells[col] ?? '') : '';
+  const pick = readLens(cell, prompts.lenses);
+  const power = pick ? pick.power.match(/[+-]?\d+(?:\.\d+)?/)?.[0] ?? '' : '';
+  return {
+    lens: pick?.lens ?? prompts.lenses[0] ?? '',
+    number: pick?.extra ?? '',
+    target: readTarget(cell) ?? '',
+    power,
+    side: pickedLens(r).eye === 'LEFT' ? 'left' : 'right',
+  };
+}
+
+/** The lens being tried, as the report check needs it. */
+function simLens(r: GridRow, sim: SimState): PickedLens {
+  const at = sim.lens.indexOf('x');
+  const number = sim.number.replace(/[^A-Za-z0-9.]/g, '');
+  const value = (text: string) => {
+    const m = text.match(/[+-]?\d+(?:\.\d+)?/);
+    return m ? Number(m[0]) : null;
+  };
+  return {
+    ...pickedLens(r),
+    eye: sim.side === 'right' ? 'RIGHT' : 'LEFT',
+    code: at === -1 ? sim.lens : `${sim.lens.slice(0, at)}${number}${sim.lens.slice(at + 1)}`,
+    family: at === -1 ? undefined : { base: sim.lens.slice(0, at), number },
+    power: value(sim.power),
+    target: !sim.target.trim() ? null : /^plano$/i.test(sim.target.trim()) ? 0 : value(sim.target),
+  };
 }
 
 /** Thumbnails of the patient's IOL report screenshots, with a way to add more. */
@@ -2729,13 +2781,18 @@ function renderViewer(): HTMLElement | null {
     ),
     h(
       'div',
-      { class: v.actualSize ? 'viewer-body actual' : 'viewer-body' },
+      { class: 'viewer-main' },
       h(
         'div',
-        { class: 'shot', style: v.actualSize ? `width:${image.width}px` : '' },
-        h('img', { src: imageUrl(image), alt: `IOL report for ${rowLabel(r)}`, onclick: () => ((state.viewer = { ...v, actualSize: !v.actualSize }), render()) }),
-        renderHighlights(r, image),
+        { class: v.actualSize ? 'viewer-body actual' : 'viewer-body' },
+        h(
+          'div',
+          { class: 'shot', style: v.actualSize ? `width:${image.width}px` : '' },
+          h('img', { src: imageUrl(image), alt: `IOL report for ${rowLabel(r)}`, onclick: () => ((state.viewer = { ...v, actualSize: !v.actualSize }), render()) }),
+          renderHighlights(r, image, v.sim),
+        ),
       ),
+      renderSimulator(r, v),
     ),
   );
 }
@@ -2847,10 +2904,11 @@ const SVG = 'http://www.w3.org/2000/svg';
  * the power picked, in red for the right eye and blue for the left. Dashed: looked at, not a match
  * (the lens an estimate comes from, or the other eye's column).
  */
-function renderHighlights(r: GridRow, image: ReportImage): SVGSVGElement | null {
+function renderHighlights(r: GridRow, image: ReportImage, sim?: SimState): SVGSVGElement | null {
   const read = readings.get(image);
   if (!read || typeof read !== 'object') return null;
-  const { highlights } = checkLens(read.reading, pickedLens(r), parseConstants(state.settings.prompts.constants));
+  // They follow the lens being tried, so a toric's row is marked when you try it.
+  const { highlights } = checkLens(read.reading, sim ? simLens(r, sim) : pickedLens(r), parseConstants(state.settings.prompts.constants));
   if (!highlights.length) return null;
   const svg = document.createElementNS(SVG, 'svg');
   svg.setAttribute('viewBox', `0 0 ${read.width} ${read.height}`);
@@ -2871,35 +2929,198 @@ function renderHighlights(r: GridRow, image: ReportImage): SVGSVGElement | null 
   return svg;
 }
 
+
+/** All of a row's screenshots read as one report, once they've been read. */
+function combinedReading(r: GridRow): ReportReading | null {
+  const states = (r.reports ?? []).map(readingOf);
+  return combineReadings(states.filter((s): s is ReadReport => typeof s === 'object').map((s) => s.reading));
+}
+
+/** Suggested numbers for lenses with one, e.g. the toric models. */
+const LENS_NUMBERS: Record<string, string[]> = {
+  ZCU: ['100', '150', '225', '300', '375', '450', '525', '600'],
+  DIU: ['150', '225', '300', '375', '450', '525', '600'],
+  CNA0T: ['0', '2', '3', '4', '5', '6', '7', '8', '9'],
+};
+
+/** The number the report's toric calculation chose for a lens family on this eye (e.g. "100" for ZCU), if any. */
+function reportNumber(reading: ReportReading | null, side: 'right' | 'left', base: string): string {
+  const table = reading?.[side]?.tables.find((t) => t.toric && t.title.toUpperCase().replace(/[^A-Z0-9]/g, '').includes(base.toUpperCase()));
+  return table?.rows.map((row) => row.model).find((m) => /^\d+$/.test(m)) ?? '';
+}
+
+/** In the report view: try any lens and target against the report, see the numbers, and apply one. */
+function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
+  const { prompts, layout } = state.settings;
+  const sim = v.sim ?? simFromRow(r);
+  const reading = combinedReading(r);
+  const set = (patch: Partial<SimState>) => {
+    state.viewer = { ...v, sim: { ...sim, ...patch } };
+    render();
+  };
+  const chip = (label: string, on: boolean, onclick: () => void, key: string, title = '') =>
+    h('button', { class: on ? 'chip on' : 'chip', 'aria-pressed': on ? 'true' : 'false', 'data-key': `sim:${key}`, title, onclick }, label);
+  const heading = h('h3', { class: 'sim-title' }, 'Try a lens');
+  if (!reading) {
+    const reading = (r.reports ?? []).map(readingOf).includes('reading');
+    return h('aside', { class: 'sim' }, heading, h('p', { class: 'report-check none' }, reading ? 'Reading the report…' : 'The report couldn’t be read, so there’s nothing to work from.'));
+  }
+  const eyeSet = pickedLens(r).eye;
+  const lens = simLens(r, sim);
+  const result = simulateLens(reading, sim.side, lens, parseConstants(prompts.constants));
+  const eyeTarget = reading[sim.side]?.target;
+  const at = sim.lens.indexOf('x');
+  const base = at === -1 ? '' : sim.lens.slice(0, at);
+
+  const controls = h(
+    'div',
+    { class: 'sim-controls' },
+    eyeSet === 'RIGHT' || eyeSet === 'LEFT'
+      ? null
+      : h('div', { class: 'prompt-set' }, h('span', { class: 'prompt-label' }, 'Eye'), chip('Right', sim.side === 'right', () => set({ side: 'right', power: '' }), 'right'), chip('Left', sim.side === 'left', () => set({ side: 'left', power: '' }), 'left')),
+    h(
+      'div',
+      { class: 'prompt-set' },
+      h('span', { class: 'prompt-label' }, 'Lens'),
+      prompts.lenses.map((l) =>
+        chip(l.replace('x', '…'), sim.lens === l, () => {
+          const family = l.includes('x') ? l.slice(0, l.indexOf('x')) : '';
+          // A new lens (or number, eye or target) shows the best power for it until you pick one.
+          set({ lens: l, number: !family ? '' : family === base ? sim.number : reportNumber(reading, sim.side, family), power: '' });
+        }, `lens:${l}`),
+      ),
+      at === -1
+        ? null
+        : [
+            h('input', {
+              type: 'text',
+              class: 'prompt-input',
+              style: 'width:4.5em',
+              list: `sim-numbers-${base}`,
+              value: sim.number,
+              placeholder: 'no.',
+              'aria-label': `Number for ${sim.lens}`,
+              'data-key': 'sim:number',
+              onchange: (e: Event) => set({ number: (e.target as HTMLInputElement).value.trim(), power: '' }),
+            }),
+            h('datalist', { id: `sim-numbers-${base}` }, (LENS_NUMBERS[base] ?? []).map((n) => h('option', { value: n }))),
+          ],
+    ),
+    h(
+      'div',
+      { class: 'prompt-set' },
+      h('span', { class: 'prompt-label' }, 'Target'),
+      eyeTarget !== undefined && eyeTarget !== null ? chip(`Report ${signed(eyeTarget)}`, !sim.target.trim(), () => set({ target: '', power: '' }), 'target:report') : null,
+      chip('Plano', /^plano$|^[+-]?0(\.0+)?$/i.test(sim.target.trim()), () => set({ target: 'plano', power: '' }), 'target:plano'),
+      h('input', {
+        type: 'text',
+        class: 'prompt-input',
+        style: 'width:6em',
+        value: /^plano$/i.test(sim.target.trim()) ? '' : sim.target,
+        placeholder: 'e.g. -0.50',
+        'aria-label': 'Target refraction to try',
+        'data-key': 'sim:target',
+        onchange: (e: Event) => set({ target: (e.target as HTMLInputElement).value.trim(), power: '' }),
+      }),
+    ),
+    h(
+      'div',
+      { class: 'prompt-set' },
+      h('span', { class: 'prompt-label' }, 'Power'),
+      h('input', {
+        type: 'text',
+        class: 'prompt-input',
+        style: 'width:6em',
+        value: sim.power,
+        placeholder: 'e.g. 20.5',
+        'aria-label': 'Lens power to try',
+        'data-key': 'sim:power',
+        onchange: (e: Event) => set({ power: (e.target as HTMLInputElement).value.trim() }),
+      }),
+      sim.power ? chip('Clear', false, () => set({ power: '' }), 'power:clear', 'Show the best power for the target') : null,
+    ),
+  );
+  if (typeof result === 'string') return h('aside', { class: 'sim' }, heading, controls, h('p', { class: 'report-check warn' }, `⚠ ${result}`));
+
+  const toric = result.rows.some((row) => row.axis !== undefined);
+  const chosen = result.selected ?? result.best;
+  const lensCol = promptColumns(layout, prompts).lens;
+  const describe = (row: { power: number; ref: number; axis?: number }) =>
+    `${result.code} ${signed(row.power)}${row.axis !== undefined ? `, axis ${row.axis}°` : ''} → ${result.source === 'estimate' ? 'about ' : ''}${signed(row.ref)}`;
+  const apply = () => {
+    if (lensCol < 0) return say('There’s no Implants column to put the lens in (Settings → Cataract prompts).');
+    let cell = writeLens(r.cells[lensCol] ?? '', prompts.lenses, { lens: sim.lens, extra: lens.family?.number ?? '', power: String(chosen.power) });
+    cell = writeTarget(cell, prompts.lenses, result.target === 0 ? 'plano' : String(result.target));
+    r.cells[lensCol] = cell;
+    state.viewer = { ...v, sim: { ...sim, power: String(chosen.power), target: result.target === 0 ? 'plano' : String(result.target) } };
+    say(`Applied ${result.code} ${signed(chosen.power)}, target ${result.target === 0 ? 'plano' : signed(result.target)}, for ${rowLabel(r)}. ${reportSaveHint()}`);
+  };
+  return h(
+    'aside',
+    { class: 'sim' },
+    heading,
+    controls,
+    h(
+      'p',
+      { class: `report-check ${result.source === 'estimate' ? 'warn' : 'ok'}` },
+      result.source === 'estimate'
+        ? `≈ Estimated from the ${result.side} eye’s ${result.reference} numbers: see the working below.`
+        : `✓ From the report (Barrett), ${result.side} eye.`,
+    ),
+    h(
+      'table',
+      { class: 'sim-table' },
+      h(
+        'tr',
+        {},
+        h('th', {}, `${result.code} (D)`),
+        h('th', {}, result.source === 'estimate' ? 'Predicted (about)' : 'Predicted'),
+        toric ? [h('th', {}, 'Cyl'), h('th', {}, 'Axis'), h('th', {}, 'Ref cyl')] : null,
+        h('th', {}, ''),
+      ),
+      result.rows.map((row) =>
+        h(
+          'tr',
+          { class: [row.power === chosen.power ? 'chosen' : '', row.outside ? 'outside' : ''].filter(Boolean).join(' ') },
+          h('td', {}, h('button', { class: 'link', 'data-key': `sim:row:${row.power}`, title: 'Try this power', onclick: () => set({ power: String(row.power) }) }, signed(row.power))),
+          h('td', {}, `${row.outside ? '≈ ' : ''}${signed(row.ref)}`),
+          toric ? [h('td', {}, row.cyl !== undefined ? signed(row.cyl) : ''), h('td', {}, row.axis !== undefined ? `${row.axis}°` : ''), h('td', {}, row.refCyl !== undefined ? signed(row.refCyl) : '')] : null,
+          h('td', { class: 'sim-tag' }, row.power === result.best.power ? `best for ${result.target === 0 ? 'plano' : signed(result.target)}` : ''),
+        ),
+      ),
+    ),
+    h('p', { class: 'sim-chosen' }, describe(chosen)),
+    h(
+      'button',
+      { class: 'primary', 'data-key': 'sim:apply', disabled: lensCol < 0 || Boolean(lens.family && !lens.family.number), onclick: apply },
+      `Apply: ${result.code} ${signed(chosen.power)}D, target ${result.target === 0 ? 'plano' : signed(result.target)}`,
+    ),
+    result.notes.map((n) => h('p', { class: 'report-check note' }, n)),
+    result.working.length
+      ? h(
+          'details',
+          { class: 'estimate', open: true },
+          h('summary', {}, 'Working'),
+          h('ol', {}, result.working.map((w) => h('li', {}, w))),
+          h('div', { class: 'report-check-hint' }, 'An estimate: SRK/T is used only for the difference between the two lenses’ A-constants, applied to the report’s Barrett numbers.'),
+        )
+      : null,
+    h('p', { class: 'report-check-hint' }, 'Worked out from the screenshot by the app. Always check against the report itself.'),
+  );
+}
+
 /** In the full-screen view: the check in full, and the report's own warnings. */
 function renderViewerCheck(r: GridRow): HTMLElement | null {
   const status = reportStatus(r);
   if (!status) return null;
   if (status.state === 'reading') return h('div', { class: 'viewer-check' }, h('div', { class: 'report-check reading' }, 'Reading the report…'));
   if (status.state === 'unreadable' || !status.check) return h('div', { class: 'viewer-check' }, h('div', { class: 'report-check none' }, 'Couldn’t read it as an IOL calculation: check it by eye.'));
-  const { facts, flags, notes, estimate } = status.check;
+  const { facts, flags, notes } = status.check;
   return h(
     'div',
     { class: 'viewer-check' },
     facts.map((f) => h('div', { class: `report-check ${f.includes('(estimated)') ? 'warn' : 'ok'}` }, `${f.includes('(estimated)') ? '≈' : '✓'} Report: ${f}`)),
     flags.map((f) => h('div', { class: `report-check ${f.level}` }, `${CHECK_ICON[f.level]} ${f.text}`)),
-    estimate
-      ? h(
-          'details',
-          { class: 'estimate', open: true },
-          h('summary', {}, `Working: ${pickedLens(r).code} estimated from ${estimate.reference}`),
-          h('ol', {}, estimate.working.map((w) => h('li', {}, w))),
-          estimate.table.length
-            ? h(
-                'table',
-                { class: 'estimate-table' },
-                h('tr', {}, h('th', {}, `${pickedLens(r).code} (D)`), h('th', {}, 'Predicted (D)')),
-                estimate.table.map((t) => h('tr', { class: pickedLens(r).power === t.power ? 'picked' : '' }, h('td', {}, signed(t.power)), h('td', {}, `about ${signed(t.ref)}`))),
-              )
-            : null,
-          h('div', { class: 'report-check-hint' }, 'An estimate: SRK/T is used only for the difference between the two lenses’ A-constants, applied to the report’s Barrett numbers.'),
-        )
-      : null,
     notes.map((n) => h('div', { class: 'report-check note' }, `IOLMaster: ${n}`)),
     h('div', { class: 'report-check-hint' }, 'Read from the screenshot by the app. Always check against the report itself.'),
   );

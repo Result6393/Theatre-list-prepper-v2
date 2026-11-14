@@ -84,12 +84,15 @@ export function importSettings(text: string): Settings {
   };
 }
 
+/** The lens list before DIUx was added: settings still on it get the new default list. */
+const OLD_DEFAULT_LENSES = 'DCB00,DIB00,ZCUx,CNA0Tx';
+
 function importPrompts(value: unknown, defaults: PromptSettings): PromptSettings {
   if (!isObject(value)) return defaults;
   return {
     enabled: typeof value.enabled === 'boolean' ? value.enabled : defaults.enabled,
     findings: Array.isArray(value.findings) ? stringList(value.findings) : defaults.findings,
-    lenses: Array.isArray(value.lenses) ? stringList(value.lenses) : defaults.lenses,
+    lenses: Array.isArray(value.lenses) && stringList(value.lenses).join() !== OLD_DEFAULT_LENSES ? stringList(value.lenses) : defaults.lenses,
     constants: Array.isArray(value.constants) ? stringList(value.constants) : defaults.constants,
     findingsColumn: typeof value.findingsColumn === 'string' ? value.findingsColumn : defaults.findingsColumn,
     lensColumn: typeof value.lensColumn === 'string' ? value.lensColumn : defaults.lensColumn,

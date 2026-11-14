@@ -1751,3 +1751,84 @@ table.estimate-table tr.picked td {
   font-weight: 700;
   color: var(--accent);
 }
+
+/* Report view: the screenshot, with the lens simulator beside it (below it on narrow screens) */
+
+.viewer-main {
+  flex: 1 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+@media (min-width: 1100px) {
+  .viewer-main {
+    grid-template-columns: minmax(0, 1fr) 430px;
+  }
+
+  aside.sim {
+    position: sticky;
+    top: 0;
+    max-height: 100vh;
+    overflow-y: auto;
+    border-left: 1px solid var(--border);
+  }
+}
+
+aside.sim {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 12px 16px;
+  background: var(--surface);
+}
+
+.sim-title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.sim-controls {
+  display: grid;
+  gap: 6px;
+}
+
+table.sim-table {
+  width: auto;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+table.sim-table th,
+table.sim-table td {
+  padding: 3px 10px 3px 0;
+  text-align: right;
+  white-space: nowrap;
+}
+
+table.sim-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+table.sim-table td.sim-tag {
+  text-align: left;
+  color: var(--ok);
+  font-size: 0.8rem;
+}
+
+table.sim-table tr.chosen td {
+  font-weight: 700;
+  background: var(--accent-soft);
+}
+
+table.sim-table tr.outside td {
+  color: var(--muted);
+}
+
+.sim-chosen {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
