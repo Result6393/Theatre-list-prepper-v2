@@ -8,7 +8,7 @@ import { extractSessions, type Patient, type Session } from './extract';
 import { combineSessions, listOfPatient, orderedSelection } from './lists';
 import { copyBlock, findInSheet, findListBlock, findPreppedRows, freshRows, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
-import { lensLines, lensListText, type LensItem } from './lenslist';
+import { lensEmailHtml, lensEmailText, lensLines, type LensItem } from './lenslist';
 import { findingGroups, hasToken, isLensSurgery, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
@@ -1278,7 +1278,7 @@ function lensItems(grid: Grid): LensItem[] | null {
     }));
 }
 
-/** Copies "who, eye, lens, target" for each ticked cataract patient, to paste into an email to the theatre coordinator. */
+/** Copies the whole email to the theatre coordinator: a table of each ticked cataract patient's lens, then how many of each are needed. */
 async function copyLensList(grid: Grid): Promise<void> {
   const items = lensItems(grid);
   if (!items) {
@@ -1291,13 +1291,15 @@ async function copyLensList(grid: Grid): Promise<void> {
     return;
   }
   const { combined } = grid;
-  const list = [combined.or, combined.ampm, combined.consultant || combined.slotName].filter(Boolean).join(' · ');
-  const heading = ['Lenses for', [combined.date ? weekdayLabel(combined.date) : '', list].filter(Boolean).join(' · ')].join(' ');
-  const text = lensListText(lines, heading);
+  const info = {
+    list: combined.consultant || combined.slotName || [combined.or, combined.ampm].filter(Boolean).join(' '),
+    day: combined.date ? weekdayLabel(combined.date) : '',
+    name: state.settings.email.name,
+  };
   try {
-    await copyHtml(emailBodyHtml({ to: [], cc: [], subject: '', body: text }), text);
+    await copyHtml(lensEmailHtml(lines, info), lensEmailText(lines, info));
     say(
-      `Copied ${lines.length} lens${lines.length === 1 ? '' : 'es'} for the theatre coordinator.` +
+      `Copied the lens email (${lines.length} lens${lines.length === 1 ? '' : 'es'}) for the theatre coordinator: paste it into a new email.` +
         (missing.length ? ` Left out, no lens picked: ${missing.map((m) => m.who).join('; ')}.` : ''),
     );
   } catch {
