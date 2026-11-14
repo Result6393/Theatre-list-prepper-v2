@@ -19,7 +19,7 @@ import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
 import { summaryHtml, summaryPage, summaryText as listSummaryText, type Summary as ListSummary } from './summary';
 import { reportImage, type ReportImage } from './report';
-import { checkLens, combineReadings, parseConstants, readReport, signed, simulateLens, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
+import { checkLens, combineReadings, parseConstants, readReport, signed, simulateLens, type BiometryAlert, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
 import { OCR_ENGINE, readWords } from './ocr';
 
 /** The list being prepped: one list, or several ticked together that run on as one. */
@@ -1739,6 +1739,7 @@ function renderPrep(): HTMLElement | null {
       { disabled: active.length < 2, title: 'Change the order of the patients in a short list', 'data-key': 'reorder', onclick: () => ((state.reorderOpen = true), render()) },
       '⇅ Reorder',
     ),
+    renderLockAll(grid),
     h('span', { class: 'toolbar-count muted' }, `${count} of ${active.length} ticked`),
     renderViewSwitch(),
   );
@@ -1907,7 +1908,7 @@ function renderPrep(): HTMLElement | null {
           // A screenshot pasted into a lens patient's box becomes their IOL report.
           onpaste: (e: Event) => {
             const files = pastedImages(e as ClipboardEvent);
-            if (!files.length || !takesReports(r)) return;
+            if (!files.length || !takesReports(r) || r.locked) return;
             e.preventDefault();
             void addReports(r, files);
           },
@@ -1938,19 +1939,19 @@ function renderPrep(): HTMLElement | null {
     const main = h(
       'tr',
       {},
-      h('td', { class: 'handle' }, index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null, gripOf(r, index, 'tbody.patient.active'), tickOf(r)),
+      h('td', { class: 'handle' }, index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null, r.status === 'cancelled' ? null : lockToggle(r), gripOf(r, index, 'tbody.patient.active'), tickOf(r)),
       h('td', { class: 'time', title: p?.consultant ?? '' }, h('div', { class: 'time-value' }, p?.time ?? ''), who ? h('div', { class: 'who' }, who) : null, ...badgesOf(r)),
       layout.columns.map((c, col) => {
         const { area, change } = editorOf(r, col, Boolean(prompts), (target) => (target.parentElement!.className = classFor(r, col, target.value)));
         return h('td', { class: classFor(r, col, r.cells[col]), style: `min-width:${columnWidth(c.source)}px` }, area, change, acknowledgeOf(r, col));
       }),
     );
-    return h(
+    return applyLock(h(
       'tbody',
       { class: ['patient', ...classesOf(r)].join(' ') },
       main,
       prompts ? h('tr', { class: 'prompt-row' }, h('td', { colspan: 2 }), h('td', { colspan: layout.columns.length }, prompts)) : null,
-    );
+    ), r);
   };
 
   const table = h(
@@ -1984,10 +1985,12 @@ function renderPrep(): HTMLElement | null {
     const procedure = procCol >= 0 ? r.cells[procCol] : p?.procedure ?? '';
     const alerts = alertCol >= 0 ? r.cells[alertCol].trim() : '';
     const sub = [procedure, p?.time, whoOf(r)].filter(Boolean).join(' · ');
+    // One patient open at a time; opening one brings its name to the top of the screen.
     const toggle = () => {
-      if (open) state.openCards.delete(key);
-      else state.openCards.add(key);
+      const opening = !open;
+      state.openCards = opening ? new Set([key]) : new Set();
       render();
+      if (opening) app.querySelector<HTMLElement>(`[data-card="${CSS.escape(key)}"]`)?.scrollIntoView({ block: 'start' });
     };
     const prompts = r.status === 'cancelled' || !open ? null : renderPrompts(r);
     const promptCols = promptColumns(layout, state.settings.prompts);
@@ -2030,13 +2033,13 @@ function renderPrep(): HTMLElement | null {
                 { class: 'pcard-move' },
                 h('button', { disabled: index <= 0, 'data-key': `${key}:up`, onclick: () => moveRow(grid, index, index - 1) }, '↑ Move up'),
                 h('button', { disabled: index >= active.length - 1, 'data-key': `${key}:down`, onclick: () => moveRow(grid, index, index + 1) }, '↓ Move down'),
-                h('button', { class: 'ghost', onclick: toggle }, 'Done'),
+                h('button', { class: 'ghost lock-keep', onclick: toggle }, 'Done'),
               ),
         )
       : null;
-    return h(
+    return applyLock(h(
       'div',
-      { class: ['pcard', ...classesOf(r), open ? 'open' : ''].filter(Boolean).join(' ') },
+      { class: ['pcard', ...classesOf(r), open ? 'open' : ''].filter(Boolean).join(' '), 'data-card': key },
       h(
         'div',
         {
@@ -2053,6 +2056,7 @@ function renderPrep(): HTMLElement | null {
           },
         },
         index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
+        r.status === 'cancelled' ? null : lockToggle(r),
         gripOf(r, index, '.pcard.active'),
         h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}` }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?'),
         h(
@@ -2066,7 +2070,7 @@ function renderPrep(): HTMLElement | null {
       ),
       alerts && !open ? h('div', { class: 'pcard-alert' }, alerts.split('\n').join(' · ')) : null,
       body,
-    );
+    ), r);
   };
 
 
@@ -2131,7 +2135,7 @@ function renderPrep(): HTMLElement | null {
           })
         : h('div', { class: 'pc-name' }, rowName(r));
     const rest = layout.columns.map((_, col) => col).filter((col) => !placed.has(col));
-    return h(
+    return applyLock(h(
       'article',
       { class: ['prep-card', ...classesOf(r)].join(' ') },
       h(
@@ -2139,6 +2143,7 @@ function renderPrep(): HTMLElement | null {
         { class: 'pc-head' },
         // Where the patient is on the theatre list.
         index >= 0 ? h('span', { class: 'pc-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
+        cancelledRow ? null : lockToggle(r),
         gripOf(r, index, 'article.prep-card.active'),
         tickOf(r),
         eyeSwitch,
@@ -2147,6 +2152,7 @@ function renderPrep(): HTMLElement | null {
           'div',
           { class: 'pc-badges' },
           reportStatus(r)?.check?.nameMismatch ? h('span', { class: 'badge badge-mismatch', role: 'alert' }, '⛔ IOL report: wrong name') : null,
+          [...new Map(alertsOf(r).map((a) => [a.short, a])).values()].map((a) => h('span', { class: `badge ${a.level === 'error' ? 'badge-mismatch' : 'badge-alert'}`, title: a.text }, a.short)),
           ...badgesOf(r),
           todo.length
             ? h('span', { class: 'badge badge-todo', title: 'Still to fill in' }, `To do: ${todo.join(' · ')}`)
@@ -2167,7 +2173,7 @@ function renderPrep(): HTMLElement | null {
           : null,
       ),
       rest.length ? h('div', { class: 'pc-foot' }, rest.map((col) => field(col, true))) : null,
-    );
+    ), r);
   };
   const prepCards = h(
     'div',
@@ -2195,7 +2201,6 @@ function renderPrep(): HTMLElement | null {
     cancelled.length ? h('div', { class: 'pcards-cancelled' }, `Cancelled: not on the latest run sheet (${cancelled.length}). Copied below the list under a CANCELLED row; untick any you don’t want to keep.`) : null,
     cancelled.map((r) => renderCard(r, -1)),
   );
-  const allOpen = grid.rows.length > 0 && grid.rows.every((r) => state.openCards.has(rowKey(r)));
   const openAll = h(
     'div',
     { class: 'pcards-tools' },
@@ -2204,11 +2209,6 @@ function renderPrep(): HTMLElement | null {
       for (const r of active) r.included = on;
       render();
     } }), ` ${count} of ${active.length} ticked`),
-    h('button', { class: 'link', onclick: () => {
-      if (allOpen) state.openCards.clear();
-      else for (const r of grid.rows) state.openCards.add(rowKey(r));
-      render();
-    } }, allOpen ? 'Close all' : 'Open all'),
   );
 
   return h(
@@ -2330,6 +2330,7 @@ function buildSummary(grid: Grid): ListSummary {
         const { level, facts, flags, nameMismatch } = status.check;
         const first = flags.find((f) => f.level === 'error') ?? flags[0];
         check = nameMismatch ?? `${CHECK_ICON[level]} ${[...facts, ...(first && level !== 'ok' ? [first.text] : [])].join(' · ')}`.trim();
+        if (status.check.alerts.length) check += `${check ? ' · ' : ''}${status.check.alerts.map((a) => a.short).join(', ')}`;
       } else if (status) check = status.state === 'reading' ? 'Still being read' : 'Not read: check by eye';
       return { time: r.patient?.time ?? '', cells: [...r.cells], check };
     }),
@@ -3124,6 +3125,63 @@ function renderReportBlock(r: GridRow): HTMLElement {
       input,
     ),
     h('div', { class: 'pc-check' }, renderReportStatus(r), ' ', readAgainButton(r, 'Re-read')),
+    renderAlerts(r),
+  );
+}
+
+// ---- Locking a patient against changes ---------------------------------------------
+
+/** 🔒 / 🔓: locks a patient's boxes and buttons against changes, until unlocked. */
+function lockToggle(r: GridRow): HTMLElement {
+  return h(
+    'button',
+    {
+      class: `lock-toggle lock-keep${r.locked ? ' on' : ''}`,
+      'aria-pressed': r.locked ? 'true' : 'false',
+      title: r.locked ? 'Locked: click to unlock and make changes' : 'Lock this patient against changes',
+      'aria-label': `${r.locked ? 'Unlock' : 'Lock'} ${rowLabel(r)}`,
+      'data-key': `${rowKey(r)}:lock`,
+      onclick: (e: Event) => {
+        e.stopPropagation();
+        r.locked = !r.locked;
+        render();
+      },
+    },
+    r.locked ? '🔒' : '🔓',
+  );
+}
+
+/**
+ * Makes a locked patient's controls read-only: text boxes can still be selected and copied, but nothing
+ * can be typed, picked, ticked, dragged or pasted. Opening the IOL report (and the lock) still work.
+ */
+function applyLock(el: HTMLElement, r: GridRow): HTMLElement {
+  if (!r.locked) return el;
+  el.classList.add('locked');
+  for (const c of el.querySelectorAll<HTMLElement>('textarea, input, select, button')) {
+    if (c.closest('.lock-keep')) continue;
+    if (c instanceof HTMLTextAreaElement || (c instanceof HTMLInputElement && c.type === 'text')) c.readOnly = true;
+    else (c as HTMLButtonElement | HTMLInputElement | HTMLSelectElement).disabled = true;
+  }
+  return el;
+}
+
+/** Toolbar: lock or unlock every patient on the list. */
+function renderLockAll(grid: Grid): HTMLElement {
+  const active = activeRows(grid);
+  const allLocked = active.length > 0 && active.every((r) => r.locked);
+  return h(
+    'button',
+    {
+      disabled: active.length === 0,
+      title: allLocked ? 'Unlock every patient on the list' : 'Lock every patient on the list against changes',
+      'data-key': 'lock-all',
+      onclick: () => {
+        for (const r of active) r.locked = !allLocked;
+        say(allLocked ? 'Unlocked every patient.' : 'Locked every patient: unlock one with its 🔒, or Unlock all.');
+      },
+    },
+    allLocked ? '🔓 Unlock all' : '🔒 Lock all',
   );
 }
 
@@ -3184,6 +3242,10 @@ function reportSaveHint(): string {
 }
 
 async function addReports(r: GridRow, files: Blob[]): Promise<void> {
+  if (r.locked) {
+    say(`${rowLabel(r)} is locked: unlock it (🔒) to add a screenshot.`);
+    return;
+  }
   const images = (await Promise.all(files.map(imageFromFile))).filter((i): i is ReportImage => i !== null);
   if (!images.length) {
     say('That isn’t a picture the app can read. Paste or choose a screenshot (PNG or JPEG).');
@@ -3214,7 +3276,7 @@ function reportThumb(r: GridRow, image: ReportImage, i: number): HTMLElement {
   return h(
     'span',
     { class: asking ? 'report-thumb asking' : 'report-thumb' },
-    h('button', { class: 'report-open', title: 'Open full screen, e.g. to check at timeout', 'data-key': `${rowKey(r)}:report:${i}`, onclick: () => openViewer(r, i) }, h('img', { src: imageUrl(image), alt: `IOL report ${i + 1} for ${rowLabel(r)}` })),
+    h('button', { class: 'report-open lock-keep', title: 'Open full screen, e.g. to check at timeout', 'data-key': `${rowKey(r)}:report:${i}`, onclick: () => openViewer(r, i) }, h('img', { src: imageUrl(image), alt: `IOL report ${i + 1} for ${rowLabel(r)}` })),
     asking
       ? h(
           'span',
@@ -3297,6 +3359,7 @@ function renderReports(r: GridRow): HTMLElement | null {
     ),
     input,
     reports.length ? renderReportStatus(r) : h('span', { class: 'hint small report-hint' }, 'or paste one (Ctrl+V) into the Implants box'),
+    reports.length ? renderAlerts(r) : null,
   );
 }
 
@@ -3492,7 +3555,7 @@ function reportStatus(r: GridRow): ReportStatus | null {
   const combined = combineReadings(read);
   if (!combined) return { state: states.includes('failed') ? 'failed' : 'unreadable' };
   try {
-    return { state: 'checked', check: checkLens(combined, pickedLens(r), parseConstants(state.settings.prompts.constants)) };
+    return { state: 'checked', check: checkLens(combined, pickedLens(r), parseConstants(state.settings.prompts.constants), state.settings.prompts.limits) };
   } catch (e) {
     console.error('Couldn’t check the lens against the report', e);
     return { state: 'unreadable' };
@@ -3500,6 +3563,23 @@ function reportStatus(r: GridRow): ReportStatus | null {
 }
 
 const CHECK_ICON: Record<string, string> = { ok: '✓', warn: '⚠', error: '⛔', none: '' };
+
+/** The biometry alerts (long eye, shallow AC…) for a row's report, once it's been read. */
+function alertsOf(r: GridRow): BiometryAlert[] {
+  const status = r.reports?.length ? reportStatus(r) : null;
+  return status?.state === 'checked' ? (status.check?.alerts ?? []) : [];
+}
+
+/** The biometry alerts as lines, under the report. */
+function renderAlerts(r: GridRow, big = false): HTMLElement | null {
+  const alerts = alertsOf(r);
+  if (!alerts.length) return null;
+  return h(
+    'div',
+    { class: big ? 'bio-alerts big' : 'bio-alerts' },
+    alerts.map((a) => h('div', { class: `report-check ${a.level}` }, `${CHECK_ICON[a.level]} ${a.text}`)),
+  );
+}
 
 function unreadText(state: ReportStatus['state']): string {
   return state === 'failed'
@@ -3537,7 +3617,8 @@ function renderReportStatus(r: GridRow): HTMLElement | null {
   if (nameMismatch) return h('span', { class: 'report-check error mismatch', role: 'alert' }, `⛔ ${nameMismatch}`);
   const first = flags.find((f) => f.level === 'error') ?? flags[0];
   // Errors stand alone; a warning comes after what the report says.
-  const summary = level === 'error' ? first!.text : [...facts, ...(first ? [first.text] : [])].join(' · ');
+  const errorAlert = status.check.alerts.find((a) => a.level === 'error');
+  const summary = level === 'error' ? (first?.level === 'error' ? first.text : errorAlert?.text ?? first?.text ?? '') : [...facts, ...(first ? [first.text] : [])].join(' · ');
   const all = [...facts, ...flags.map((f) => f.text), ...notes, status.check.idNote ?? ''].filter(Boolean).join('\n');
   return h('span', { class: `report-check ${level}`, title: all }, `${CHECK_ICON[level]} ${summary}`.trim());
 }
@@ -3553,7 +3634,7 @@ function renderHighlights(r: GridRow, image: ReportImage, sim?: SimState): SVGSV
   const read = readings.get(image);
   if (!read || typeof read !== 'object') return null;
   // They follow the lens being tried, so a toric's row is marked when you try it.
-  const { highlights } = checkLens(read.reading, sim ? simLens(r, sim) : pickedLens(r), parseConstants(state.settings.prompts.constants));
+  const { highlights } = checkLens(read.reading, sim ? simLens(r, sim) : pickedLens(r), parseConstants(state.settings.prompts.constants), state.settings.prompts.limits);
   if (!highlights.length) return null;
   const svg = document.createElementNS(SVG, 'svg');
   svg.setAttribute('viewBox', `0 0 ${read.width} ${read.height}`);
@@ -3740,8 +3821,8 @@ function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
     h('p', { class: 'sim-chosen' }, describe(chosen)),
     h(
       'button',
-      { class: 'primary', 'data-key': 'sim:apply', disabled: lensCol < 0 || Boolean(lens.family && !lens.family.number), onclick: apply },
-      `Apply: ${result.code} ${signed(chosen.power)}D, target ${result.target === 0 ? 'plano' : signed(result.target)}`,
+      { class: 'primary', 'data-key': 'sim:apply', disabled: r.locked || lensCol < 0 || Boolean(lens.family && !lens.family.number), title: r.locked ? 'This patient is locked: unlock them (🔒) to apply a lens' : '', onclick: apply },
+      r.locked ? '🔒 Locked: unlock the patient to apply' : `Apply: ${result.code} ${signed(chosen.power)}D, target ${result.target === 0 ? 'plano' : signed(result.target)}`,
     ),
     result.notes.map((n) => h('p', { class: 'report-check note' }, n)),
     result.working.length
@@ -3767,6 +3848,7 @@ function renderViewerCheck(r: GridRow): HTMLElement | null {
   return h(
     'div',
     { class: 'viewer-check' },
+    renderAlerts(r, true),
     idNote ? h('div', { class: 'report-check note' }, idNote) : null,
     facts.map((f) => h('div', { class: `report-check ${f.includes('(estimated)') ? 'warn' : 'ok'}` }, `${f.includes('(estimated)') ? '≈' : '✓'} Report: ${f}`)),
     flags.map((f) => h('div', { class: `report-check ${f.level}` }, `${CHECK_ICON[f.level]} ${f.text}`)),

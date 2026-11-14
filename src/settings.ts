@@ -84,6 +84,17 @@ export function importSettings(text: string): Settings {
   };
 }
 
+/** Each cutoff that's a number is kept; anything missing or not a number takes the default. */
+function importLimits(value: unknown, defaults: PromptSettings['limits']): PromptSettings['limits'] {
+  const out = { ...defaults };
+  if (!isObject(value)) return out;
+  for (const key of Object.keys(defaults) as (keyof typeof defaults)[]) {
+    const n = value[key];
+    if (typeof n === 'number' && Number.isFinite(n)) out[key] = n;
+  }
+  return out;
+}
+
 /** The lens list before DIUx was added: settings still on it get the new default list. */
 const OLD_DEFAULT_LENSES = 'DCB00,DIB00,ZCUx,CNA0Tx';
 
@@ -94,6 +105,7 @@ function importPrompts(value: unknown, defaults: PromptSettings): PromptSettings
     findings: Array.isArray(value.findings) ? stringList(value.findings) : defaults.findings,
     lenses: Array.isArray(value.lenses) && stringList(value.lenses).join() !== OLD_DEFAULT_LENSES ? stringList(value.lenses) : defaults.lenses,
     constants: Array.isArray(value.constants) ? stringList(value.constants) : defaults.constants,
+    limits: importLimits(value.limits, defaults.limits),
     findingsColumn: typeof value.findingsColumn === 'string' ? value.findingsColumn : defaults.findingsColumn,
     lensColumn: typeof value.lensColumn === 'string' ? value.lensColumn : defaults.lensColumn,
   };

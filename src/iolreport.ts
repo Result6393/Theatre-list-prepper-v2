@@ -45,6 +45,33 @@ export interface EyeReading {
   /** Where the eye's heading ("OD right") and ΔK are on the screenshot. */
   headingWords?: OcrWord[];
   deltaKWords?: OcrWord[];
+  /** The rest of the biometry, for the alerts (see biometryAlerts). */
+  biometry?: Biometry;
+}
+
+/** Biometry values for the alerts, each with where it is on the screenshot. */
+export interface Biometry {
+  acd?: Measured;
+  lt?: Measured;
+  wtw?: Measured;
+  al?: Measured;
+  k?: Measured;
+  /** Corneal astigmatism (ΔK) and total keratometry astigmatism (ΔTK): cylinder and axis. */
+  deltaK?: Measured & { axis?: number };
+  deltaTK?: Measured & { axis?: number };
+  /** "Phakic", "Pseudophakic" or "Aphakic". */
+  lensStatus?: string;
+  lensStatusWords?: OcrWord[];
+  /** Laser vision correction: "Untreated", or a treatment. */
+  lvc?: string;
+  lvcWords?: OcrWord[];
+  /** Lines with a value the IOLMaster marks as borderline "(!)". */
+  borderline: { text: string; words: OcrWord[] }[];
+}
+
+export interface Measured {
+  value: number;
+  words: OcrWord[];
 }
 
 export interface ReportReading {
@@ -165,6 +192,86 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
   const axialLength = measure(/\bAL\s*[:.]?\s*(\d{2}[.,]?\d{2})\s*mm/i, 15, 40);
   const k = measure(/(?<![A-Z])SE\s*[:.]?\s*(\d{2}[.,]?\d{2})\s*D/, 30, 60);
 
+  /** A labelled value and the words it's in (from the label to the value), e.g. "ACD: 2.83 mm". */
+  const labelled = (label: RegExp, value: RegExp, parse: (t: string) => number | null, min: number, max: number): Measured | undefined => {
+    for (const r of half) {
+      const at = r.words.findIndex((w) => label.test(w.text));
+      if (at === -1) continue;
+      for (let j = at; j < Math.min(r.words.length, at + 3); j++) {
+        const m = text(r.words.slice(at, j + 1)).match(value);
+        const n = m ? parse(m[1]) : null;
+        if (n !== null && n >= min && n <= max) return { value: n, words: r.words.slice(at, j + 1) };
+      }
+    }
+    return undefined;
+  };
+  // One decimal (WTW "11.9") or two ("2.83"), allowing for a lost decimal point.
+  const oneOrTwo = (t: string) => {
+    const c = t.replace(',', '.').replace(/[^\d.]/g, '');
+    if (c.includes('.')) return Number(c);
+    return c.length === 3 ? Number(`${c.slice(0, 2)}.${c.slice(2)}`) : c.length === 4 ? Number(`${c.slice(0, 2)}.${c.slice(2)}`) : null;
+  };
+  const decimal = (t: string) => {
+    const c = t.replace(',', '.').replace(/[^\d.]/g, '');
+    if (c.includes('.')) return Number(c);
+    return c.length === 3 ? Number(`${c[0]}.${c.slice(1)}`) : null;
+  };
+  /** "ΔK: +0.47 D @ 6°" (OCR reads Δ as A, &, 4…): the cylinder and its axis. */
+  const astigmatism = (label: RegExp) => {
+    for (const r of half) {
+      const at = r.words.findIndex((w) => label.test(w.text));
+      if (at === -1) continue;
+      const words: OcrWord[] = [];
+      for (const w of r.words.slice(at)) {
+        words.push(w);
+        if (/\d\s*°?$/.test(w.text) && /@/.test(text(words))) break;
+        if (words.length > 5) break;
+      }
+      const m = text(words).match(/([+-]?\d+[.,]?\d*)\s*D?\s*@\s*(\d{1,3})/);
+      const cyl = m ? readNumber(m[1]) : null;
+      if (cyl !== null && Math.abs(cyl) < 15) return { value: Math.abs(cyl), axis: Number(m![2]) % 181, words };
+    }
+    return undefined;
+  };
+  const statusOf = (label: RegExp, value: RegExp) => {
+    for (const r of half) {
+      const line = text(r.words);
+      const m = line.match(value);
+      if (m && label.test(line)) {
+        const at = r.words.findIndex((w) => label.test(w.text));
+        const end = r.words.findIndex((w, j) => j > at && new RegExp(m[1], 'i').test(w.text));
+        return { text: m[1], words: r.words.slice(Math.max(0, at), end === -1 ? at + 2 : end + 1) };
+      }
+    }
+    return undefined;
+  };
+  const lens = statusOf(/^LS\b/i, /\bLS\s*[:.]?\s*(Pseudophakic|Aphakic|Phakic)/i);
+  const lvc = statusOf(/^LV[CG]\b/i, /\bLV[CG]\s*:\s*(?!mode)([A-Za-z][A-Za-z-]*)/i);
+  const biometry: Biometry = {
+    al: labelled(/^AL\b/i, /\bAL\s*[:.]?\s*(\d{2}[.,]?\d{2})/i, (t) => readNumber(t), 15, 40),
+    k: labelled(/^SE\b/, /\bSE\s*[:.]?\s*(\d{2}[.,]?\d{2})/, (t) => readNumber(t), 30, 60),
+    acd: labelled(/^A[CG]D\b/i, /\bA[CG]D\s*[:.]?\s*(\d[.,]?\d{2})/i, decimal, 1, 7),
+    lt: labelled(/^LT\b/i, /\bLT\s*[:.]?\s*(\d[.,]?\d{2})/i, decimal, 0.2, 8),
+    wtw: labelled(/^W[TW]{1,2}W?\b/i, /\bW[TW]{1,2}W?\s*[:.]?\s*(\d{2}[.,]?\d{1,2})/i, oneOrTwo, 8, 15),
+    deltaK: astigmatism(/^[ΔA&4]K[:.]?$/i),
+    deltaTK: astigmatism(/^[ΔA&4]TK[:.]?$/i),
+    lensStatus: lens?.text.charAt(0).toUpperCase() + (lens?.text.slice(1).toLowerCase() ?? ''),
+    lensStatusWords: lens?.words,
+    lvc: lvc?.text,
+    lvcWords: lvc?.words,
+    // "(!)" after a value (OCR may drop the "!"), but not the legend at the foot of the page.
+    borderline: half
+      .filter((r) => r.words.some((w) => /^\((?:!|I|l|1|\|)?\)$/.test(w.text)) && !/borderline|edited/i.test(text(r.words)) && /\d/.test(text(r.words)))
+      .map((r) => {
+        const at = r.words.findIndex((w) => /^\((?:!|I|l|1|\|)?\)$/.test(w.text));
+        const words = r.words.slice(0, at + 3);
+        return { text: text(words).replace(/\s*\((?:!|I|l|1|\|)?\)\s*/g, ' (!) ').trim(), words };
+      }),
+  };
+  if (!lens) {
+    biometry.lensStatus = undefined;
+  }
+
   const tables: LensTable[] = [];
   half.forEach((r, i) => {
     const isBarrett = (w: OcrWord) => /^barr?ett$/i.test(w.text.replace(/[^A-Za-z]/g, ''));
@@ -215,7 +322,7 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
       break;
     }
   }
-  return { target, axialLength, k, tables, deltaKWords };
+  return { target, axialLength, k, tables, deltaKWords, biometry };
 }
 
 /** The report's patient, warnings and each eye's lens tables, or null if it isn't an IOL calculation. */
@@ -311,6 +418,129 @@ export function readReport(words: OcrWord[]): ReportReading | null {
   };
 }
 
+
+// ---- Biometry alerts --------------------------------------------------------------
+
+/** Cutoffs for the biometry alerts (Settings → Cataract prompts). */
+export interface BiometryLimits {
+  alVeryShort: number;
+  alShort: number;
+  alLong: number;
+  alVeryLong: number;
+  acdShallow: number;
+  ltThick: number;
+  kFlat: number;
+  kSteep: number;
+  /** ΔK at or above this with a non-toric lens: consider a toric. */
+  toricCyl: number;
+  /** ΔK and ΔTK disagreeing by more than this (D, or degrees): re-check. */
+  kAgreeCyl: number;
+  kAgreeAxis: number;
+  /** Differences between the eyes. */
+  alDiff: number;
+  kDiff: number;
+  wtwSmall: number;
+  wtwLarge: number;
+}
+
+export function defaultLimits(): BiometryLimits {
+  return {
+    alVeryShort: 21,
+    alShort: 22,
+    alLong: 26,
+    alVeryLong: 28,
+    acdShallow: 2.5,
+    ltThick: 5,
+    kFlat: 41,
+    kSteep: 47,
+    toricCyl: 1,
+    kAgreeCyl: 0.5,
+    kAgreeAxis: 15,
+    alDiff: 0.3,
+    kDiff: 1,
+    wtwSmall: 11,
+    wtwLarge: 12.5,
+  };
+}
+
+export interface BiometryAlert {
+  level: 'warn' | 'error';
+  /** A few words for a badge, e.g. "Long eye". */
+  short: string;
+  text: string;
+  side: 'right' | 'left' | 'both';
+  words?: OcrWord[];
+}
+
+const mm = (n: number) => `${n.toFixed(2)} mm`;
+const dioptre = (n: number) => `${n.toFixed(2)} D`;
+
+/**
+ * What in the biometry is worth a second look for the eye(s) being operated on: a short or long eye,
+ * shallow AC, thick lens, flat or steep cornea, astigmatism with a non-toric lens, ΔK and ΔTK not
+ * agreeing, a small or large cornea, values the IOLMaster marks borderline, previous laser surgery,
+ * and (an error) an eye that already has a lens. Plus differences between the two eyes.
+ */
+export function biometryAlerts(reading: ReportReading, lens: PickedLens, limits: BiometryLimits): BiometryAlert[] {
+  const sides: ('right' | 'left')[] = lens.eye === 'RIGHT' ? ['right'] : lens.eye === 'LEFT' ? ['left'] : ['right', 'left'];
+  const alerts: BiometryAlert[] = [];
+  const toric = Boolean(lens.family && /[1-9]/.test(lens.family.number));
+  for (const side of sides) {
+    const b = reading[side]?.biometry;
+    if (!b) continue;
+    const eye = `${side} eye`;
+    const add = (level: BiometryAlert['level'], short: string, text: string, words?: OcrWord[]) => alerts.push({ level, short, text, side, words });
+    if (b.lensStatus && /pseudo|aphak/i.test(b.lensStatus)) {
+      add('error', `${b.lensStatus} ${side === 'right' ? 'RE' : 'LE'}`, `The report says the ${eye} is ${b.lensStatus.toLowerCase()} (no natural lens): check it’s the right eye.`, b.lensStatusWords);
+    }
+    if (b.lvc && !/untreated/i.test(b.lvc)) add('warn', 'Prior LVC', `Previous laser vision correction on the ${eye} (LVC: ${b.lvc}): check the formula.`, b.lvcWords);
+    const al = b.al?.value ?? reading[side]?.axialLength;
+    if (al !== undefined) {
+      if (al < limits.alVeryShort) add('warn', 'Very short eye', `Very short eye: AL ${mm(al)} (under ${limits.alVeryShort.toFixed(1)}).`, b.al?.words);
+      else if (al < limits.alShort) add('warn', 'Short eye', `Short eye: AL ${mm(al)} (under ${limits.alShort.toFixed(1)}).`, b.al?.words);
+      else if (al > limits.alVeryLong) add('warn', 'Very long eye', `Very long eye: AL ${mm(al)} (over ${limits.alVeryLong.toFixed(1)}).`, b.al?.words);
+      else if (al > limits.alLong) add('warn', 'Long eye', `Long eye: AL ${mm(al)} (over ${limits.alLong.toFixed(1)}).`, b.al?.words);
+    }
+    const phakic = !b.lensStatus || /^phakic$/i.test(b.lensStatus);
+    if (phakic && b.acd && b.acd.value < limits.acdShallow) add('warn', 'Shallow AC', `Shallow AC: ACD ${mm(b.acd.value)} (under ${limits.acdShallow.toFixed(1)}).`, b.acd.words);
+    if (phakic && b.lt && b.lt.value > limits.ltThick) add('warn', 'Thick lens', `Thick lens: LT ${mm(b.lt.value)} (over ${limits.ltThick.toFixed(1)}).`, b.lt.words);
+    const k = b.k?.value ?? reading[side]?.k;
+    if (k !== undefined) {
+      if (k < limits.kFlat) add('warn', 'Flat K', `Flat cornea: K ${dioptre(k)} (under ${limits.kFlat.toFixed(1)}).`, b.k?.words);
+      else if (k > limits.kSteep) add('warn', 'Steep K', `Steep cornea: K ${dioptre(k)} (over ${limits.kSteep.toFixed(1)}).`, b.k?.words);
+    }
+    if (b.deltaK && b.deltaK.value >= limits.toricCyl && !toric) {
+      add('warn', 'Astigmatism', `Corneal astigmatism ΔK ${dioptre(b.deltaK.value)} @ ${b.deltaK.axis}°${lens.code ? ` with a non-toric lens (${lens.code})` : ''}: consider a toric.`, b.deltaK.words);
+    }
+    if (b.deltaK && b.deltaTK) {
+      const cyl = Math.abs(b.deltaK.value - b.deltaTK.value);
+      const raw = Math.abs((b.deltaK.axis ?? 0) - (b.deltaTK.axis ?? 0)) % 180;
+      const axis = Math.min(raw, 180 - raw);
+      // An axis means little for a small cylinder.
+      const axisCounts = Math.min(b.deltaK.value, b.deltaTK.value) >= 0.75;
+      if (cyl > limits.kAgreeCyl || (axisCounts && axis > limits.kAgreeAxis)) {
+        add('warn', 'K mismatch', `ΔK (${dioptre(b.deltaK.value)} @ ${b.deltaK.axis}°) and ΔTK (${dioptre(b.deltaTK.value)} @ ${b.deltaTK.axis}°) don’t agree: re-check the keratometry.`, [...b.deltaK.words, ...b.deltaTK.words]);
+      }
+    }
+    if (b.wtw && b.wtw.value < limits.wtwSmall) add('warn', 'Small cornea', `Small cornea: WTW ${b.wtw.value.toFixed(1)} mm (under ${limits.wtwSmall.toFixed(1)}).`, b.wtw.words);
+    if (b.wtw && b.wtw.value > limits.wtwLarge) add('warn', 'Large cornea', `Large cornea: WTW ${b.wtw.value.toFixed(1)} mm (over ${limits.wtwLarge.toFixed(1)}).`, b.wtw.words);
+    for (const line of b.borderline) add('warn', 'Borderline value', `The report marks a value as borderline (!): ${line.text}`, line.words);
+  }
+  // Between the eyes (the IOLMaster may warn about the axial length too).
+  const [r, l] = [reading.right?.biometry, reading.left?.biometry];
+  const alR = r?.al?.value ?? reading.right?.axialLength;
+  const alL = l?.al?.value ?? reading.left?.axialLength;
+  if (alR !== undefined && alL !== undefined && Math.abs(alR - alL) > limits.alDiff + 1e-9) {
+    alerts.push({ level: 'warn', short: 'AL differs', side: 'both', text: `The eyes’ axial lengths differ by ${mm(Math.abs(alR - alL))} (over ${limits.alDiff.toFixed(1)}): re-check.`, words: [...(r?.al?.words ?? []), ...(l?.al?.words ?? [])] });
+  }
+  const kR = r?.k?.value ?? reading.right?.k;
+  const kL = l?.k?.value ?? reading.left?.k;
+  if (kR !== undefined && kL !== undefined && Math.abs(kR - kL) > limits.kDiff + 1e-9) {
+    alerts.push({ level: 'warn', short: 'K differs', side: 'both', text: `The eyes’ keratometry differs by ${dioptre(Math.abs(kR - kL))} (over ${limits.kDiff.toFixed(1)}): re-check.`, words: [...(r?.k?.words ?? []), ...(l?.k?.words ?? [])] });
+  }
+  return alerts;
+}
+
 // ---- Checking a lens against the report ----------------------------------------------
 
 export interface PickedLens {
@@ -391,6 +621,8 @@ export interface LensCheck {
   estimate?: LensEstimate;
   /** What to mark on the screenshot. */
   highlights: Highlight[];
+  /** Biometry worth a second look (long eye, shallow AC…). */
+  alerts: BiometryAlert[];
 }
 
 const EYE_NAME: Record<'right' | 'left', string> = { right: 'right', left: 'left' };
@@ -417,6 +649,7 @@ export function combineReadings(readings: ReportReading[]): ReportReading | null
       tables: all.flatMap((e) => e.tables),
       headingWords: all.find((e) => e.headingWords?.length)?.headingWords,
       deltaKWords: all.find((e) => e.deltaKWords?.length)?.deltaKWords,
+      biometry: all.find((e) => e.biometry)?.biometry,
     };
   };
   return {
@@ -718,7 +951,7 @@ export function simulateLens(reading: ReportReading, side: 'right' | 'left', len
 }
 
 /** Your lens checked against the report: found for the eye you're operating on, or what's wrong. */
-export function checkLens(reading: ReportReading, lens: PickedLens, constants: LensConstant[] = []): LensCheck {
+export function checkLens(reading: ReportReading, lens: PickedLens, constants: LensConstant[] = [], limits: BiometryLimits = defaultLimits()): LensCheck {
   const facts: string[] = [];
   const flags: LensCheck['flags'] = [];
   const notes = [...reading.warnings];
@@ -813,7 +1046,9 @@ export function checkLens(reading: ReportReading, lens: PickedLens, constants: L
     }
   }
   const level: LensCheck['level'] = flags.some((f) => f.level === 'error') ? 'error' : flags.length ? 'warn' : facts.length ? 'ok' : 'none';
-  return { level, facts, flags, notes, estimate, highlights, nameMismatch, idNote };
+  const alerts = biometryAlerts(reading, lens, limits);
+  for (const a of alerts) highlights.push(...box(a.words, a.side === 'both' ? operated : a.side));
+  return { level: alerts.some((a) => a.level === 'error') ? 'error' : level, facts, flags, notes, estimate, highlights, nameMismatch, idNote, alerts };
 }
 
 function tablesOf(eye: EyeReading, code: string): LensRow[] {

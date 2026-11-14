@@ -33,6 +33,8 @@ export interface GridRow {
   note?: string;
   /** Screenshots of the patient's IOL report, saved as pictures on their row in your Excel file. */
   reports?: ReportImage[];
+  /** Locked against changes (until unlocked). */
+  locked?: boolean;
 }
 
 export interface MergeSummary {
@@ -437,6 +439,9 @@ export function keepReports(rows: GridRow[], before: GridRow[], layout: Layout):
     const reports = (r.patient && byPatient.get(r.patient)) || byKey.get(keyOf(r))?.shift();
     if (reports) r.reports = reports;
   }
+  // Locks stay with their patients too.
+  const locked = new Set(before.filter((r) => r.locked).map((r) => r.patient ?? keyOf(r)));
+  for (const r of rows) if ((r.patient && locked.has(r.patient)) || locked.has(keyOf(r))) r.locked = true;
 }
 
 function isEmptyRow(row: string[]): boolean {
