@@ -2219,7 +2219,7 @@ function renderPrep(): HTMLElement | null {
   );
 }
 
-/** Desktop, top right of the list: Standard (the columns as a table, like your sheet) or Compact (a card per patient). */
+/** Desktop, top right of the list: Standard (a card per patient) or Compact (the columns as a table, like your sheet). */
 function renderViewSwitch(): HTMLElement {
   const choose = (table: boolean) => {
     state.tableView = table;
@@ -2233,8 +2233,8 @@ function renderViewSwitch(): HTMLElement {
   return h(
     'div',
     { class: 'seg view-switch', role: 'group', 'aria-label': 'View' },
-    h('button', { class: state.tableView ? 'on' : '', 'aria-pressed': state.tableView ? 'true' : 'false', title: 'The columns as a table, like your sheet', onclick: () => choose(true) }, 'Standard'),
-    h('button', { class: state.tableView ? '' : 'on', 'aria-pressed': state.tableView ? 'false' : 'true', title: 'A card per patient', onclick: () => choose(false) }, 'Compact'),
+    h('button', { class: state.tableView ? '' : 'on', 'aria-pressed': state.tableView ? 'false' : 'true', title: 'A card per patient', onclick: () => choose(false) }, 'Standard'),
+    h('button', { class: state.tableView ? 'on' : '', 'aria-pressed': state.tableView ? 'true' : 'false', title: 'The columns as a table, like your sheet', onclick: () => choose(true) }, 'Compact'),
   );
 }
 
