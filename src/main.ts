@@ -6,7 +6,7 @@ import { allergyColumn, allergyPending, lacksAllergyDetails, pendingAllergies } 
 import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, outlookComposeUrl, weekdayLabel } from './email';
 import { extractSessions, type Patient, type Session } from './extract';
 import { combineSessions, listOfPatient, orderedSelection } from './lists';
-import { copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, keepReports, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
+import { copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, isLocked, keepReports, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
 import { lensEmailHtml, lensEmailText, lensLines, type LensItem } from './lenslist';
 import { absentText, cycleFinding, findingGroups, findingState, hasToken, isLensSurgery, lensCode, readGrading, writeGrading, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
@@ -1908,7 +1908,7 @@ function renderPrep(): HTMLElement | null {
           // A screenshot pasted into a lens patient's box becomes their IOL report.
           onpaste: (e: Event) => {
             const files = pastedImages(e as ClipboardEvent);
-            if (!files.length || !takesReports(r) || r.locked) return;
+            if (!files.length || !takesReports(r) || isLocked(r)) return;
             e.preventDefault();
             void addReports(r, files);
           },
@@ -2209,6 +2209,7 @@ function renderPrep(): HTMLElement | null {
       for (const r of active) r.included = on;
       render();
     } }), ` ${count} of ${active.length} ticked`),
+    renderLockAll(grid),
   );
 
   return h(
@@ -2230,6 +2231,9 @@ function renderPrep(): HTMLElement | null {
       ? h('p', { class: 'source-bar muted' }, 'Working from your prepped sheet, without a run sheet: times, New, Moved and the Medical Records email need the run sheet.')
       : renderSource(grid),
     renderUpdate(grid),
+    active.length && active.every((r) => isLocked(r))
+      ? h('p', { class: 'lock-note muted' }, '🔒 Patients start locked against changes: unlock one with its 🔒 to edit, or Unlock all.')
+      : null,
     allergyBanner(),
     phone ? [openAll, cards] : state.tableView ? h('div', { class: 'table-wrap' }, table) : prepCards,
   );
@@ -3136,18 +3140,18 @@ function lockToggle(r: GridRow): HTMLElement {
   return h(
     'button',
     {
-      class: `lock-toggle lock-keep${r.locked ? ' on' : ''}`,
-      'aria-pressed': r.locked ? 'true' : 'false',
-      title: r.locked ? 'Locked: click to unlock and make changes' : 'Lock this patient against changes',
-      'aria-label': `${r.locked ? 'Unlock' : 'Lock'} ${rowLabel(r)}`,
+      class: `lock-toggle lock-keep${isLocked(r) ? ' on' : ''}`,
+      'aria-pressed': isLocked(r) ? 'true' : 'false',
+      title: isLocked(r) ? 'Locked: click to unlock and make changes' : 'Lock this patient against changes',
+      'aria-label': `${isLocked(r) ? 'Unlock' : 'Lock'} ${rowLabel(r)}`,
       'data-key': `${rowKey(r)}:lock`,
       onclick: (e: Event) => {
         e.stopPropagation();
-        r.locked = !r.locked;
+        r.unlocked = isLocked(r) ? true : undefined;
         render();
       },
     },
-    r.locked ? '🔒' : '🔓',
+    isLocked(r) ? '🔒' : '🔓',
   );
 }
 
@@ -3156,11 +3160,14 @@ function lockToggle(r: GridRow): HTMLElement {
  * can be typed, picked, ticked, dragged or pasted. Opening the IOL report (and the lock) still work.
  */
 function applyLock(el: HTMLElement, r: GridRow): HTMLElement {
-  if (!r.locked) return el;
+  if (!isLocked(r)) return el;
   el.classList.add('locked');
   for (const c of el.querySelectorAll<HTMLElement>('textarea, input, select, button')) {
     if (c.closest('.lock-keep')) continue;
-    if (c instanceof HTMLTextAreaElement || (c instanceof HTMLInputElement && c.type === 'text')) c.readOnly = true;
+    if (c instanceof HTMLTextAreaElement || (c instanceof HTMLInputElement && c.type === 'text')) {
+      c.readOnly = true;
+      c.title = 'Locked: unlock this patient (🔒) to change it';
+    }
     else (c as HTMLButtonElement | HTMLInputElement | HTMLSelectElement).disabled = true;
   }
   return el;
@@ -3169,7 +3176,7 @@ function applyLock(el: HTMLElement, r: GridRow): HTMLElement {
 /** Toolbar: lock or unlock every patient on the list. */
 function renderLockAll(grid: Grid): HTMLElement {
   const active = activeRows(grid);
-  const allLocked = active.length > 0 && active.every((r) => r.locked);
+  const allLocked = active.length > 0 && active.every((r) => isLocked(r));
   return h(
     'button',
     {
@@ -3177,7 +3184,7 @@ function renderLockAll(grid: Grid): HTMLElement {
       title: allLocked ? 'Unlock every patient on the list' : 'Lock every patient on the list against changes',
       'data-key': 'lock-all',
       onclick: () => {
-        for (const r of active) r.locked = !allLocked;
+        for (const r of active) r.unlocked = allLocked ? true : undefined;
         say(allLocked ? 'Unlocked every patient.' : 'Locked every patient: unlock one with its 🔒, or Unlock all.');
       },
     },
@@ -3242,7 +3249,7 @@ function reportSaveHint(): string {
 }
 
 async function addReports(r: GridRow, files: Blob[]): Promise<void> {
-  if (r.locked) {
+  if (isLocked(r)) {
     say(`${rowLabel(r)} is locked: unlock it (🔒) to add a screenshot.`);
     return;
   }
@@ -3821,8 +3828,8 @@ function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
     h('p', { class: 'sim-chosen' }, describe(chosen)),
     h(
       'button',
-      { class: 'primary', 'data-key': 'sim:apply', disabled: r.locked || lensCol < 0 || Boolean(lens.family && !lens.family.number), title: r.locked ? 'This patient is locked: unlock them (🔒) to apply a lens' : '', onclick: apply },
-      r.locked ? '🔒 Locked: unlock the patient to apply' : `Apply: ${result.code} ${signed(chosen.power)}D, target ${result.target === 0 ? 'plano' : signed(result.target)}`,
+      { class: 'primary', 'data-key': 'sim:apply', disabled: isLocked(r) || lensCol < 0 || Boolean(lens.family && !lens.family.number), title: isLocked(r) ? 'This patient is locked: unlock them (🔒) to apply a lens' : '', onclick: apply },
+      isLocked(r) ? '🔒 Locked: unlock the patient to apply' : `Apply: ${result.code} ${signed(chosen.power)}D, target ${result.target === 0 ? 'plano' : signed(result.target)}`,
     ),
     result.notes.map((n) => h('p', { class: 'report-check note' }, n)),
     result.working.length
