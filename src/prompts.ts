@@ -19,6 +19,11 @@ export interface PromptSettings {
    * report from one that is.
    */
   constants: string[];
+  /**
+   * Lenses that use another lens's calculation on the report (same platform and A-constant),
+   * "DIUx = ZCUx" per line.
+   */
+  equivalents: string[];
   /** Cutoffs for the biometry alerts on the IOL report (long eye, shallow AC…). */
   limits: BiometryLimits;
   /** Column headings the picks go into; '' picks automatically. */
@@ -32,6 +37,7 @@ export function defaultPrompts(): PromptSettings {
     findings: ['PXF', 'Guttata', 'Good dilation | Mod dilation | Poor dilation', 'Phacodonesis', 'Tamsulosin'],
     lenses: ['DCB00', 'DIB00', 'ZCUx', 'DIUx', 'CNA0Tx'],
     constants: ['DCB00 119.3', 'CNA0Tx 119.1'],
+    equivalents: ['DIUx = ZCUx'],
     limits: defaultLimits(),
     findingsColumn: '',
     lensColumn: '',

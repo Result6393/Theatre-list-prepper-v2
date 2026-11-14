@@ -19,7 +19,7 @@ import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
 import { summaryHtml, summaryPage, summaryText as listSummaryText, type Summary as ListSummary } from './summary';
 import { reportImage, type ReportImage } from './report';
-import { checkLens, combineReadings, parseConstants, readReport, signed, simulateLens, type BiometryAlert, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
+import { checkLens, combineReadings, parseConstants, parseEquivalents, readReport, signed, simulateLens, type BiometryAlert, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
 import { OCR_ENGINE, readWords } from './ocr';
 
 /** The list being prepped: one list, or several ticked together that run on as one. */
@@ -3090,7 +3090,7 @@ function suggestedPower(r: GridRow): number {
   const reading = combinedReading(r);
   if (reading) {
     const lens = pickedLens(r);
-    const result = simulateLens(reading, lens.eye === 'LEFT' ? 'left' : 'right', { ...lens, power: null }, parseConstants(state.settings.prompts.constants));
+    const result = simulateLens(reading, lens.eye === 'LEFT' ? 'left' : 'right', { ...lens, power: null }, parseConstants(state.settings.prompts.constants), parseEquivalents(state.settings.prompts.equivalents));
     if (typeof result !== 'string') return result.best.power;
   }
   return 20;
@@ -3565,7 +3565,7 @@ function reportStatus(r: GridRow): ReportStatus | null {
   const combined = combineReadings(read);
   if (!combined) return { state: states.includes('failed') ? 'failed' : 'unreadable' };
   try {
-    return { state: 'checked', check: checkLens(combined, pickedLens(r), parseConstants(state.settings.prompts.constants), state.settings.prompts.limits) };
+    return { state: 'checked', check: checkLens(combined, pickedLens(r), parseConstants(state.settings.prompts.constants), state.settings.prompts.limits, parseEquivalents(state.settings.prompts.equivalents)) };
   } catch (e) {
     console.error('Couldn’t check the lens against the report', e);
     return { state: 'unreadable' };
@@ -3644,7 +3644,7 @@ function renderHighlights(r: GridRow, image: ReportImage, sim?: SimState): SVGSV
   const read = readings.get(image);
   if (!read || typeof read !== 'object') return null;
   // They follow the lens being tried, so a toric's row is marked when you try it.
-  const { highlights } = checkLens(read.reading, sim ? simLens(r, sim) : pickedLens(r), parseConstants(state.settings.prompts.constants), state.settings.prompts.limits);
+  const { highlights } = checkLens(read.reading, sim ? simLens(r, sim) : pickedLens(r), parseConstants(state.settings.prompts.constants), state.settings.prompts.limits, parseEquivalents(state.settings.prompts.equivalents));
   if (!highlights.length) return null;
   const svg = document.createElementNS(SVG, 'svg');
   svg.setAttribute('viewBox', `0 0 ${read.width} ${read.height}`);
@@ -3706,7 +3706,7 @@ function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
   }
   const eyeSet = pickedLens(r).eye;
   const lens = simLens(r, sim);
-  const result = simulateLens(reading, sim.side, lens, parseConstants(prompts.constants));
+  const result = simulateLens(reading, sim.side, lens, parseConstants(prompts.constants), parseEquivalents(prompts.equivalents));
   const eyeTarget = reading[sim.side]?.target;
   const at = sim.lens.indexOf('x');
   const base = at === -1 ? '' : sim.lens.slice(0, at);
@@ -3725,7 +3725,10 @@ function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
         chip(l.replace('x', '…'), sim.lens === l, () => {
           const family = l.includes('x') ? l.slice(0, l.indexOf('x')) : '';
           // A new lens (or number, eye or target) shows the best power for it until you pick one.
-          set({ lens: l, number: !family ? '' : family === base ? sim.number : reportNumber(reading, sim.side, family), power: '' });
+          // The report's toric model number, also through a same-calculation lens (DIU… → ZCU…).
+          const alias = parseEquivalents(prompts.equivalents).find((e) => e.from.includes('x') && e.from.slice(0, e.from.indexOf('x')).toUpperCase() === family.toUpperCase());
+          const fromReport = reportNumber(reading, sim.side, family) || (alias ? reportNumber(reading, sim.side, alias.to.slice(0, alias.to.indexOf('x'))) : '');
+          set({ lens: l, number: !family ? '' : family === base ? sim.number : fromReport, power: '' });
         }, `lens:${l}`),
       ),
       at === -1

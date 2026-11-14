@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { biometryAlerts, checkLens, combineReadings, defaultLimits, parseConstants, readNumber, readReport, simulateLens, type Biometry, type EyeReading, type OcrWord, type PickedLens, type ReportReading, type Simulation } from '../src/iolreport';
+import { biometryAlerts, checkLens, combineReadings, defaultLimits, parseConstants, parseEquivalents, readNumber, readReport, simulateLens, type Biometry, type EyeReading, type OcrWord, type PickedLens, type ReportReading, type Simulation } from '../src/iolreport';
 import { srktPower, srktRefraction } from '../src/srkt';
 
 /**
@@ -407,5 +407,28 @@ describe('reading the biometry', () => {
   it('alerts for the eye being operated on', () => {
     expect(biometryAlerts(r, lens({ eye: 'RIGHT' }), defaultLimits()).map((a) => a.short)).toEqual(['Short eye', 'Shallow AC', 'Thick lens', 'Astigmatism', 'Borderline value', 'AL differs', 'K differs']);
     expect(biometryAlerts(r, lens({ eye: 'LEFT' }), defaultLimits()).map((a) => a.short)).toEqual(['Pseudophakic LE', 'Prior LVC', 'Astigmatism', 'Small cornea', 'AL differs', 'K differs']);
+  });
+});
+
+describe('lenses that use another lens’s calculation', () => {
+  const report = readReport(REPORT)!;
+  const equivalents = parseEquivalents(['DIUx = ZCUx', 'not a pair']);
+  const diu = lens({ eye: 'LEFT', code: 'DIU150', family: { base: 'DIU', number: '150' }, power: 22, target: -0.25 });
+
+  it('reads them from Settings', () => {
+    expect(equivalents).toEqual([{ from: 'DIUx', to: 'ZCUx' }]);
+  });
+
+  it('checks a DIU against the report’s ZCU with the same number', () => {
+    expect(checkLens(report, diu, [], defaultLimits(), equivalents).facts).toEqual(['Left eye: DIU150 +22.00, axis 167° → predicted −0.51 (from the report’s ZCU150 calculation)']);
+    // Without the setting, it isn't on the report.
+    expect(checkLens(report, diu).facts).toEqual([]);
+  });
+
+  it('tries a DIU with the ZCU’s numbers, cylinder and axis', () => {
+    const s = simulateLens(report, 'left', { ...diu, power: null }, [], equivalents) as Simulation;
+    expect(s.source).toBe('report');
+    expect(s.notes[0]).toBe('DIU150 isn’t on the report: read from its ZCU150 calculation (the same lens platform and A-constant, as set in Settings).');
+    expect(s.rows.find((r) => r.power === 22)).toMatchObject({ ref: -0.51, cyl: 1.5, axis: 167 });
   });
 });
