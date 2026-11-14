@@ -1939,7 +1939,7 @@ function renderPrep(): HTMLElement | null {
     const main = h(
       'tr',
       {},
-      h('td', { class: 'handle' }, index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null, r.status === 'cancelled' ? null : lockToggle(r), gripOf(r, index, 'tbody.patient.active'), tickOf(r)),
+      h('td', { class: 'handle' }, index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null, r.status === 'cancelled' ? null : lockToggle(r), isLocked(r) ? null : gripOf(r, index, 'tbody.patient.active'), tickOf(r)),
       h('td', { class: 'time', title: p?.consultant ?? '' }, h('div', { class: 'time-value' }, p?.time ?? ''), who ? h('div', { class: 'who' }, who) : null, ...badgesOf(r)),
       layout.columns.map((c, col) => {
         const { area, change } = editorOf(r, col, Boolean(prompts), (target) => (target.parentElement!.className = classFor(r, col, target.value)));
@@ -2018,7 +2018,18 @@ function renderPrep(): HTMLElement | null {
           'div',
           { class: 'pcard-body' },
           layout.columns.map((c, col) => {
-            if (col === eyeCol) return h('div', { class: 'pfield' }, h('span', { class: 'pfield-label' }, c.heading || 'Eye'), eyeButtons, r.changes[col] !== undefined ? editorOf(r, col, false, () => undefined).change : null);
+            if (col === eyeCol) return h('div', { class: 'pfield' }, h('span', { class: 'pfield-label' }, c.heading || 'Eye'), isLocked(r) ? h('div', { class: 'pc-value' }, eye || '—') : eyeButtons, r.changes[col] !== undefined && !isLocked(r) ? editorOf(r, col, false, () => undefined).change : null);
+            if (isLocked(r)) {
+              // Locked: just the information, as text.
+              const value = (r.cells[col] ?? '').trim();
+              return h(
+                'div',
+                { class: `pfield ${classFor(r, col, r.cells[col])}` },
+                h('span', { class: 'pfield-label' }, c.heading || `Column ${col + 1}`),
+                h('div', { class: value ? 'pc-value' : 'pc-value empty' }, value || '—'),
+                col === promptCols.lens ? renderReports(r) : null,
+              );
+            }
             const { area, change } = editorOf(r, col, Boolean(prompts), () => undefined);
             // The prompts sit under the box they fill in: findings under Diagnosis, lens and target under Implants.
             const near = prompts && col === promptCols.findings ? renderPrompts(r, 'findings') : prompts && col === promptCols.lens ? renderPrompts(r, 'lens') : null;
@@ -2031,8 +2042,8 @@ function renderPrep(): HTMLElement | null {
             : h(
                 'div',
                 { class: 'pcard-move' },
-                h('button', { disabled: index <= 0, 'data-key': `${key}:up`, onclick: () => moveRow(grid, index, index - 1) }, '↑ Move up'),
-                h('button', { disabled: index >= active.length - 1, 'data-key': `${key}:down`, onclick: () => moveRow(grid, index, index + 1) }, '↓ Move down'),
+                isLocked(r) ? null : h('button', { disabled: index <= 0, 'data-key': `${key}:up`, onclick: () => moveRow(grid, index, index - 1) }, '↑ Move up'),
+                isLocked(r) ? null : h('button', { disabled: index >= active.length - 1, 'data-key': `${key}:down`, onclick: () => moveRow(grid, index, index + 1) }, '↓ Move down'),
                 h('button', { class: 'ghost lock-keep', onclick: toggle }, 'Done'),
               ),
         )
@@ -2057,7 +2068,7 @@ function renderPrep(): HTMLElement | null {
         },
         index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
         r.status === 'cancelled' ? null : lockToggle(r),
-        gripOf(r, index, '.pcard.active'),
+        isLocked(r) ? null : gripOf(r, index, '.pcard.active'),
         h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}` }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?'),
         h(
           'div',
@@ -2083,9 +2094,20 @@ function renderPrep(): HTMLElement | null {
     const p = r.patient;
     const cancelledRow = r.status === 'cancelled';
     const lensRow = !cancelledRow && isLensRow(r);
+    const locked = isLocked(r);
     const field = (col: number, compact = false) => {
       if (col < 0) return null;
       const c = layout.columns[col];
+      // Locked: just the information, as text.
+      if (locked) {
+        const value = (r.cells[col] ?? '').trim();
+        return h(
+          'div',
+          { class: `pc-field pc-info ${classFor(r, col, r.cells[col])}${compact ? ' compact' : ''}` },
+          h('span', { class: 'pc-label' }, c.heading || `Column ${col + 1}`),
+          h('div', { class: value ? 'pc-value' : 'pc-value empty' }, value || '—'),
+        );
+      }
       const wrap = h('label', { class: `pc-field ${classFor(r, col, r.cells[col])}${compact ? ' compact' : ''}` });
       const { area, change } = editorOf(r, col, lensRow, (target) => (wrap.className = `pc-field ${classFor(r, col, target.value)}${compact ? ' compact' : ''}`));
       if (col === examCol) area.setAttribute('placeholder', 'VA / IOP');
@@ -2097,7 +2119,9 @@ function renderPrep(): HTMLElement | null {
     };
     const eye = eyeCol >= 0 ? r.cells[eyeCol].trim().toUpperCase() : '';
     const eyeSwitch =
-      eyeCol >= 0
+      eyeCol >= 0 && locked
+        ? h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}`, title: eye || 'Eye not set' }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?')
+        : eyeCol >= 0
         ? h(
             'div',
             { class: 'pc-eye', role: 'group', 'aria-label': `Eye for ${rowName(r)}` },
@@ -2120,7 +2144,7 @@ function renderPrep(): HTMLElement | null {
     const sub = [p?.time, procedure, whoOf(r)].filter(Boolean).join(' · ');
     const todo = cancelledRow ? [] : toDoOf(r, examCol, findingsCol, lensCol);
     const nameField =
-      keyIndex >= 0
+      keyIndex >= 0 && !locked
         ? h('textarea', {
             class: 'pc-name',
             rows: 1,
@@ -2144,7 +2168,7 @@ function renderPrep(): HTMLElement | null {
         // Where the patient is on the theatre list.
         index >= 0 ? h('span', { class: 'pc-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
         cancelledRow ? null : lockToggle(r),
-        gripOf(r, index, 'article.prep-card.active'),
+        locked ? null : gripOf(r, index, 'article.prep-card.active'),
         tickOf(r),
         eyeSwitch,
         h('div', { class: 'pc-title' }, nameField, sub ? h('div', { class: 'pc-sub' }, sub) : null),
@@ -2166,10 +2190,10 @@ function renderPrep(): HTMLElement | null {
         'div',
         { class: 'pc-body' },
         findingsCol >= 0
-          ? h('section', { class: 'pc-section' }, lensRow ? renderFindingControls(r, findingsCol) : null, field(findingsCol))
+          ? h('section', { class: 'pc-section' }, lensRow && !locked ? renderFindingControls(r, findingsCol) : null, field(findingsCol))
           : null,
         lensCol >= 0
-          ? h('section', { class: 'pc-section pc-lens' }, lensRow ? renderLensControls(r, lensCol) : null, field(lensCol), lensRow || r.reports?.length ? renderReportBlock(r) : null)
+          ? h('section', { class: 'pc-section pc-lens' }, lensRow && !locked ? renderLensControls(r, lensCol) : null, field(lensCol), (lensRow && !locked) || r.reports?.length ? renderReportBlock(r) : null)
           : null,
       ),
       rest.length ? h('div', { class: 'pc-foot' }, rest.map((col) => field(col, true))) : null,
@@ -2762,7 +2786,8 @@ function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | nu
   const { prompts, layout } = state.settings;
   const reports = only !== 'findings' ? renderReports(r) : null;
   const cols = promptColumns(layout, prompts);
-  if (!prompts.enabled || !isLensRow(r) || (cols.findings === -1 && cols.lens === -1)) return reports ? h('div', { class: 'prompts' }, reports) : null;
+  // Locked: no buttons, just the report (if any).
+  if (isLocked(r) || !prompts.enabled || !isLensRow(r) || (cols.findings === -1 && cols.lens === -1)) return reports ? h('div', { class: 'prompts' }, reports) : null;
   const key = rowKey(r);
   const set = (col: number, value: string) => {
     r.cells[col] = value;
@@ -3111,6 +3136,7 @@ function renderReportBlock(r: GridRow): HTMLElement {
     },
   });
   if (!reports.length) {
+    if (isLocked(r)) return h('div', {});
     return h(
       'div',
       { 'data-report-row': rowKey(r) },
@@ -3125,10 +3151,10 @@ function renderReportBlock(r: GridRow): HTMLElement {
       'div',
       { class: 'pc-thumbs' },
       reports.map((image, i) => reportThumb(r, image, i)),
-      h('button', { class: 'chip', 'data-key': `${rowKey(r)}:report:add`, title: 'Add another screenshot (or click here and paste)', onclick: () => input.click() }, '+'),
-      input,
+      isLocked(r) ? null : h('button', { class: 'chip', 'data-key': `${rowKey(r)}:report:add`, title: 'Add another screenshot (or click here and paste)', onclick: () => input.click() }, '+'),
+      isLocked(r) ? null : input,
     ),
-    h('div', { class: 'pc-check' }, renderReportStatus(r), ' ', readAgainButton(r, 'Re-read')),
+    h('div', { class: 'pc-check' }, renderReportStatus(r), ' ', isLocked(r) ? null : readAgainButton(r, 'Re-read')),
     renderAlerts(r),
   );
 }
@@ -3284,7 +3310,9 @@ function reportThumb(r: GridRow, image: ReportImage, i: number): HTMLElement {
     'span',
     { class: asking ? 'report-thumb asking' : 'report-thumb' },
     h('button', { class: 'report-open lock-keep', title: 'Open full screen, e.g. to check at timeout', 'data-key': `${rowKey(r)}:report:${i}`, onclick: () => openViewer(r, i) }, h('img', { src: imageUrl(image), alt: `IOL report ${i + 1} for ${rowLabel(r)}` })),
-    asking
+    isLocked(r)
+      ? null
+      : asking
       ? h(
           'span',
           { class: 'confirm-remove', role: 'group', 'aria-label': 'Remove this screenshot?' },
@@ -3338,6 +3366,7 @@ function simLens(r: GridRow, sim: SimState): PickedLens {
 /** Thumbnails of the patient's IOL report screenshots, with a way to add more. */
 function renderReports(r: GridRow): HTMLElement | null {
   if (!takesReports(r)) return null;
+  if (isLocked(r) && !r.reports?.length) return null;
   const key = rowKey(r);
   const reports = r.reports ?? [];
   const input = h('input', {
@@ -3359,13 +3388,13 @@ function renderReports(r: GridRow): HTMLElement | null {
     },
     h('span', { class: 'prompt-label' }, 'IOL report'),
     reports.map((image, i) => reportThumb(r, image, i)),
-    h(
+    isLocked(r) ? null : h(
       'button',
       { class: 'chip', 'data-key': `${key}:report:add`, title: 'Choose a screenshot of the IOL report, or click here and paste one with Ctrl+V', onclick: () => input.click() },
       reports.length ? '+ Add' : '+ Add screenshot',
     ),
     input,
-    reports.length ? renderReportStatus(r) : h('span', { class: 'hint small report-hint' }, 'or paste one (Ctrl+V) into the Implants box'),
+    reports.length ? renderReportStatus(r) : isLocked(r) ? null : h('span', { class: 'hint small report-hint' }, 'or paste one (Ctrl+V) into the Implants box'),
     reports.length ? renderAlerts(r) : null,
   );
 }

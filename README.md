@@ -27,7 +27,7 @@ Both edit the same cells, so your Excel file is the same whichever you use.
 
 ## Locking
 
-Every patient **starts locked** against changes (🔒 beside their number): their boxes are read-only (you can still select and copy the text), and the buttons, lens dropdown, tick, drag handle and pasting a screenshot are off. Opening their IOL report still works (Apply in it is off). Tap **🔒** to unlock one (and again to lock it), or **🔓 Unlock all / 🔒 Lock all** (in the toolbar on a computer, beside the tick count on a phone). Patients you unlock stay unlocked while the page is open (and through updates from the run sheet); reopening the file locks everyone again.
+Every patient **starts locked** against changes (🔒 beside their number), and a locked patient shows just their information: the text of each column (which you can select and copy), the eye, and their IOL report thumbnail and check (which still opens full screen; Apply in it is off). The buttons, boxes, lens dropdown, drag handle and pasting a screenshot appear when you unlock them. Tap **🔒** to unlock one (and again to lock it), or **🔓 Unlock all / 🔒 Lock all** (in the toolbar on a computer, beside the tick count on a phone). Patients you unlock stay unlocked while the page is open (and through updates from the run sheet); reopening the file locks everyone again.
 
 ## On a phone
 
