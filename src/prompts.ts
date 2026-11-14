@@ -13,6 +13,11 @@ export interface PromptSettings {
   findings: string[];
   /** Lens codes. An "x" stands for a number you type, e.g. the toric power in "CNA0Tx". */
   lenses: string[];
+  /**
+   * Each lens's SRK/T A-constant, "DCB00 119.3" per line, to estimate a lens that isn't on the IOL
+   * report from one that is.
+   */
+  constants: string[];
   /** Column headings the picks go into; '' picks automatically. */
   findingsColumn: string;
   lensColumn: string;
@@ -23,6 +28,7 @@ export function defaultPrompts(): PromptSettings {
     enabled: true,
     findings: ['PXF', 'Guttata', 'Good dilation | Mod dilation | Poor dilation', 'Phacodonesis', 'Tamsulosin'],
     lenses: ['DCB00', 'DIB00', 'ZCUx', 'CNA0Tx'],
+    constants: ['DCB00 119.3', 'CNA0Tx 119.1'],
     findingsColumn: '',
     lensColumn: '',
   };

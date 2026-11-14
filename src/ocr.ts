@@ -56,18 +56,19 @@ async function enlarged(image: Blob): Promise<HTMLCanvasElement> {
   return canvas;
 }
 
-/** The words in a picture, with where each one is. */
-export async function readWords(image: Blob): Promise<OcrWord[]> {
+/** The words in a picture, with where each one is (in a copy of the picture `width` × `height` pixels). */
+export async function readWords(image: Blob): Promise<{ words: OcrWord[]; width: number; height: number }> {
   engine ??= start().catch((e) => {
     engine = null;
     throw e;
   });
   const worker = await engine;
-  const { data } = await worker.recognize(await enlarged(image), {}, { blocks: true, text: false });
+  const canvas = await enlarged(image);
+  const { data } = await worker.recognize(canvas, {}, { blocks: true, text: false });
   const words: OcrWord[] = [];
   for (const block of data.blocks ?? [])
     for (const paragraph of block.paragraphs)
       for (const line of paragraph.lines)
         for (const word of line.words) words.push({ text: word.text, x0: word.bbox.x0, y0: word.bbox.y0, x1: word.bbox.x1, y1: word.bbox.y1 });
-  return words;
+  return { words, width: canvas.width, height: canvas.height };
 }

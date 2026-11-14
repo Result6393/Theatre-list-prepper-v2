@@ -3,6 +3,8 @@
  * the lens you picked against it. Only ever a cross-check: nothing here changes what you picked.
  */
 
+import { srktPower } from './srkt';
+
 export interface OcrWord {
   text: string;
   x0: number;
@@ -19,6 +21,8 @@ export interface LensRow {
   ref: number;
   cyl?: number;
   axis?: number;
+  /** Where it is on the screenshot (for highlighting). */
+  words?: OcrWord[];
 }
 
 export interface LensTable {
@@ -26,12 +30,19 @@ export interface LensTable {
   title: string;
   toric: boolean;
   rows: LensRow[];
+  titleWords?: OcrWord[];
 }
 
 export interface EyeReading {
   /** Target refraction the report was calculated for. */
   target: number | null;
+  /** Axial length (mm) and mean keratometry (SE, in D), if they could be read. */
+  axialLength?: number;
+  k?: number;
   tables: LensTable[];
+  /** Where the eye's heading ("OD right") and ΔK are on the screenshot. */
+  headingWords?: OcrWord[];
+  deltaKWords?: OcrWord[];
 }
 
 export interface ReportReading {
@@ -42,6 +53,8 @@ export interface ReportReading {
   warnings: string[];
   right?: EyeReading;
   left?: EyeReading;
+  nameWords?: OcrWord[];
+  idWords?: OcrWord[];
 }
 
 interface Row {
@@ -105,7 +118,7 @@ function standardRow(words: OcrWord[]): LensRow | null {
   const numbers = tokens(words).map(readNumber).filter((n): n is number => n !== null);
   if (numbers.length < 2) return null;
   const [power, ref] = numbers;
-  return power > -15 && power < 45 && Math.abs(ref) < 15 ? { model: '', power, ref } : null;
+  return power > -15 && power < 45 && Math.abs(ref) < 15 ? { model: '', power, ref, words } : null;
 }
 
 /** "100 +20.50 +1.00 3° -0.33 -0.46 +0.27 3°": model, IOL SE, cyl, axis, then Ref SE, sph, cyl, axis. */
@@ -120,7 +133,7 @@ function toricRow(words: OcrWord[]): LensRow | null {
   const axis = readAxis(t[start + 2]);
   const ref = readNumber(t[start + 3]);
   if (power === null || cyl === null || ref === null || power <= -15 || power >= 45) return null;
-  return { model, power, ref, cyl, axis: axis ?? undefined };
+  return { model, power, ref, cyl, axis: axis ?? undefined, words };
 }
 
 function readEye(rows: Row[], left: number, right: number): EyeReading {
@@ -135,6 +148,18 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
       break;
     }
   }
+
+  // "AL: 23.53 mm" and "SE: 44.73 D" (not TSE, the total keratometry), allowing for a lost decimal point.
+  const measure = (label: RegExp, min: number, max: number) => {
+    for (const r of half) {
+      const m = text(r.words).match(label);
+      const value = m ? readNumber(m[1]) : null;
+      if (value !== null && value >= min && value <= max) return value;
+    }
+    return undefined;
+  };
+  const axialLength = measure(/\bAL\s*[:.]?\s*(\d{2}[.,]?\d{2})\s*mm/i, 15, 40);
+  const k = measure(/(?<![A-Z])SE\s*[:.]?\s*(\d{2}[.,]?\d{2})\s*D/, 30, 60);
 
   const tables: LensTable[] = [];
   half.forEach((r, i) => {
@@ -156,11 +181,13 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
       const within = (row: Row) => row.words.filter((w) => centre(w) >= from && centre(w) < to);
       // The lens's name is on the line or two above.
       const title: string[] = [];
+      const titleWords: OcrWord[] = [];
       for (let j = i - 1; j >= Math.max(0, i - 3); j--) {
         const words = within(half[j]).filter((w) => !/^(TK|[A-Z]?\W*)$/.test(w.text) || /&/.test(w.text));
         const line = text(words);
         if (!line || /emmetropia|\d[.,]\d{2}/i.test(line) || /^(IOL|Ref|LF)/i.test(line)) break;
         title.unshift(line);
+        titleWords.push(...words);
         if (title.length === 2 || /johnson|alcon|zeiss|bausch|hoya|rayner|vision|medical/i.test(line)) break;
       }
       const tableRows: LensRow[] = [];
@@ -172,10 +199,19 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
         const row = toric ? toricRow(words) : standardRow(words);
         if (row) tableRows.push(row);
       }
-      if (tableRows.length) tables.push({ title: title.join(' ').replace(/(\w)\s+-\s+(\w)/g, '$1-$2'), toric, rows: tableRows });
+      if (tableRows.length) tables.push({ title: title.join(' ').replace(/(\w)\s+-\s+(\w)/g, '$1-$2'), toric, rows: tableRows, titleWords });
     });
   });
-  return { target, tables };
+  // ΔK is the start of the line with K2 on it (OCR reads "Δ" all sorts of ways).
+  let deltaKWords: OcrWord[] | undefined;
+  for (const r of half) {
+    const at = r.words.findIndex((w) => /^[KkX][2zZ]\b/.test(w.text) || /^[KkX][2zZ][:.]/.test(w.text));
+    if (at > 0 && /@/.test(text(r.words.slice(0, at)))) {
+      deltaKWords = r.words.slice(0, at);
+      break;
+    }
+  }
+  return { target, axialLength, k, tables, deltaKWords };
 }
 
 /** The report's patient, warnings and each eye's lens tables, or null if it isn't an IOL calculation. */
@@ -195,15 +231,17 @@ export function readReport(words: OcrWord[]): ReportReading | null {
   const header = rows.slice(0, headingRow);
   const after = (label: RegExp, row: Row) => {
     const at = row.words.findIndex((_w, k) => label.test(text(row.words.slice(0, k + 1))));
-    return at === -1 ? '' : text(row.words.slice(at + 1).filter((w) => centre(w) < middle * 0.9)).trim();
+    return at === -1 ? [] : row.words.slice(at + 1).filter((w) => centre(w) < middle * 0.9);
   };
-  let name = '';
-  let id = '';
+  let nameWords: OcrWord[] = [];
+  let idWords: OcrWord[] = [];
   for (const r of header) {
     const line = text(r.words);
-    if (/patient\s*id\b/i.test(line)) id = after(/patient\s*id$/i, r);
-    else if (/^patient\b/i.test(line) && !name) name = after(/^patient$/i, r);
+    if (/patient\s*id\b/i.test(line)) idWords = after(/patient\s*id$/i, r);
+    else if (/^patient\b/i.test(line) && !nameWords.length) nameWords = after(/^patient$/i, r);
   }
+  const name = text(nameWords).trim();
+  const id = text(idWords).trim();
   // Warnings sit in the box between the measurement details and the calculation.
   const measured = header.findIndex((r) => /date\s*of\s*measurement/i.test(text(r.words)));
   const warnings = header
@@ -216,9 +254,16 @@ export function readReport(words: OcrWord[]): ReportReading | null {
   const maxX = Math.max(...words.map((w) => w.x1));
   const right = readEye(body, minX - 1, middle);
   const left = readEye(body, middle, maxX + 1);
+  // "OD" / "OS" with "right" / "left" under them.
+  const under = (big: OcrWord, word: RegExp) =>
+    body.slice(0, 2).flatMap((r) => r.words).find((w) => word.test(w.text) && w.x0 < big.x1 + (big.x1 - big.x0) && w.x1 > big.x0 - (big.x1 - big.x0));
+  right.headingWords = [od, under(od, /^r[il1]ght$/i)].filter((w): w is OcrWord => Boolean(w));
+  left.headingWords = [os, under(os, /^[l1I]eft$/i)].filter((w): w is OcrWord => Boolean(w));
   return {
     name,
     id: id.replace(/[^A-Za-z0-9]/g, ''),
+    nameWords: nameWords.length ? nameWords : undefined,
+    idWords: idWords.length ? idWords : undefined,
     warnings,
     right: right.tables.length || right.target !== null ? right : undefined,
     left: left.tables.length || left.target !== null ? left : undefined,
@@ -244,6 +289,49 @@ export interface PickedLens {
 
 export type CheckLevel = 'ok' | 'warn' | 'error';
 
+/** A lens's A-constant (SRK/T), e.g. { pattern: 'CNA0Tx', value: 119.1 }; "x" stands for a typed number. */
+export interface LensConstant {
+  pattern: string;
+  value: number;
+}
+
+/** "DCB00 119.3" per line, as in Settings. */
+export function parseConstants(lines: string[]): LensConstant[] {
+  return lines.flatMap((line) => {
+    const m = line.trim().match(/^(\S+)\s*[:=]?\s*(\d{2,3}(?:[.,]\d+)?)$/);
+    return m ? [{ pattern: m[1], value: Number(m[2].replace(',', '.')) }] : [];
+  });
+}
+
+/** For a lens that isn't on the report: its numbers worked out from one that is. */
+export interface LensEstimate {
+  side: 'right' | 'left';
+  /** The lens on the report it's worked out from, e.g. "DCB00". */
+  reference: string;
+  /** Power change needed for the same result (negative: a lower power). */
+  shift: number;
+  /** The working, in words, to check at a glance. */
+  working: string[];
+  /** Estimated predicted refraction for each power of the lens. */
+  table: { power: number; ref: number }[];
+}
+
+/** A box to draw on the screenshot: red for the right eye, blue for the left, purple for both or unknown. */
+export interface Highlight {
+  eye: 'right' | 'left' | 'both';
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  /** For something looked at but not a match: the reference lens for an estimate, or the other eye's power. */
+  dashed?: boolean;
+}
+
+function box(words: OcrWord[] | undefined, eye: Highlight['eye'], dashed = false): Highlight[] {
+  if (!words?.length) return [];
+  return [{ eye, x0: Math.min(...words.map((w) => w.x0)), y0: Math.min(...words.map((w) => w.y0)), x1: Math.max(...words.map((w) => w.x1)), y1: Math.max(...words.map((w) => w.y1)), dashed: dashed || undefined }];
+}
+
 export interface LensCheck {
   /** Worst of the flags; 'ok' only when the lens was found on the report for the right eye. */
   level: CheckLevel | 'none';
@@ -251,6 +339,9 @@ export interface LensCheck {
   facts: string[];
   flags: { level: CheckLevel; text: string }[];
   notes: string[];
+  estimate?: LensEstimate;
+  /** What to mark on the screenshot. */
+  highlights: Highlight[];
 }
 
 const EYE_NAME: Record<'right' | 'left', string> = { right: 'right', left: 'left' };
@@ -270,11 +361,20 @@ export function combineReadings(readings: ReportReading[]): ReportReading | null
   const eye = (side: 'right' | 'left'): EyeReading | undefined => {
     const all = readings.map((r) => r[side]).filter((e): e is EyeReading => Boolean(e));
     if (!all.length) return undefined;
-    return { target: all.find((e) => e.target !== null)?.target ?? null, tables: all.flatMap((e) => e.tables) };
+    return {
+      target: all.find((e) => e.target !== null)?.target ?? null,
+      axialLength: all.find((e) => e.axialLength !== undefined)?.axialLength,
+      k: all.find((e) => e.k !== undefined)?.k,
+      tables: all.flatMap((e) => e.tables),
+      headingWords: all.find((e) => e.headingWords?.length)?.headingWords,
+      deltaKWords: all.find((e) => e.deltaKWords?.length)?.deltaKWords,
+    };
   };
   return {
     name: readings.find((r) => r.name)?.name ?? '',
     id: readings.find((r) => r.id)?.id ?? '',
+    nameWords: readings.find((r) => r.nameWords)?.nameWords,
+    idWords: readings.find((r) => r.idWords)?.idWords,
     warnings: [...new Set(readings.flatMap((r) => r.warnings))],
     right: eye('right'),
     left: eye('left'),
@@ -315,11 +415,112 @@ function rowFor(tables: LensTable[], lens: PickedLens): { table: LensTable; row:
   return null;
 }
 
+
+function constantFor(code: string, constants: LensConstant[]): LensConstant | null {
+  const c = canonical(code);
+  return (
+    constants.find((k) => canonical(k.pattern) === c) ??
+    constants.find((k) => {
+      const at = k.pattern.indexOf('x');
+      if (at === -1) return false;
+      return new RegExp(`^${canonical(k.pattern.slice(0, at))}[A-Z0-9]*${canonical(k.pattern.slice(at + 1))}$`).test(c);
+    }) ??
+    null
+  );
+}
+
+/** Predicted refraction at a power, between the table's rows (or beyond its ends, along its slope). */
+function refractionAt(rows: LensRow[], power: number): { ref: number; low: LensRow; high: LensRow } {
+  const sorted = [...rows].sort((a, b) => a.power - b.power);
+  let i = sorted.findIndex((r) => r.power >= power);
+  if (i <= 0) i = 1;
+  const low = sorted[Math.min(i, sorted.length - 1) - 1];
+  const high = sorted[Math.min(i, sorted.length - 1)];
+  const ref = high.power === low.power ? low.ref : low.ref + ((power - low.power) * (high.ref - low.ref)) / (high.power - low.power);
+  return { ref, low, high };
+}
+
+const dioptres = (n: number) => `${Math.abs(n).toFixed(2)} D`;
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * A lens that isn't on the report, worked out from one that is (on this eye, with an A-constant):
+ * the report's Barrett numbers for that lens, moved by the power difference between the two lenses'
+ * A-constants in this eye (SRK/T with the report's AL and K; or the A-constant difference itself if
+ * those couldn't be read).
+ */
+export function estimateLens(eye: EyeReading, side: 'right' | 'left', lens: PickedLens, constants: LensConstant[]): LensEstimate | null {
+  const own = constantFor(lens.code, constants);
+  if (!own) return null;
+  let reference: { table: LensTable; code: string; a: number } | null = null;
+  for (const table of eye.tables) {
+    if (table.toric || table.rows.length < 2) continue;
+    const k = constants.find((c) => {
+      const base = c.pattern.includes('x') ? c.pattern.slice(0, c.pattern.indexOf('x')) : c.pattern;
+      return base.length >= 3 && canonical(table.title).includes(canonical(base)) && !c.pattern.includes('x');
+    });
+    if (k) {
+      reference = { table, code: k.pattern, a: k.value };
+      break;
+    }
+  }
+  if (!reference) return null;
+  const rows = reference.table.rows;
+  const target = eye.target ?? lens.target ?? 0;
+  const measured = eye.axialLength !== undefined && eye.k !== undefined;
+  const shift = round2(
+    measured ? srktPower(eye.axialLength!, eye.k!, own.value, target) - srktPower(eye.axialLength!, eye.k!, reference.a, target) : own.value - reference.a,
+  );
+  const ref = reference.code;
+  const code = lens.code;
+  const working = [
+    `${code} isn’t on the report, so this is worked out from the ${side} eye’s ${ref} numbers (Barrett).`,
+    `A-constants used (SRK/T, from Settings): ${code} ${own.value}${own.pattern !== code ? ` (as ${own.pattern})` : ''}, ${ref} ${reference.a}.`,
+  ];
+  if (Math.abs(shift) < 0.005) {
+    working.push(`${code} and ${ref} have the same A-constant (${own.value}), so ${ref}’s numbers apply as they are.`);
+  } else {
+    const way = shift < 0 ? 'lower' : 'higher';
+    working.push(`${code} has a ${way} A-constant than ${ref} (${own.value} vs ${reference.a}), so it needs a ${way} power for the same result.`);
+    working.push(
+      measured
+        ? `SRK/T for this eye (AL ${eye.axialLength!.toFixed(2)} mm, K ${eye.k!.toFixed(2)} D, target ${signed(target)}): ${ref} (A ${reference.a}) ${signed(srktPower(eye.axialLength!, eye.k!, reference.a, target))}, ${code} (A ${own.value}) ${signed(srktPower(eye.axialLength!, eye.k!, own.value, target))}, so ${code} needs ${dioptres(shift)} ${way}.`
+        : `The eye’s AL and K couldn’t be read from the report, so the difference is taken as the A-constants’ difference: ${own.value} − ${reference.a} = ${shift > 0 ? '+' : '−'}${dioptres(shift)}.`,
+    );
+    const at = lens.power ?? rows.reduce((best, r) => (Math.abs(r.ref - target) < Math.abs(best.ref - target) ? r : best)).power;
+    const same = refractionAt(rows, at - shift).ref - refractionAt(rows, at).ref;
+    working.push(`Keeping the same power with ${code} gives a more ${same < 0 ? 'myopic' : 'hyperopic'} result: about ${dioptres(same)}.`);
+  }
+  const powers = rows.map((r) => r.power);
+  const table: LensEstimate['table'] = [];
+  for (let p = Math.ceil((Math.min(...powers) + shift) * 2) / 2; p <= Math.max(...powers) + shift + 1e-9; p += 0.5) {
+    table.push({ power: p, ref: round2(refractionAt(rows, p - shift).ref) });
+  }
+  if (lens.power !== null) {
+    const equivalent = round2(lens.power - shift);
+    const { ref: predicted, low, high } = refractionAt(rows, equivalent);
+    const outside = equivalent < Math.min(...powers) - 0.5 || equivalent > Math.max(...powers) + 0.5;
+    working.push(
+      `So ${code} ${signed(lens.power)} is like ${ref} ${signed(equivalent)} → predicted about ${signed(round2(predicted))}` +
+        (outside ? `, well outside the report’s ${ref} powers, so less certain.` : ` (${ref} ${signed(low.power)} → ${signed(low.ref)}, ${signed(high.power)} → ${signed(high.ref)}).`),
+    );
+  }
+  if (table.length) {
+    const best = table.reduce((a, b) => (Math.abs(b.ref - target) < Math.abs(a.ref - target) ? b : a));
+    working.push(`For the report’s target of ${signed(target)}: ${code} ${signed(best.power)} (about ${signed(best.ref)}).`);
+  }
+  if (lens.family && lens.family.number.replace(/0/g, '') !== '') working.push('This is the spherical equivalent only: check the cylinder and axis with a toric calculator.');
+  return { side, reference: ref, shift, working, table };
+}
+
 /** Your lens checked against the report: found for the eye you're operating on, or what's wrong. */
-export function checkLens(reading: ReportReading, lens: PickedLens): LensCheck {
+export function checkLens(reading: ReportReading, lens: PickedLens, constants: LensConstant[] = []): LensCheck {
   const facts: string[] = [];
   const flags: LensCheck['flags'] = [];
   const notes = [...reading.warnings];
+  let estimate: LensEstimate | undefined;
+  const operated: Highlight['eye'] = lens.eye === 'RIGHT' ? 'right' : lens.eye === 'LEFT' ? 'left' : 'both';
+  const highlights: Highlight[] = [...box(reading.nameWords, operated), ...box(reading.idWords, operated)];
 
   // Is it this patient's report?
   const reportId = reading.id.replace(/\D/g, '').replace(/^0+/, '');
@@ -347,8 +548,10 @@ export function checkLens(reading: ReportReading, lens: PickedLens): LensCheck {
       }
       const tables = tablesFor(eye, lens);
       const hit = rowFor(tables, lens);
+      highlights.push(...box(eye.headingWords, side), ...box(eye.deltaKWords, side));
       if (hit) {
         found = true;
+        highlights.push(...box(hit.table.titleWords, side), ...box(hit.row.words, side));
         const { row } = hit;
         const toric = row.cyl !== undefined && row.axis !== undefined && row.cyl > 0 ? `, axis ${row.axis}°` : '';
         facts.push(`${side === 'right' ? 'Right' : 'Left'} eye: ${lens.code} ${signed(row.power)}${toric} → predicted ${signed(row.ref)}`);
@@ -357,6 +560,7 @@ export function checkLens(reading: ReportReading, lens: PickedLens): LensCheck {
       const other = side === 'right' ? 'left' : 'right';
       const elsewhere = sides.length === 1 ? rowFor(tablesFor(reading[other], lens), lens) : null;
       if (elsewhere) {
+        highlights.push(...box(elsewhere.table.titleWords, other, true), ...box(elsewhere.row.words, other, true));
         flags.push({ level: 'error', text: `${signed(lens.power)} is in the ${other.toUpperCase()} eye’s column of the report, not the ${side}’s.` });
       } else if (tables.length) {
         const powers = tables.flatMap((t) => t.rows.map((r) => r.power));
@@ -365,7 +569,21 @@ export function checkLens(reading: ReportReading, lens: PickedLens): LensCheck {
           text: `${lens.code} ${signed(lens.power)} isn’t among the ${side} eye’s powers on the report (${signed(Math.min(...powers))} to ${signed(Math.max(...powers))}).`,
         });
       } else if (eye.tables.length) {
-        flags.push({ level: 'warn', text: `${lens.code} isn’t on the ${side} eye’s side of the report.` });
+        const worked = estimateLens(eye, side, lens, constants);
+        if (worked) {
+          found = true;
+          estimate ??= worked;
+          const reference = eye.tables.find((t) => !t.toric && canonical(t.title).includes(canonical(worked.reference)));
+          if (reference && reference.rows.length >= 2) {
+            const near = refractionAt(reference.rows, lens.power - worked.shift);
+            highlights.push(...box(reference.titleWords, side, true), ...box(near.low.words, side, true), ...box(near.high.words, side, true));
+          }
+          const predicted = signed(round2(refractionAt(tablesOf(eye, worked.reference), lens.power - worked.shift).ref));
+          facts.push(`${side === 'right' ? 'Right' : 'Left'} eye (estimated): ${lens.code} ${signed(lens.power)} → about ${predicted}`);
+          flags.push({ level: 'warn', text: `${lens.code} isn’t on the report: estimated from ${worked.reference}. Check the working.` });
+        } else {
+          flags.push({ level: 'warn', text: `${lens.code} isn’t on the ${side} eye’s side of the report${constantFor(lens.code, constants) ? '' : ' (add its A-constant in Settings to estimate it)'}.` });
+        }
       } else {
         flags.push({ level: 'warn', text: `Couldn’t read the lens tables for the ${side} eye.` });
       }
@@ -380,5 +598,9 @@ export function checkLens(reading: ReportReading, lens: PickedLens): LensCheck {
     }
   }
   const level: LensCheck['level'] = flags.some((f) => f.level === 'error') ? 'error' : flags.length ? 'warn' : facts.length ? 'ok' : 'none';
-  return { level, facts, flags, notes };
+  return { level, facts, flags, notes, estimate, highlights };
+}
+
+function tablesOf(eye: EyeReading, code: string): LensRow[] {
+  return eye.tables.find((t) => !t.toric && canonical(t.title).includes(canonical(code)))?.rows ?? [];
 }

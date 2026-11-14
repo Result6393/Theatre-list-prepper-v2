@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { checkLens, combineReadings, readNumber, readReport, type OcrWord, type PickedLens } from '../src/iolreport';
+import { checkLens, combineReadings, parseConstants, readNumber, readReport, type OcrWord, type PickedLens } from '../src/iolreport';
+import { srktPower, srktRefraction } from '../src/srkt';
 
 /**
  * An invented report laid out like an IOL calculation printout, as OCR words: each line is a row,
@@ -25,6 +26,9 @@ const REPORT = page([
   [[0, '!'], [3, 'Axial length of the right eye is 0.40 mm longer than axial length of the left eye.']],
   [[4, 'OD'], [70, 'IOL calculation'], [160, 'OS']],
   two('Target ref.: -0.50 D', 'Target ref.: -0.25 D'),
+  two('AL: 23.50 mm     SD: 10 um', 'AL: 23.20 mm     SD: 12 um'),
+  two('SE: 4450 D   SD: 0.02 D   K1: 44.20 D @ 96°', 'SE: 44.60 D   SD: 0.01 D   K1: 44.40 D @ 68°'),
+  two('ΔK: +0.47 D @ 6°   K2: 44.67 D @ 6°', 'AK: +0.54 D @158°   K2: 44.94 D @158°'),
   four(['TK Acme Vision Te', 'TK Acme Vision Se', 'TK Acme Vision Te', 'TK Acme Vision Se']),
   four(['cnis DCBOO Preload', 'nsar AR40 3-Piece', 'cnis DCB00 Preload', 'nsar AR40 3-Piece']),
   four(['- Barrett Universal II TK -', '- Barrett Universal II TK -', '- Barrett Universal II TK -', '- Barrett Universal II TK -']),
@@ -52,6 +56,7 @@ describe('reading an IOL calculation report', () => {
     expect(report).toMatchObject({ name: 'SMITH, Jan', id: '1000001' });
     expect(report.warnings).toEqual(['Axial length of the right eye is 0.40 mm longer than axial length of the left eye.']);
     expect([report.right?.target, report.left?.target]).toEqual([-0.5, -0.25]);
+    expect([report.right?.axialLength, report.right?.k, report.left?.axialLength, report.left?.k]).toEqual([23.5, 44.5, 23.2, 44.6]);
   });
 
   it('reads each lens’s table, keeping the columns and eyes apart', () => {
@@ -62,7 +67,7 @@ describe('reading an IOL calculation report', () => {
     ]);
     expect(report.right!.tables[0].title).toContain('DCBOO');
     expect(report.left!.tables[0].rows.map((r) => r.power)).toEqual([23, 22.5, 22, 21.5]);
-    expect(report.left!.tables[2].rows).toEqual([
+    expect(report.left!.tables[2].rows).toMatchObject([
       { model: '150', power: 22.5, ref: -0.87, cyl: 1.5, axis: 167 },
       { model: '150', power: 22, ref: -0.51, cyl: 1.5, axis: 167 },
     ]);
@@ -101,7 +106,7 @@ describe('checking the lens you picked against the report', () => {
   it('warns about a different target, a power off the table or a lens not on the report', () => {
     expect(checkLens(report, lens({ target: 0 })).flags.map((f) => f.text)).toEqual(['The report was calculated for a target of −0.50 D (right eye); you picked plano.']);
     expect(checkLens(report, lens({ power: 24 })).flags[0].text).toBe('DCB00 +24.00 isn’t among the right eye’s powers on the report (+20.00 to +21.50).');
-    expect(checkLens(report, lens({ code: 'CNA0T4', family: { base: 'CNA0T', number: '4' } })).flags[0].text).toBe('CNA0T4 isn’t on the right eye’s side of the report.');
+    expect(checkLens(report, lens({ code: 'CNA0T4', family: { base: 'CNA0T', number: '4' } })).flags[0].text).toBe('CNA0T4 isn’t on the right eye’s side of the report (add its A-constant in Settings to estimate it).');
   });
 
   it('flags a report for someone else', () => {
@@ -119,5 +124,88 @@ describe('checking the lens you picked against the report', () => {
     expect(check.flags.some((f) => f.text.startsWith('The eye isn’t set'))).toBe(true);
     const combined = combineReadings([{ ...report, left: undefined }, { ...report, right: undefined, warnings: [] }])!;
     expect(checkLens(combined, lens({ eye: 'LEFT', power: 22, target: -0.25 })).level).toBe('ok');
+  });
+});
+
+describe('SRK/T', () => {
+  it('gives back the target refraction for the power it calculates', () => {
+    for (const [al, k, a, target] of [[23.5, 44, 118.4, 0], [21, 46, 119.3, -0.5], [26.5, 42, 119.1, -2]]) {
+      expect(srktRefraction(al, k, a, srktPower(al, k, a, target))).toBeCloseTo(target, 6);
+    }
+  });
+
+  it('needs more power for a shorter eye, a flatter cornea or a higher A-constant', () => {
+    const p = (al: number, k: number, a: number) => srktPower(al, k, a, 0);
+    expect(p(22, 44, 119)).toBeGreaterThan(p(24, 44, 119));
+    expect(p(23.5, 42, 119)).toBeGreaterThan(p(23.5, 45, 119));
+    expect(p(23.5, 44, 119.3)).toBeGreaterThan(p(23.5, 44, 119.1));
+    // An average eye with a typical A-constant: about +20 D for emmetropia (SRK II gives +20.05).
+    expect(p(23.5, 44, 118.4)).toBeCloseTo(20.04, 2);
+  });
+});
+
+describe('estimating a lens that isn’t on the report', () => {
+  const report = readReport(REPORT)!;
+  const constants = parseConstants(['DCB00 119.3', 'CNA0Tx 119.1', 'not a constant']);
+  const cna = lens({ code: 'CNA0T0', family: { base: 'CNA0T', number: '0' }, power: 20.5 });
+
+  it('reads the A-constants from Settings', () => {
+    expect(constants).toEqual([{ pattern: 'DCB00', value: 119.3 }, { pattern: 'CNA0Tx', value: 119.1 }]);
+  });
+
+  it('works it out from the report’s numbers for a lens with a known A-constant, showing the working', () => {
+    const check = checkLens(report, cna, constants);
+    const shift = srktPower(23.5, 44.5, 119.1, -0.5) - srktPower(23.5, 44.5, 119.3, -0.5);
+    expect(check.estimate!.shift).toBeCloseTo(shift, 2);
+    expect(check.estimate!.shift).toBeLessThan(-0.2);
+    expect(check.level).toBe('warn');
+    expect(check.flags[0].text).toBe('CNA0T0 isn’t on the report: estimated from DCB00. Check the working.');
+    const working = check.estimate!.working.join('\n');
+    expect(working).toContain('A-constants used (SRK/T, from Settings): CNA0T0 119.1 (as CNA0Tx), DCB00 119.3.');
+    expect(working).toContain('CNA0T0 has a lower A-constant than DCB00 (119.1 vs 119.3), so it needs a lower power for the same result.');
+    expect(working).toMatch(/SRK\/T for this eye \(AL 23\.50 mm, K 44\.50 D, target −0\.50\): DCB00 \(A 119\.3\) \+\d+\.\d\d, CNA0T0 \(A 119\.1\) \+\d+\.\d\d, so CNA0T0 needs 0\.\d\d D lower\./);
+    expect(working).toContain('Keeping the same power with CNA0T0 gives a more myopic result');
+    // +20.50 of CNA0T0 is like DCB00 +20.75 or so: between −0.33 (+20.50) and −0.68 (+21.00).
+    const predicted = -0.33 + ((20.5 - check.estimate!.shift - 20.5) / 0.5) * (-0.68 + 0.33);
+    expect(check.facts).toEqual([`Right eye (estimated): CNA0T0 +20.50 → about −${Math.abs(Math.round(predicted * 100) / 100).toFixed(2)}`]);
+    expect(check.estimate!.table.map((t) => t.power)).toEqual([20, 20.5, 21]);
+  });
+
+  it('says how to estimate a lens it has no A-constant for', () => {
+    expect(checkLens(report, lens({ code: 'SN60WF', power: 20 }), constants).flags[0].text).toBe(
+      'SN60WF isn’t on the right eye’s side of the report (add its A-constant in Settings to estimate it).',
+    );
+  });
+
+  it('falls back to the A-constants’ difference when the eye’s AL and K weren’t read', () => {
+    const blind = { ...report, right: { ...report.right!, axialLength: undefined, k: undefined } };
+    const check = checkLens(blind, cna, constants);
+    expect(check.estimate!.shift).toBeCloseTo(-0.2, 5);
+    expect(check.estimate!.working.join(' ')).toContain('taken as the A-constants’ difference: 119.1 − 119.3 = −0.20 D');
+  });
+});
+
+describe('highlighting the screenshot', () => {
+  const report = readReport(REPORT)!;
+  const boxes = (p: PickedLens) => checkLens(report, p, parseConstants(['DCB00 119.3', 'CNA0Tx 119.1'])).highlights;
+  const at = (row: number) => row * 30;
+
+  it('marks the name, MRN, the eye, ΔK, the lens and the power, in the eye’s colour', () => {
+    const marks = boxes(lens({}));
+    expect(marks.every((m) => m.eye === 'right' && !m.dashed)).toBe(true);
+    expect(marks.map((m) => m.y0)).toEqual([at(0), at(2), at(5), at(9), at(10), at(17)]);
+    // ΔK stops before K2.
+    expect(marks[3].x1).toBeLessThan(200);
+  });
+
+  it('uses blue for the left eye, and dashes the other eye’s column when the power is in it', () => {
+    expect(new Set(boxes(lens({ eye: 'LEFT', power: 22, target: -0.25 })).map((m) => m.eye))).toEqual(new Set(['left']));
+    const wrong = boxes(lens({ power: 22 }));
+    expect(wrong.filter((m) => m.dashed).map((m) => m.eye)).toEqual(['left', 'left']);
+  });
+
+  it('dashes the lens an estimate comes from, and the powers either side', () => {
+    const marks = boxes(lens({ code: 'CNA0T0', family: { base: 'CNA0T', number: '0' }, power: 20.5 }));
+    expect(marks.filter((m) => m.dashed).length).toBe(3);
   });
 });
