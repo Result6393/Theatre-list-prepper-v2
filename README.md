@@ -20,8 +20,8 @@ Click any of Consultant, Date, OR or Session above the list to copy it for your 
 
 On a computer, the switch at the top right of the list chooses how it looks (remembered on that computer):
 
-- **Compact** (a card per patient): the patient's name, eye (**R / L / B**) and time along the top, with a **To do** badge listing what's still missing (1st/2nd eye, VA/IOP, lens) or **✓ Ready**; *Exam (VA / IOP)* and *Drops / allergies* on one line; then *Diagnosis* with 1st / 2nd eye, the findings and dilation, beside the *Lens* panel: the lens in one dropdown (with its number for one like `ZCU…`), the power with **−** / **+** in 0.5 D steps (starting from the report's best power for the target, once a report has been read), the target (**Plano**, **−0.25**, **−0.50** or other), the *Implants* box, and the IOL report (click the box under it and paste, or drop a screenshot on it). *Procedure*, *Ordered*, *Alerts*, *Plan & notes* and any other columns are along the bottom.
-- **Standard**: the columns as a table, like your sheet, with the prompts under each patient.
+- **Standard** (a card per patient): the patient's name, eye (**R / L / B**) and time along the top, with a **To do** badge listing what's still missing (1st/2nd eye, VA/IOP, lens) or **✓ Ready**; *Exam (VA / IOP)* and *Drops / allergies* on one line; then *Diagnosis* with 1st / 2nd eye, the findings and dilation, beside the *Lens* panel: the lens in one dropdown (with its number for one like `ZCU…`), the power with **−** / **+** in 0.5 D steps (starting from the report's best power for the target, once a report has been read), the target (**Plano**, **−0.25**, **−0.50** or other), the *Implants* box, and the IOL report (click the box under it and paste, or drop a screenshot on it). *Procedure*, *Ordered*, *Alerts*, *Plan & notes* and any other columns are along the bottom.
+- **Compact**: the columns as a table, like your sheet, with the prompts under each patient.
 
 Both edit the same cells, so your Excel file is the same whichever you use.
 
