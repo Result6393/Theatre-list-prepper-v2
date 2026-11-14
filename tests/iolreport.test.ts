@@ -18,7 +18,7 @@ function page(lines: [number, string][][]): OcrWord[] {
 const four = (texts: string[]): [number, string][] => texts.map((t, i) => [i * 42 + 2, t]);
 const two = (left: string, right: string): [number, string][] => [[2, left], [86, right]];
 
-const REPORT = page([
+const REPORT_LINES: [number, string][][] = [
   [[0, 'Patient'], [12, 'SMITH, Jan']],
   [[0, 'Date of birth'], [14, '01/01/1950'], [40, 'Gender Female']],
   [[0, 'Patient ID'], [12, '1000001'], [110, 'Some Clinic']],
@@ -45,7 +45,13 @@ const REPORT = page([
   two('100 +21.00 +1.00 3° -0.68 -0.81 +0.27 3°', '150 +22.50 +1.50 167° -0.87 -0.99 +0.25 167°'),
   two('100 +20.50 +1.00 3* -0.33 -046 +0.27 3°', ']150 +22.00 +1.50 167° -0.51 -0.63 +0.25 167°'),
   two('--- +1.36 3° Emmetropia', '--- +1.32 167° Emmetropia'),
-]);
+];
+const REPORT = withLargeHeadings(page(REPORT_LINES));
+
+/** OD and OS are in large type on the printout. */
+function withLargeHeadings(words: OcrWord[]): OcrWord[] {
+  return words.map((w) => (/^O[DS]$/.test(w.text) ? { ...w, y0: w.y0 - 15, y1: w.y1 + 15 } : w));
+}
 
 const lens = (over: Partial<PickedLens>): PickedLens => ({ eye: 'RIGHT', code: 'DCB00', power: 20.5, target: -0.5, mrn: '1000001', surname: 'SMITH', givenName: 'Jan', ...over });
 
@@ -95,6 +101,21 @@ describe('reading an IOL calculation report', () => {
       expect(r.left?.tables ?? []).toEqual([]);
       expect(checkLens(r, lens({})).facts).toEqual(['Right eye: DCB00 +20.50 → predicted −0.33']);
     }
+  });
+
+  it('isn’t misled by a warning that mentions [OD], [OS] or the IOL calculation, when OCR misses the big OD', () => {
+    const lines = REPORT_LINES.map((line) => line.filter(([, t]) => t !== 'OD'));
+    lines.splice(4, 1,
+      [[3, 'This IOL calculation contains values that were edited manually.']],
+      [[3, '[OD] Attention: LVC "Untreated" has been selected. Keratometry values have been edited manually.']],
+      [[3, '[OS] Attention: LVC "Untreated" has been selected. Keratometry values have been edited manually.']],
+    );
+    const r = readReport(withLargeHeadings(page(lines)))!;
+    expect(r.right?.tables[0].rows.map((x) => x.power)).toEqual([21.5, 21, 20.5, 20]);
+    expect(r.left?.tables[0].rows.map((x) => x.power)).toEqual([23, 22.5, 22, 21.5]);
+    expect(checkLens(r, lens({})).facts).toEqual(['Right eye: DCB00 +20.50 → predicted −0.33']);
+    expect(r.warnings[0]).toBe('This IOL calculation contains values that were edited manually.');
+    expect(r.warnings.some((w) => w.includes('Attention: LVC'))).toBe(true);
   });
 
   it('isn’t fooled by a page that isn’t an IOL calculation', () => {
@@ -231,7 +252,7 @@ describe('highlighting the screenshot', () => {
   it('marks the name, MRN, the eye, ΔK, the lens and the power, in the eye’s colour', () => {
     const marks = boxes(lens({}));
     expect(marks.every((m) => m.eye === 'right' && !m.dashed)).toBe(true);
-    expect(marks.map((m) => m.y0)).toEqual([at(0), at(1), at(2), at(5), at(9), at(10), at(17)]);
+    expect(marks.map((m) => m.y0)).toEqual([at(0), at(1), at(2), at(5) - 15, at(9), at(10), at(17)]);
     // ΔK stops before K2.
     expect(marks[4].x1).toBeLessThan(200);
   });
