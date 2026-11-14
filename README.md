@@ -68,7 +68,7 @@ The prompts just edit the cell text, so you can still type in the cell, and anyt
 
 Choose your cheat sheet (`.xlsx`) under **Previously prepped?** in step 1. Download it from OneDrive first if needed. It's read on this computer and never uploaded.
 
-- **Straight away, without a run sheet:** each sheet with patient rows becomes a list in step 2. Open one to see the patients and edit, reorder, tick and use the prompts as usual. Times, New, Moved and the Medical Records email need the run sheet.
+- **Straight away, without a run sheet:** each sheet with patient rows becomes a list in step 2. Open one to see the patients and edit, reorder, tick and use the prompts as usual. Times, New and Moved need the run sheet. **Email Medical Records** works too: it takes each ticked patient's MRN and name from your sheet's Patient column, and the date and theatre from the sheet's heading (Date, OR, AM/PM labels above the list; with none, the email says "this list").
 - **With the run sheet too** (load it before or after): each list you open is updated from the file, see below. Edits you made before loading the run sheet are kept.
 - **Save to *file*.xlsx** writes your lists back into the same file (**▾** next to it has both options):
   - **Save to sheet "…"**: only the cells you changed in each list's block are written. Formatting, formulas, other sheets and everything else stay as they were, and new rows take the formatting of the row above. If a list has grown and would write over something below it, it asks first.

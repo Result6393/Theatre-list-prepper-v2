@@ -287,15 +287,59 @@ function tickList(id: string, on: boolean): void {
   render();
 }
 
-/** Ticked patients still on the run sheet (not cancelled). */
+/**
+ * A row only on your prepped sheet (no run sheet loaded) as a patient to email about: the MRN and name
+ * from its Patient (or MRN and Name) column. Kept per row, so the same patient is the same object.
+ */
+const sheetPatients = new WeakMap<GridRow, Patient>();
+
+function sheetPatient(r: GridRow): Patient | null {
+  if (r.patient) return r.patient;
+  const known = sheetPatients.get(r);
+  if (known) return known;
+  const { layout } = state.settings;
+  const cell = (source: string) => {
+    const col = layout.columns.findIndex((c) => c.source === source);
+    return col >= 0 ? (r.cells[col] ?? '').split('\n')[0].trim() : '';
+  };
+  // "3000001 ALPHA, Ann 70F": the MRN, then the name (and the age and sex that follow it).
+  const combined = cell('field:patient');
+  let mrn = cell('field:mrn');
+  let name = cell('field:name');
+  if (combined) {
+    const [first = '', ...rest] = combined.split(/\s+/);
+    mrn ||= first;
+    name ||= rest.join(' ').replace(/\s+\d{1,3}\s*[MF]$/i, '');
+  }
+  if (!mrn && !name) return null;
+  const patient = { id: rowKey(r), raw: {}, mrn, name } as Patient;
+  sheetPatients.set(r, patient);
+  return patient;
+}
+
+/** The list as the email names it, when it comes from your prepped sheet: the date, OR, AM/PM and consultant from its heading. */
+function sheetSession(grid: Grid): Session {
+  const c = grid.combined;
+  const sheet = grid.fromSheet ? state.workbook?.sheets.find((x) => x.name === grid.fromSheet) : undefined;
+  const heading = sheet && grid.pasteAt ? readHeading(sheet, Number(grid.pasteAt.match(/\d+/)?.[0] ?? 1) - 1, state.settings.layout) : {};
+  const or = heading.or ? (/^\d+$/.test(heading.or) ? `OR ${heading.or}` : heading.or) : c.or;
+  return { ...c, date: c.date || heading.date || '', or, ampm: c.ampm || heading.ampm || '', consultant: c.consultant || heading.consultant || '' };
+}
+
+/** Ticked patients (not cancelled): from the run sheet, or from your prepped sheet's rows when there's no run sheet. */
 function tickedPatients(grid: Grid): Patient[] {
-  return grid.rows.filter((r) => r.included && r.status !== 'cancelled' && r.patient).map((r) => r.patient!);
+  return grid.rows
+    .filter((r) => r.included && r.status !== 'cancelled')
+    .map((r) => (grid.sheetOnly ? sheetPatient(r) : r.patient))
+    .filter((p): p is Patient => p !== null);
 }
 
 /** One group per ticked list, so the email names each list when there are several. */
 function medicalRecordsEmail(grid: Grid) {
   const ticked = tickedPatients(grid);
-  const groups = grid.sessions.map((session) => ({ session, patients: ticked.filter((p) => grid.listOf.get(p) === session) }));
+  const groups = grid.sheetOnly
+    ? [{ session: sheetSession(grid), patients: ticked }]
+    : grid.sessions.map((session) => ({ session, patients: ticked.filter((p) => grid.listOf.get(p) === session) }));
   return buildEmail(state.settings.email, groups);
 }
 
@@ -2249,7 +2293,7 @@ function renderPrep(): HTMLElement | null {
     phone ? renderPhoneBar(grid, count, cancelledCount) : toolbar,
     renderSaveReport(),
     grid.sheetOnly
-      ? h('p', { class: 'source-bar muted' }, 'Working from your prepped sheet, without a run sheet: times, New, Moved and the Medical Records email need the run sheet.')
+      ? h('p', { class: 'source-bar muted' }, 'Working from your prepped sheet, without a run sheet: times, New and Moved need the run sheet.')
       : renderSource(grid),
     renderUpdate(grid),
     active.length && active.every((r) => isLocked(r))
@@ -2690,7 +2734,7 @@ function renderEmailMenu(grid: Grid): HTMLElement {
       {
         class: state.emailMenuOpen ? 'on' : '',
         disabled: patients === 0,
-        title: grid.sheetOnly ? 'Load the run sheet to email Medical Records' : '',
+        title: grid.sheetOnly ? 'Asks for the paper files of the ticked patients on your prepped sheet' : '',
         'aria-haspopup': 'menu',
         'aria-expanded': state.emailMenuOpen ? 'true' : 'false',
         onclick: () => ((state.emailMenuOpen = !state.emailMenuOpen), (state.saveMenuOpen = false), render()),
