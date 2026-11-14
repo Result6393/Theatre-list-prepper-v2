@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { headingCells } from '../src/heading';
+import { headingCells, readHeading } from '../src/heading';
 import { defaultLayout } from '../src/layout';
 
 const layout = defaultLayout();
@@ -80,5 +80,12 @@ describe('filling in a sheet’s heading', () => {
   it('leaves out values the list doesn’t have', () => {
     const rows = [['Consultant', '', 'Date', ''], columns];
     expect(simple(headingCells(sheet(rows), 2, { ...values, consultant: '' }, layout))).toEqual([['Date', 'D1', '15/10/2026']]);
+  });
+});
+
+describe('reading the heading', () => {
+  it('reads the consultant, date (an Excel date too), OR and AM/PM above the list', () => {
+    const sheet = { name: 'S', rows: [['Consultant', 'Smith', '', 'Date', '46309'], ['OR: 4', '', '', 'AM/PM', 'AM'], [], ['Eye', 'Patient', 'Procedure']] };
+    expect(readHeading(sheet, 4, defaultLayout())).toEqual({ consultant: 'Smith', date: '14/10/2026', or: '4', ampm: 'AM' });
   });
 });

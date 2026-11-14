@@ -1085,7 +1085,8 @@ tbody.patient:focus-within .prompt-input {
   position: fixed;
   left: 50%;
   bottom: 20px;
-  z-index: 28;
+  /* Above pop-ups too: saving from one can ask a question here. */
+  z-index: 45;
   transform: translateX(-50%);
   width: max-content;
   max-width: min(860px, calc(100vw - 32px));
@@ -1458,7 +1459,7 @@ body:has(.save-report) .toast-area {
     left: 8px;
     right: 8px;
     bottom: 78px;
-    z-index: 25;
+    z-index: 45;
     transform: none;
     width: auto;
     max-width: none;
@@ -2585,4 +2586,18 @@ button.lock-toggle.on {
 .pcards-actions button {
   padding: 4px 8px;
   font-size: 0.85rem;
+}
+
+/* Save as a new sheet / to a new Excel file: a pop-up in view wherever you are. */
+.save-dialog {
+  width: min(720px, 100%);
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.25);
+  padding: 4px 4px 0;
+}
+
+.save-dialog .update-open {
+  margin: 0;
+  border: none;
 }

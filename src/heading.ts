@@ -151,3 +151,41 @@ function valueFor(field: HeadingField, values: HeadingValues, current: string): 
   const serial = dateSerial(values.date);
   return { cell: serial && /^\d{5}(\.\d+)?$/.test(now) ? serial : values.date, text: values.date };
 }
+
+/** "46309" (Excel's number for a date) → "14/10/2026"; anything else as it is. */
+function shownDate(text: string): string {
+  if (!/^\d{5}(\.\d+)?$/.test(text.trim())) return text.trim();
+  const when = new Date(Date.UTC(1899, 11, 30) + Math.floor(Number(text)) * 86400000);
+  return `${String(when.getUTCDate()).padStart(2, '0')}/${String(when.getUTCMonth() + 1).padStart(2, '0')}/${when.getUTCFullYear()}`;
+}
+
+/**
+ * What the heading above the list says now: the consultant, date, OR and AM/PM written beside (or
+ * after a colon in) their labels. Used to suggest a name for a new file.
+ */
+export function readHeading(sheet: SheetData, listRow: number, layout: Layout): Partial<Record<HeadingField, string>> {
+  const headings = new Set(layout.columns.map((c) => c.heading.trim().toLowerCase()).filter(Boolean));
+  const isHeading = (text: string) => headings.has(text.trim().toLowerCase());
+  const merges = (sheet.merges ?? []).map(parseRange).filter((m): m is Range => m !== null);
+  const out: Partial<Record<HeadingField, string>> = {};
+  for (let r = 0; r < Math.min(listRow, sheet.rows.length); r++) {
+    const row = sheet.rows[r];
+    if (row.filter(isHeading).length >= 3) continue;
+    for (let c = 0; c < row.length; c++) {
+      const text = row[c].trim();
+      if (!text) continue;
+      const sameCell = text.match(/^([^:]{1,20}):\s*(\S.*)$/);
+      const field = fieldOf(sameCell ? sameCell[1] : text);
+      if (!field || out[field]) continue;
+      let value = sameCell ? sameCell[2] : '';
+      if (!sameCell) {
+        const merged = merges.find((m) => m.top <= r && r <= m.bottom && m.left <= c && c <= m.right);
+        const next = (row[(merged ? merged.right : c) + 1] ?? '').trim();
+        if (fieldOf(next) || isHeading(next)) continue;
+        value = next;
+      }
+      if (value.trim()) out[field] = field === 'date' ? shownDate(value) : value.trim();
+    }
+  }
+  return out;
+}
