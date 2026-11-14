@@ -17,6 +17,7 @@ import { imageKey, openWorkbook, overwrittenBelow, saveWorkbook, sheetNameProble
 import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore } from './settings';
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
+import { summaryHtml, summaryPage, summaryText as listSummaryText, type Summary as ListSummary } from './summary';
 import { reportImage, type ReportImage } from './report';
 import { checkLens, combineReadings, parseConstants, readReport, signed, simulateLens, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
 import { OCR_ENGINE, readWords } from './ocr';
@@ -100,6 +101,8 @@ const state = {
   updateOpen: false,
   updateError: '',
   emailMenuOpen: false,
+  /** The Summary menu (copy for email, print / save as PDF). */
+  summaryMenuOpen: false,
   saveMenuOpen: false,
   /** Phone: the ⋯ menu in the bottom bar (Update, Email). */
   moreMenuOpen: false,
@@ -1714,6 +1717,7 @@ function renderPrep(): HTMLElement | null {
           grid.summary ? 'Update again from my sheet…' : 'Update from my sheet…',
         ),
     renderEmailMenu(grid),
+    renderSummaryMenu(grid),
     (() => {
       const items = lensItems(grid);
       if (!items) return null;
@@ -1926,7 +1930,7 @@ function renderPrep(): HTMLElement | null {
     const main = h(
       'tr',
       {},
-      h('td', { class: 'handle' }, gripOf(r, index, 'tbody.patient.active'), tickOf(r)),
+      h('td', { class: 'handle' }, index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null, gripOf(r, index, 'tbody.patient.active'), tickOf(r)),
       h('td', { class: 'time', title: p?.consultant ?? '' }, h('div', { class: 'time-value' }, p?.time ?? ''), who ? h('div', { class: 'who' }, who) : null, ...badgesOf(r)),
       layout.columns.map((c, col) => {
         const { area, change } = editorOf(r, col, Boolean(prompts), (target) => (target.parentElement!.className = classFor(r, col, target.value)));
@@ -2040,6 +2044,7 @@ function renderPrep(): HTMLElement | null {
             }
           },
         },
+        index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
         gripOf(r, index, '.pcard.active'),
         h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}` }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?'),
         h(
@@ -2124,6 +2129,8 @@ function renderPrep(): HTMLElement | null {
       h(
         'div',
         { class: 'pc-head' },
+        // Where the patient is on the theatre list.
+        index >= 0 ? h('span', { class: 'pc-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
         gripOf(r, index, 'article.prep-card.active'),
         tickOf(r),
         eyeSwitch,
@@ -2240,6 +2247,101 @@ function renderViewSwitch(): HTMLElement {
   );
 }
 
+// ---- Summary (to send on, e.g. to the consultant) -----------------------------------
+
+/** The ticked patients with every column and the IOL report check, headed with the list and day. */
+function buildSummary(grid: Grid): ListSummary {
+  const { layout } = state.settings;
+  const c = grid.combined;
+  const title = grid.sheetOnly
+    ? c.slotName
+    : [listName(c), c.date && !listName(c).includes(shortDay(c.date)) ? weekdayLabel(c.date) : ''].filter(Boolean).join(' · ');
+  const rows = activeRows(grid).filter((r) => r.included && r.status !== 'cancelled');
+  const nameColumns = [layout.columns.findIndex((col) => col.source === 'field:eye'), layout.columns.findIndex((col) => col.source === 'field:patient' || col.source === 'field:name' || col.source === 'field:mrn')].filter((i) => i >= 0);
+  return {
+    title,
+    headings: layout.columns.map((col, i) => col.heading || `Column ${i + 1}`),
+    nameColumns,
+    rows: rows.map((r) => {
+      const status = r.reports?.length ? reportStatus(r) : null;
+      let check = '';
+      if (status?.state === 'checked' && status.check) {
+        const { level, facts, flags, nameMismatch } = status.check;
+        const first = flags.find((f) => f.level === 'error') ?? flags[0];
+        check = nameMismatch ?? `${CHECK_ICON[level]} ${[...facts, ...(first && level !== 'ok' ? [first.text] : [])].join(' · ')}`.trim();
+      } else if (status) check = status.state === 'reading' ? 'Still being read' : 'Not read: check by eye';
+      return { time: r.patient?.time ?? '', cells: [...r.cells], check };
+    }),
+  };
+}
+
+async function copySummary(grid: Grid): Promise<void> {
+  const summary = buildSummary(grid);
+  if (!summary.rows.length) return say('No patients are ticked.');
+  try {
+    await copyHtml(summaryHtml(summary), listSummaryText(summary));
+    say(`Copied a summary of ${summary.rows.length} patient${summary.rows.length === 1 ? '' : 's'}: paste it into an email (a table in Outlook, text elsewhere).`);
+  } catch {
+    say('Your browser blocked copying. Try again.');
+  }
+}
+
+/** Opens the print dialog with the summary as a page; choose "Save as PDF" there for a PDF. */
+function printSummary(grid: Grid): void {
+  const summary = buildSummary(grid);
+  if (!summary.rows.length) return say('No patients are ticked.');
+  const made = `Prepared ${new Date().toLocaleString('en-AU', { dateStyle: 'medium', timeStyle: 'short' })}`;
+  const frame = h('iframe', { title: 'Summary to print', style: 'position:fixed;right:0;bottom:0;width:0;height:0;border:0' });
+  document.body.append(frame);
+  const doc = frame.contentDocument!;
+  doc.open();
+  doc.write(summaryPage(summary, made));
+  doc.close();
+  setTimeout(() => {
+    frame.contentWindow?.focus();
+    frame.contentWindow?.print();
+    // The print dialog blocks until it's closed; remove the frame afterwards.
+    setTimeout(() => frame.remove(), 1000);
+  }, 100);
+}
+
+/** Toolbar: Summary ▾ — copy for an email, or print / save as PDF. */
+function renderSummaryMenu(grid: Grid): HTMLElement {
+  const ticked = activeRows(grid).filter((r) => r.included && r.status !== 'cancelled').length;
+  const pick = (action: () => void) => () => {
+    state.summaryMenuOpen = false;
+    render();
+    action();
+  };
+  const item = (label: string, detail: string, onclick: () => void) =>
+    h('button', { class: 'menu-item', role: 'menuitem', onclick }, h('span', {}, label), h('span', { class: 'menu-detail' }, detail));
+  return h(
+    'div',
+    { class: 'menu-wrap' },
+    h(
+      'button',
+      {
+        class: state.summaryMenuOpen ? 'on' : '',
+        disabled: ticked === 0,
+        title: 'The prepped list to send on, e.g. to the consultant',
+        'aria-haspopup': 'menu',
+        'aria-expanded': state.summaryMenuOpen ? 'true' : 'false',
+        onclick: () => ((state.summaryMenuOpen = !state.summaryMenuOpen), (state.emailMenuOpen = false), (state.saveMenuOpen = false), render()),
+      },
+      'Summary ▾',
+    ),
+    state.summaryMenuOpen
+      ? h(
+          'div',
+          { class: 'menu', role: 'menu' },
+          h('p', { class: 'menu-note' }, `The ${ticked} ticked patient${ticked === 1 ? '' : 's'}, with every column and what each IOL report check found.`),
+          item('Copy for email', 'A table in Outlook, text anywhere else', pick(() => void copySummary(grid))),
+          item('Print / save as PDF', 'Opens the print dialog: choose Save as PDF there', pick(() => printSummary(grid))),
+        )
+      : null,
+  );
+}
+
 /** Phone: Copy, Save and ⋯ (Update, Email) in a bar along the bottom, within reach of a thumb. */
 function renderPhoneBar(grid: Grid, count: number, cancelledCount: number): HTMLElement {
   const ticked = tickedPatients(grid).length;
@@ -2281,6 +2383,8 @@ function renderPhoneBar(grid: Grid, count: number, cancelledCount: number): HTML
             item('Copy email text', 'To paste into any email', run(() => void copyEmailText(grid)), !ticked),
             hasRecipients ? null : h('p', { class: 'menu-note' }, 'Add the Medical Records address in Settings to open a draft.'),
             lensItems(grid) ? item('Copy lens list', 'Patients and lenses, for the theatre coordinator', run(() => void copyLensList(grid))) : null,
+            item('Copy summary', 'The prepped list, to paste into an email', run(() => void copySummary(grid))),
+            item('Print / save as PDF', 'The prepped list as a page', run(() => printSummary(grid))),
           )
         : null,
     ),
@@ -3395,14 +3499,17 @@ function renderHighlights(r: GridRow, image: ReportImage, sim?: SimState): SVGSV
   svg.setAttribute('preserveAspectRatio', 'none');
   svg.setAttribute('class', 'highlights');
   svg.setAttribute('aria-hidden', 'true');
-  const pad = read.width / 250;
+  // A little room either side, but hardly any above and below, so boxes on lines close together
+  // (date of birth and patient ID) don't overlap and hide each other.
+  const padX = read.width / 250;
+  const padY = read.width / 1000;
   for (const box of highlights) {
     const rect = document.createElementNS(SVG, 'rect');
-    rect.setAttribute('x', String(box.x0 - pad));
-    rect.setAttribute('y', String(box.y0 - pad));
-    rect.setAttribute('width', String(box.x1 - box.x0 + 2 * pad));
-    rect.setAttribute('height', String(box.y1 - box.y0 + 2 * pad));
-    rect.setAttribute('rx', String(pad));
+    rect.setAttribute('x', String(box.x0 - padX));
+    rect.setAttribute('y', String(box.y0 - padY));
+    rect.setAttribute('width', String(box.x1 - box.x0 + 2 * padX));
+    rect.setAttribute('height', String(box.y1 - box.y0 + 2 * padY));
+    rect.setAttribute('rx', String(padY * 2));
     rect.setAttribute('class', `hl hl-${box.eye}${box.dashed ? ' dashed' : ''}`);
     svg.append(rect);
   }
@@ -3668,7 +3775,8 @@ document.addEventListener('drop', (e) => {
 
 // Close the email menu on a click elsewhere or Escape.
 document.addEventListener('pointerdown', (e) => {
-  if ((state.emailMenuOpen || state.saveMenuOpen || state.moreMenuOpen) && !(e.target as HTMLElement).closest('.menu-wrap')) {
+  if ((state.emailMenuOpen || state.saveMenuOpen || state.moreMenuOpen || state.summaryMenuOpen) && !(e.target as HTMLElement).closest('.menu-wrap')) {
+    state.summaryMenuOpen = false;
     state.emailMenuOpen = false;
     state.saveMenuOpen = false;
     state.moreMenuOpen = false;
@@ -3695,7 +3803,8 @@ document.addEventListener('keydown', (e) => {
     render();
     return;
   }
-  if (e.key === 'Escape' && (state.emailMenuOpen || state.saveMenuOpen || state.moreMenuOpen)) {
+  if (e.key === 'Escape' && (state.emailMenuOpen || state.saveMenuOpen || state.moreMenuOpen || state.summaryMenuOpen)) {
+    state.summaryMenuOpen = false;
     state.emailMenuOpen = false;
     state.saveMenuOpen = false;
     state.moreMenuOpen = false;
