@@ -18,7 +18,7 @@ import { defaultSettings, exportSettings, importSettings, loadSettings, saveSett
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
 import { reportImage, type ReportImage } from './report';
-import { checkLens, combineReadings, readReport, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
+import { checkLens, combineReadings, parseConstants, readReport, signed, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
 import { readWords } from './ocr';
 
 /** The list being prepped: one list, or several ticked together that run on as one. */
@@ -2730,7 +2730,12 @@ function renderViewer(): HTMLElement | null {
     h(
       'div',
       { class: v.actualSize ? 'viewer-body actual' : 'viewer-body' },
-      h('img', { src: imageUrl(image), alt: `IOL report for ${rowLabel(r)}`, onclick: () => ((state.viewer = { ...v, actualSize: !v.actualSize }), render()) }),
+      h(
+        'div',
+        { class: 'shot', style: v.actualSize ? `width:${image.width}px` : '' },
+        h('img', { src: imageUrl(image), alt: `IOL report for ${rowLabel(r)}`, onclick: () => ((state.viewer = { ...v, actualSize: !v.actualSize }), render()) }),
+        renderHighlights(r, image),
+      ),
     ),
   );
 }
@@ -2738,7 +2743,13 @@ function renderViewer(): HTMLElement | null {
 
 // ---- Reading the IOL report (OCR) -------------------------------------------------
 
-type ReadState = ReportReading | 'reading' | 'unreadable' | 'failed';
+/** A screenshot's report as read, with the size of the copy OCR read (the highlights are drawn in it). */
+interface ReadReport {
+  reading: ReportReading;
+  width: number;
+  height: number;
+}
+type ReadState = ReadReport | 'reading' | 'unreadable' | 'failed';
 const readings = new WeakMap<ReportImage, ReadState>();
 let readQueue: Promise<void> = Promise.resolve();
 
@@ -2749,8 +2760,9 @@ function readingOf(image: ReportImage): ReadState {
   readings.set(image, 'reading');
   readQueue = readQueue.then(async () => {
     try {
-      const words = await readWords(new Blob([image.bytes as BlobPart], { type: image.type }));
-      readings.set(image, readReport(words) ?? 'unreadable');
+      const { words, width, height } = await readWords(new Blob([image.bytes as BlobPart], { type: image.type }));
+      const reading = readReport(words);
+      readings.set(image, reading ? { reading, width, height } : 'unreadable');
     } catch (e) {
       console.error('Couldn’t read the IOL report', e);
       readings.set(image, 'failed');
@@ -2806,10 +2818,10 @@ function reportStatus(r: GridRow): ReportStatus | null {
   if (!reports.length) return null;
   const states = reports.map(readingOf);
   if (states.includes('reading')) return { state: 'reading' };
-  const read = states.filter((s): s is ReportReading => typeof s === 'object');
+  const read = states.filter((s): s is ReadReport => typeof s === 'object').map((s) => s.reading);
   const combined = combineReadings(read);
   if (!combined) return { state: 'unreadable' };
-  return { state: 'checked', check: checkLens(combined, pickedLens(r)) };
+  return { state: 'checked', check: checkLens(combined, pickedLens(r), parseConstants(state.settings.prompts.constants)) };
 }
 
 const CHECK_ICON: Record<string, string> = { ok: '✓', warn: '⚠', error: '⛔', none: '' };
@@ -2828,18 +2840,66 @@ function renderReportStatus(r: GridRow): HTMLElement | null {
   return h('span', { class: `report-check ${level}`, title: all }, `${CHECK_ICON[level]} ${summary}`.trim());
 }
 
+const SVG = 'http://www.w3.org/2000/svg';
+
+/**
+ * Boxes over this screenshot: the patient's name and MRN, the eye's heading, ΔK, the lens's name and
+ * the power picked, in red for the right eye and blue for the left. Dashed: looked at, not a match
+ * (the lens an estimate comes from, or the other eye's column).
+ */
+function renderHighlights(r: GridRow, image: ReportImage): SVGSVGElement | null {
+  const read = readings.get(image);
+  if (!read || typeof read !== 'object') return null;
+  const { highlights } = checkLens(read.reading, pickedLens(r), parseConstants(state.settings.prompts.constants));
+  if (!highlights.length) return null;
+  const svg = document.createElementNS(SVG, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${read.width} ${read.height}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('class', 'highlights');
+  svg.setAttribute('aria-hidden', 'true');
+  const pad = read.width / 250;
+  for (const box of highlights) {
+    const rect = document.createElementNS(SVG, 'rect');
+    rect.setAttribute('x', String(box.x0 - pad));
+    rect.setAttribute('y', String(box.y0 - pad));
+    rect.setAttribute('width', String(box.x1 - box.x0 + 2 * pad));
+    rect.setAttribute('height', String(box.y1 - box.y0 + 2 * pad));
+    rect.setAttribute('rx', String(pad));
+    rect.setAttribute('class', `hl hl-${box.eye}${box.dashed ? ' dashed' : ''}`);
+    svg.append(rect);
+  }
+  return svg;
+}
+
 /** In the full-screen view: the check in full, and the report's own warnings. */
 function renderViewerCheck(r: GridRow): HTMLElement | null {
   const status = reportStatus(r);
   if (!status) return null;
   if (status.state === 'reading') return h('div', { class: 'viewer-check' }, h('div', { class: 'report-check reading' }, 'Reading the report…'));
   if (status.state === 'unreadable' || !status.check) return h('div', { class: 'viewer-check' }, h('div', { class: 'report-check none' }, 'Couldn’t read it as an IOL calculation: check it by eye.'));
-  const { facts, flags, notes } = status.check;
+  const { facts, flags, notes, estimate } = status.check;
   return h(
     'div',
     { class: 'viewer-check' },
-    facts.map((f) => h('div', { class: 'report-check ok' }, `✓ Report: ${f}`)),
+    facts.map((f) => h('div', { class: `report-check ${f.includes('(estimated)') ? 'warn' : 'ok'}` }, `${f.includes('(estimated)') ? '≈' : '✓'} Report: ${f}`)),
     flags.map((f) => h('div', { class: `report-check ${f.level}` }, `${CHECK_ICON[f.level]} ${f.text}`)),
+    estimate
+      ? h(
+          'details',
+          { class: 'estimate', open: true },
+          h('summary', {}, `Working: ${pickedLens(r).code} estimated from ${estimate.reference}`),
+          h('ol', {}, estimate.working.map((w) => h('li', {}, w))),
+          estimate.table.length
+            ? h(
+                'table',
+                { class: 'estimate-table' },
+                h('tr', {}, h('th', {}, `${pickedLens(r).code} (D)`), h('th', {}, 'Predicted (D)')),
+                estimate.table.map((t) => h('tr', { class: pickedLens(r).power === t.power ? 'picked' : '' }, h('td', {}, signed(t.power)), h('td', {}, `about ${signed(t.ref)}`))),
+              )
+            : null,
+          h('div', { class: 'report-check-hint' }, 'An estimate: SRK/T is used only for the difference between the two lenses’ A-constants, applied to the report’s Barrett numbers.'),
+        )
+      : null,
     notes.map((n) => h('div', { class: 'report-check note' }, `IOLMaster: ${n}`)),
     h('div', { class: 'report-check-hint' }, 'Read from the screenshot by the app. Always check against the report itself.'),
   );

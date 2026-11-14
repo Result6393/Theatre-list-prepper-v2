@@ -90,6 +90,7 @@ function importPrompts(value: unknown, defaults: PromptSettings): PromptSettings
     enabled: typeof value.enabled === 'boolean' ? value.enabled : defaults.enabled,
     findings: Array.isArray(value.findings) ? stringList(value.findings) : defaults.findings,
     lenses: Array.isArray(value.lenses) ? stringList(value.lenses) : defaults.lenses,
+    constants: Array.isArray(value.constants) ? stringList(value.constants) : defaults.constants,
     findingsColumn: typeof value.findingsColumn === 'string' ? value.findingsColumn : defaults.findingsColumn,
     lensColumn: typeof value.lensColumn === 'string' ? value.lensColumn : defaults.lensColumn,
   };
