@@ -124,7 +124,10 @@ describe('checking the lens you picked against the report', () => {
   });
 
   it('warns about a different target, a power off the table or a lens not on the report', () => {
-    expect(checkLens(report, lens({ target: 0 })).flags.map((f) => f.text)).toEqual(['The report was calculated for a target of −0.50 D (right eye); you picked plano.']);
+    // Plano and −0.50 are the usual targets (the IOLMaster is set to −0.50): no note for those.
+    expect(checkLens(report, lens({ target: 0 })).flags).toEqual([]);
+    expect(checkLens(report, lens({ target: -0.5 })).flags).toEqual([]);
+    expect(checkLens(report, lens({ target: -1 })).flags.map((f) => f.text)).toEqual(['The report was calculated for a target of −0.50 D (right eye); you picked −1.00.']);
     expect(checkLens(report, lens({ power: 24 })).flags[0].text).toBe('DCB00 +24.00 isn’t among the right eye’s powers on the report (+20.00 to +21.50).');
     expect(checkLens(report, lens({ code: 'CNA0T4', family: { base: 'CNA0T', number: '4' } })).flags[0].text).toBe('CNA0T4 isn’t on the right eye’s side of the report (add its A-constant in Settings to estimate it).');
   });

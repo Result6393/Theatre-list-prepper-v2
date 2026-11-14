@@ -779,7 +779,10 @@ export function checkLens(reading: ReportReading, lens: PickedLens, constants: L
         flags.push({ level: 'warn', text: `Couldn’t read the lens tables for the ${side} eye.` });
       }
     }
-    if (found && lens.target !== null) {
+    // The IOLMaster is set to −0.50 to show the most useful range of lenses, so plano and −0.50 are
+    // the usual targets: only another target the report wasn't calculated for is worth a note.
+    const usual = lens.target !== null && [0, -0.5].some((t) => Math.abs(t - lens.target!) < 0.01);
+    if (found && lens.target !== null && !usual) {
       for (const side of sides) {
         const t = reading[side]?.target;
         if (t !== null && t !== undefined && Math.abs(t - lens.target) > 0.01) {
