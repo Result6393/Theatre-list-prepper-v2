@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { toTsv } from '../src/clipboard';
 import { extractSessions, type Session } from '../src/extract';
 import { buildRow, defaultLayout, type Layout } from '../src/layout';
-import { CANCELLED_LABEL, copyBlock, freshRows, isRectangular, mergePrepped, MergeError, normaliseMrn, parsePastedRows } from '../src/merge';
+import { CANCELLED_LABEL, copyBlock, copyPictures, freshRows, isRectangular, keepReports, mergePrepped, MergeError, normaliseMrn, parsePastedRows, sheetRows } from '../src/merge';
+import type { ReportImage } from '../src/report';
 import { parseTable } from '../src/parse';
 import { booking, runSheetCsv, slot } from './fixtures';
 
@@ -216,5 +217,41 @@ describe('reading a paste', () => {
 
   it('notices when line breaks have broken the rows', () => {
     expect(isRectangular(parsePastedRows('a\tPOAG\nOn drops\tb\nc\td\te\n'))).toBe(false);
+  });
+});
+
+describe('IOL report screenshots follow their patient', () => {
+  const pic = (tag: number): ReportImage => ({ bytes: new Uint8Array([tag]), type: 'image/png', width: 4, height: 3 });
+  // One screenshot each for Alpha, Bravo (cancelled in the morning) and Charlie.
+  const pictures = [[pic(1)], [pic(2)], [pic(3), pic(33)], [], []];
+
+  it('moves with the patient when the list is reordered, and stays with a cancelled patient', () => {
+    const result = mergePrepped(preppedSheet(), listOf(sessionsOf(morning)), sessionsOf(morning), defaultLayout(), describe_, pictures);
+    expect(result.rows.map((r) => [mrnOf(r.cells), r.reports?.map((p) => p.bytes[0])])).toEqual([
+      ['3000003', [3, 33]],
+      ['3000001', [1]],
+      ['3000005', undefined],
+      ['3000006', undefined],
+      ['3000002', [2]],
+      ['3000004', undefined],
+    ]);
+    // Saved on the same rows as the copy: list, blank, CANCELLED label, cancelled patients, blanks.
+    const copied = copyPictures(result.rows, result.padTo);
+    expect(copied.map((p) => p.map((i) => i.bytes[0]))).toEqual([[3, 33], [1], [], [], [], [], [2], []]);
+    expect(copied).toHaveLength(copyBlock(result.rows, defaultLayout(), result.padTo).length);
+  });
+
+  it('keeps reports already added when rows pasted from your sheet (with no pictures) replace the list', () => {
+    const before = merge(preppedSheet()).rows;
+    before[1].reports = [pic(7)];
+    const after = merge(preppedSheet()).rows;
+    keepReports(after, before, defaultLayout());
+    expect(after.find((r) => mrnOf(r.cells) === '3000001')?.reports).toEqual([pic(7)]);
+    expect(after.filter((r) => r.reports)).toHaveLength(1);
+  });
+
+  it('comes with the rows of a sheet opened without a run sheet', () => {
+    const rows = sheetRows([['RIGHT', '3000001 ALPHA, Ann'], ['', ''], ['LEFT', '3000002 BRAVO, Ben']], 's', [[pic(1)], [], [pic(2)]]);
+    expect(rows.map((r) => r.reports?.[0].bytes[0])).toEqual([1, 2]);
   });
 });

@@ -4,12 +4,23 @@
  * own DecompressionStream and reads each sheet's cell values (as shown, not formulas).
  */
 
+import { imageExtension, reportImage, sameImages, type ReportImage } from './report';
+
 export interface SheetData {
   name: string;
   /** Cell text by row and column, from A1; empty cells are ''. */
   rows: string[][];
   /** Merged ranges, e.g. "B1:C1". */
   merges?: string[];
+  /** Pictures on the sheet (PNG, JPEG or GIF), by the cell their top-left corner is in. */
+  pictures?: SheetPicture[];
+}
+
+export interface SheetPicture {
+  /** 0-based row and column of the cell the picture starts in. */
+  row: number;
+  col: number;
+  image: ReportImage;
 }
 
 /** An opened workbook: its sheets' values, plus the file's parts so changes can be saved into it. */
@@ -53,7 +64,8 @@ export async function openWorkbook(data: ArrayBuffer): Promise<Workbook> {
     const xml = path ? await text(path) : undefined;
     if (path && xml) {
       const merges = tags(xml, 'mergeCell').map((m) => attr(m, 'ref')).filter((r): r is string => Boolean(r));
-      sheets.push({ name, rows: parseSheet(xml, shared), merges });
+      const pictures = await readPictures(path, xml, text, (p) => byName.get(p)).catch(() => []);
+      sheets.push({ name, rows: parseSheet(xml, shared), merges, pictures });
       paths.set(name, path);
     }
   }
@@ -69,6 +81,11 @@ export interface SheetEdit {
   rows: string[][];
   /** Write whole numbers as numbers even in cells that were empty (e.g. the OR number). */
   numbers?: boolean;
+  /**
+   * Pictures for each row of the block (e.g. a patient's IOL report), placed side by side just right
+   * of it. Pictures already on these rows are replaced; leave it out to leave the sheet's pictures alone.
+   */
+  pictures?: ReportImage[][];
 }
 
 export interface SaveResult {
@@ -114,7 +131,8 @@ export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: Ne
     entries.push({ ...templateEntry, name: path, nameBytes: new TextEncoder().encode(path) });
     replaced.set(path, copyableSheet(await current(templatePath)));
     paths.set(add.name, path);
-    sheets.push({ name: add.name, rows: template.rows.map((r) => [...r]), merges: template.merges });
+    // The copy leaves out the template's drawings, so it starts with no pictures.
+    sheets.push({ name: add.name, rows: template.rows.map((r) => [...r]), merges: template.merges, pictures: [] });
 
     const relsPath = 'xl/_rels/workbook.xml.rels';
     const rels = await current(relsPath);
@@ -152,18 +170,28 @@ export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: Ne
         if (value !== current) changes.push({ row: startRow + i, col: startCol + j, value, blockStart: startRow, number: edit.numbers });
       }),
     );
-    if (!changes.length) continue;
-    const patched = patchSheet(xml, changes);
-    changed += patched.changed;
-    formulas += patched.formulas;
-    // A list that runs past the old one takes its colours, dropdowns and print area along.
-    const lastRow = startRow + edit.rows.reduce((last, cells, i) => (cells.some((v) => v !== '') ? i : last), -1);
-    const isList = edit.rows.length > 1;
-    replaced.set(path, isList ? extendRanges(patched.xml, startRow, lastRow) : patched.xml);
-    if (isList) {
-      const index = sheetOrder(await current('xl/workbook.xml')).indexOf(edit.sheet);
-      replaced.set('xl/workbook.xml', extendPrintArea(await current('xl/workbook.xml'), edit.sheet, index, startRow, lastRow));
+    const width = Math.max(0, ...edit.rows.map((r) => r.length));
+    const pictureRows = edit.pictures ? changedPictureRows(sheet, startRow - 1, startCol, edit.rows.length, edit.pictures) : 0;
+    if (!changes.length && !pictureRows) continue;
+    let out = xml;
+    if (changes.length) {
+      const patched = patchSheet(xml, changes);
+      changed += patched.changed;
+      formulas += patched.formulas;
+      // A list that runs past the old one takes its colours, dropdowns and print area along.
+      const lastRow = startRow + edit.rows.reduce((last, cells, i) => (cells.some((v) => v !== '') ? i : last), -1);
+      const isList = edit.rows.length > 1;
+      out = isList ? extendRanges(patched.xml, startRow, lastRow) : patched.xml;
+      if (isList) {
+        const index = sheetOrder(await current('xl/workbook.xml')).indexOf(edit.sheet);
+        replaced.set('xl/workbook.xml', extendPrintArea(await current('xl/workbook.xml'), edit.sheet, index, startRow, lastRow));
+      }
     }
+    if (pictureRows) {
+      out = await placePictures({ entries, replaced, current }, path, out, startRow - 1, startCol, width, edit.rows.length, edit.pictures!);
+      changed += pictureRows;
+    }
+    replaced.set(path, out);
   }
   let kept = entries;
   if (options.keepOnly) kept = await keepOnlySheets(entries, paths, replaced, current, options.keepOnly, options.activeSheet ?? options.keepOnly[0]);
@@ -425,7 +453,32 @@ export function withEdit(sheet: SheetData, edit: SheetEdit): SheetData {
     cells.forEach((value, j) => (row[startCol + j] = value));
   });
   for (const row of rows) while (row.length < width) row.push('');
-  return { name: sheet.name, rows, merges: sheet.merges };
+  let pictures = sheet.pictures;
+  if (edit.pictures) {
+    const end = startRow + edit.rows.length;
+    const placeAt = startCol + Math.max(0, ...edit.rows.map((r) => r.length));
+    pictures = [
+      ...(sheet.pictures ?? []).filter((p) => p.row < startRow || p.row >= end || p.col < startCol),
+      ...edit.pictures.flatMap((images, i) => images.map((image) => ({ row: startRow + i, col: placeAt, image }))),
+    ];
+  }
+  return { name: sheet.name, rows, merges: sheet.merges, pictures };
+}
+
+/** The pictures on each row of a block (from `startCol` on), left to right. */
+export function blockPictures(sheet: SheetData, startRow: number, startCol: number, count: number): ReportImage[][] {
+  return Array.from({ length: count }, (_, i) =>
+    (sheet.pictures ?? [])
+      .filter((p) => p.row === startRow + i && p.col >= startCol)
+      .sort((a, b) => a.col - b.col)
+      .map((p) => p.image),
+  );
+}
+
+/** How many of the block's rows would get different pictures. */
+function changedPictureRows(sheet: SheetData, startRow: number, startCol: number, count: number, pictures: ReportImage[][]): number {
+  const now = blockPictures(sheet, startRow, startCol, count);
+  return now.filter((images, i) => !sameImages(images, pictures[i] ?? [])).length;
 }
 
 /** Text in cells below the old block that a longer block would write over. */
@@ -565,6 +618,293 @@ function escapeXml(text: string): string {
     .replace(/>/g, '&gt;');
 }
 
+// ---- Pictures --------------------------------------------------------------------
+
+const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+const DRAWING_REL = `${REL_NS}/drawing`;
+const IMAGE_REL = `${REL_NS}/image`;
+const DRAWING_TYPE = 'application/vnd.openxmlformats-officedocument.drawing+xml';
+const EMPTY_RELS = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+const EMPTY_DRAWING =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"></xdr:wsDr>';
+/** Marks the pictures this app places, so it's clear in Excel what they are. */
+const PICTURE_NAME = 'IOL report';
+const EMU_PER_PX = 9525;
+
+/** The drawing part a sheet's pictures are in, from its <drawing r:id="…"/> element. */
+async function drawingPathOf(sheetPath: string, sheetXml: string, text: (path: string) => Promise<string | undefined>): Promise<string | null> {
+  const rid = sheetXml.match(/<(?:\w+:)?drawing\b[^>]*?\s\w+:id="([^"]+)"/)?.[1];
+  if (!rid) return null;
+  const rel = tags((await text(relsPathOf(sheetPath))) ?? '', 'Relationship').find((r) => attr(r, 'Id') === rid);
+  const target = rel && attr(rel, 'Target');
+  return target ? resolveTarget(sheetPath, target) : null;
+}
+
+interface PictureAnchor {
+  xml: string;
+  row: number;
+  col: number;
+  embed: string;
+}
+
+/** Pictures anchored to a cell (not grouped shapes, charts or absolutely placed pictures). */
+function pictureAnchors(drawing: string): PictureAnchor[] {
+  const anchors: PictureAnchor[] = [];
+  for (const m of drawing.matchAll(/<((?:\w+:)?)(oneCellAnchor|twoCellAnchor)\b[\s\S]*?<\/\1\2>/g)) {
+    const xml = m[0];
+    if (/<(?:\w+:)?grpSp\b/.test(xml) || !/<(?:\w+:)?pic\b/.test(xml)) continue;
+    const from = xml.match(/<(?:\w+:)?from\b[^>]*>([\s\S]*?)<\/(?:\w+:)?from>/)?.[1] ?? '';
+    const row = Number(from.match(/<(?:\w+:)?row>\s*(\d+)\s*</)?.[1]);
+    const col = Number(from.match(/<(?:\w+:)?col>\s*(\d+)\s*</)?.[1]);
+    const embed = xml.match(/<(?:\w+:)?blip\b[^>]*?\s\w+:embed="([^"]+)"/)?.[1];
+    if (Number.isFinite(row) && Number.isFinite(col) && embed) anchors.push({ xml, row, col, embed });
+  }
+  return anchors;
+}
+
+async function readPictures(
+  sheetPath: string,
+  sheetXml: string,
+  text: (path: string) => Promise<string | undefined>,
+  entry: (path: string) => ZipEntry | undefined,
+): Promise<SheetPicture[]> {
+  const drawingPath = await drawingPathOf(sheetPath, sheetXml, text);
+  const drawing = drawingPath ? await text(drawingPath) : undefined;
+  if (!drawingPath || !drawing) return [];
+  const targets = new Map<string, string>();
+  for (const rel of tags((await text(relsPathOf(drawingPath))) ?? '', 'Relationship')) {
+    const id = attr(rel, 'Id');
+    const target = attr(rel, 'Target');
+    if (id && target && attr(rel, 'TargetMode') !== 'External') targets.set(id, resolveTarget(drawingPath, target));
+  }
+  const pictures: SheetPicture[] = [];
+  for (const anchor of pictureAnchors(drawing)) {
+    const media = entry(targets.get(anchor.embed) ?? '');
+    if (!media) continue;
+    const image = reportImage(await entryBytes(media), `image/${media.name.split('.').pop()?.toLowerCase().replace('jpg', 'jpeg')}`);
+    if (image) pictures.push({ row: anchor.row, col: anchor.col, image });
+  }
+  return pictures;
+}
+
+interface Parts {
+  entries: ZipEntry[];
+  replaced: Map<string, string>;
+  current: (path: string) => Promise<string>;
+}
+
+function blankEntry(name: string): ZipEntry {
+  // 1 January 1980, the earliest date a zip can hold.
+  return { name, nameBytes: new TextEncoder().encode(name), method: 8, flags: 0, time: 0, date: 33, crc: 0, size: 0, data: new Uint8Array(0), external: 0 };
+}
+
+/** Sets an XML part's text, adding the part if the file doesn't have it yet. */
+function setPart(parts: Parts, name: string, xml: string): void {
+  if (!parts.entries.some((e) => e.name === name)) parts.entries.push(blankEntry(name));
+  parts.replaced.set(name, xml);
+}
+
+function hasPart(parts: Parts, name: string): boolean {
+  return parts.entries.some((e) => e.name === name);
+}
+
+/** A name like "xl/media/image3.png" that isn't taken yet. */
+function freePartName(parts: Parts, prefix: string, extension: string): string {
+  let n = 1;
+  while (hasPart(parts, `${prefix}${n}.${extension}`)) n++;
+  return `${prefix}${n}.${extension}`;
+}
+
+function freeRelId(rels: string, base: string): string {
+  const ids = new Set(tags(rels, 'Relationship').map((r) => attr(r, 'Id')));
+  let n = 1;
+  while (ids.has(`${base}${n}`)) n++;
+  return `${base}${n}`;
+}
+
+/** "xl/drawings/drawing1.xml" as a relationship target from `from`, e.g. "../drawings/drawing1.xml". */
+function relativeTarget(from: string, to: string): string {
+  const base = from.split('/').slice(0, -1);
+  const parts = to.split('/');
+  let same = 0;
+  while (same < base.length && same < parts.length - 1 && base[same] === parts[same]) same++;
+  return [...base.slice(same).map(() => '..'), ...parts.slice(same)].join('/');
+}
+
+async function addContentType(parts: Parts, element: string, test: RegExp): Promise<void> {
+  const types = await parts.current('[Content_Types].xml');
+  if (!test.test(types)) parts.replaced.set('[Content_Types].xml', appendChild(types, 'Types', element));
+}
+
+/** Column widths and row heights in pixels, as Excel shows them at 100%. */
+function sheetMetrics(xml: string): { colPx: (col: number) => number; rowPx: (row: number) => number } {
+  const format = xml.match(/<(?:\w+:)?sheetFormatPr\b[^>]*>/)?.[0] ?? '<x>';
+  const toPx = (chars: number) => Math.trunc(((256 * chars + Math.trunc(128 / 7)) / 256) * 7);
+  const defaultCol = Number(attr(format, 'defaultColWidth')) || (Number(attr(format, 'baseColWidth')) || 8) + 0.43;
+  const cols = tags(xml, 'col').map((c) => ({
+    min: Number(attr(c, 'min')),
+    max: Number(attr(c, 'max')),
+    width: attr(c, 'hidden') === '1' || attr(c, 'hidden') === 'true' ? 0 : Number(attr(c, 'width')),
+  }));
+  const defaultRow = Number(attr(format, 'defaultRowHeight')) || 15;
+  const heights = new Map<number, number>();
+  for (const m of xml.matchAll(/<(?:\w+:)?row\b[^>]*>/g)) {
+    const r = Number(attr(m[0], 'r'));
+    const ht = Number(attr(m[0], 'ht'));
+    if (r && ht) heights.set(r, ht);
+  }
+  return {
+    colPx: (col) => {
+      const set = cols.find((c) => col + 1 >= c.min && col + 1 <= c.max && Number.isFinite(c.width));
+      return set ? toPx(set.width) : toPx(defaultCol);
+    },
+    rowPx: (row) => Math.round(((heights.get(row + 1) ?? defaultRow) * 96) / 72),
+  };
+}
+
+/** Puts an element among a worksheet's children in the order Excel requires, before the first of `before`. */
+function insertSheetChild(xml: string, child: string, before: string[]): string {
+  let depth = 0;
+  let at = -1;
+  for (const m of xml.matchAll(/<(\/?)([A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)\b[^>]*?(\/?)>/g)) {
+    const [, closing, , name, selfClosing] = m;
+    if (closing) {
+      depth--;
+      if (depth === 0) {
+        at = m.index!;
+        break;
+      }
+      continue;
+    }
+    if (depth === 1 && before.includes(name)) {
+      at = m.index!;
+      break;
+    }
+    if (!selfClosing) depth++;
+  }
+  if (at === -1) throw new WorkbookError('Couldn’t add pictures to that sheet.');
+  return xml.slice(0, at) + child + xml.slice(at);
+}
+
+const AFTER_DRAWING = ['legacyDrawing', 'legacyDrawingHF', 'drawingHF', 'picture', 'oleObjects', 'controls', 'webPublishItems', 'tableParts', 'extLst'];
+
+/**
+ * Replaces the pictures on a block's rows (0-based `startRow`, `count` rows, from `startCol` on) with
+ * `pictures`, side by side just right of the block, each scaled to its row's height. Other pictures,
+ * charts and shapes are left as they were. Returns the sheet's XML (with a drawing added if it had none).
+ */
+async function placePictures(
+  parts: Parts,
+  sheetPath: string,
+  sheetXml: string,
+  startRow: number,
+  startCol: number,
+  width: number,
+  count: number,
+  pictures: ReportImage[][],
+): Promise<string> {
+  const read = async (path: string) => (hasPart(parts, path) ? parts.current(path) : undefined);
+  const sheetRelsPath = relsPathOf(sheetPath);
+  let xml = sheetXml;
+  let drawingPath = await drawingPathOf(sheetPath, xml, read);
+  if (!drawingPath || !hasPart(parts, drawingPath)) {
+    if (!pictures.some((p) => p.length)) return xml;
+    drawingPath = freePartName(parts, 'xl/drawings/drawing', 'xml');
+    let rels = (await read(sheetRelsPath)) ?? EMPTY_RELS;
+    const rid = freeRelId(rels, 'rIdTlpDrawing');
+    rels = appendChild(rels, 'Relationships', `<Relationship Id="${rid}" Type="${DRAWING_REL}" Target="${relativeTarget(sheetPath, drawingPath)}"/>`);
+    setPart(parts, sheetRelsPath, rels);
+    setPart(parts, drawingPath, EMPTY_DRAWING);
+    await addContentType(parts, `<Override PartName="/${drawingPath}" ContentType="${DRAWING_TYPE}"/>`, new RegExp(`PartName="/${drawingPath}"`));
+    // An old <drawing> pointing at nothing is replaced.
+    xml = removeElements(xml, ['drawing']);
+    const prefix = xml.match(/<(\w+:)?worksheet\b/)?.[1] ?? '';
+    xml = insertSheetChild(xml, `<${prefix}drawing xmlns:r="${REL_NS}" r:id="${rid}"/>`, AFTER_DRAWING);
+  }
+  const drawingRelsPath = relsPathOf(drawingPath);
+  let drawing = await parts.current(drawingPath);
+  let rels = (await read(drawingRelsPath)) ?? EMPTY_RELS;
+  const targets = new Map(tags(rels, 'Relationship').map((r) => [attr(r, 'Id') ?? '', resolveTarget(drawingPath!, attr(r, 'Target') ?? '')]));
+
+  // Take off the pictures on these rows, keeping their images to reuse if they're put back.
+  const reusable: { id: string; bytes: Uint8Array }[] = [];
+  for (const anchor of pictureAnchors(drawing)) {
+    if (anchor.row < startRow || anchor.row >= startRow + count || anchor.col < startCol) continue;
+    drawing = drawing.replace(anchor.xml, '');
+    const media = parts.entries.find((e) => e.name === targets.get(anchor.embed));
+    if (media) reusable.push({ id: anchor.embed, bytes: await entryBytes(media) });
+  }
+
+  const p = drawing.match(/<(\w+:)?wsDr\b/)?.[1] ?? '';
+  const ns = `xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${REL_NS}"`;
+  let id = Math.max(0, ...[...drawing.matchAll(/<(?:\w+:)?cNvPr\b[^>]*?\sid="(\d+)"/g)].map((m) => Number(m[1]))) + 1;
+  const { colPx, rowPx } = sheetMetrics(xml);
+  const anchors: string[] = [];
+  for (const [i, images] of pictures.slice(0, count).entries()) {
+    const row = startRow + i;
+    const height = Math.min(160, Math.max(36, rowPx(row) - 4));
+    // Side by side from just right of the block, 4px apart.
+    let col = startCol + width;
+    let x = 4;
+    for (const image of images) {
+      const w = Math.max(1, Math.round((height * image.width) / image.height));
+      // Hidden columns are skipped, so a picture is never out of sight.
+      for (let guard = 0; guard < 1000 && (colPx(col) === 0 || x >= colPx(col)); guard++) {
+        x -= colPx(col);
+        col++;
+      }
+      let rid = reusable.find((r) => r.bytes.length === image.bytes.length && r.bytes.every((b, k) => b === image.bytes[k]))?.id;
+      if (!rid) {
+        const ext = imageExtension(image.type);
+        const mediaPath = freePartName(parts, 'xl/media/image', ext);
+        parts.entries.push({ ...blankEntry(mediaPath), method: 0, crc: crc32(image.bytes), size: image.bytes.length, data: image.bytes });
+        await addContentType(parts, `<Default Extension="${ext}" ContentType="${image.type}"/>`, new RegExp(`Extension="${ext}"`, 'i'));
+        rid = freeRelId(rels, 'rIdTlpImage');
+        rels = appendChild(rels, 'Relationships', `<Relationship Id="${rid}" Type="${IMAGE_REL}" Target="${relativeTarget(drawingPath, mediaPath)}"/>`);
+        targets.set(rid, mediaPath);
+      }
+      const cx = w * EMU_PER_PX;
+      const cy = height * EMU_PER_PX;
+      anchors.push(
+        `<${p}oneCellAnchor><${p}from><${p}col>${col}</${p}col><${p}colOff>${x * EMU_PER_PX}</${p}colOff><${p}row>${row}</${p}row><${p}rowOff>${2 * EMU_PER_PX}</${p}rowOff></${p}from>` +
+          `<${p}ext cx="${cx}" cy="${cy}"/><${p}pic ${ns}><${p}nvPicPr><${p}cNvPr id="${id}" name="${PICTURE_NAME} ${id}" descr="${PICTURE_NAME}: click and drag a corner to enlarge"/>` +
+          `<${p}cNvPicPr><a:picLocks noChangeAspect="1"/></${p}cNvPicPr></${p}nvPicPr><${p}blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></${p}blipFill>` +
+          `<${p}spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></${p}spPr></${p}pic><${p}clientData/></${p}oneCellAnchor>`,
+      );
+      id++;
+      x += w + 4;
+    }
+  }
+  for (const anchor of anchors) drawing = appendChild(drawing, 'wsDr', anchor);
+
+  // Images no picture in this drawing uses any more go, unless another part still uses them.
+  const used = new Set([...drawing.matchAll(/\s\w+:(?:embed|link|id)="([^"]+)"/g)].map((m) => m[1]));
+  for (const rel of tags(rels, 'Relationship')) {
+    const relId = attr(rel, 'Id') ?? '';
+    if (attr(rel, 'Type') !== IMAGE_REL || used.has(relId) || attr(rel, 'TargetMode') === 'External') continue;
+    rels = rels.replace(rel, '');
+    const media = targets.get(relId);
+    if (media && !(await usedElsewhere(parts, media, drawingRelsPath, rels))) {
+      parts.entries.splice(parts.entries.findIndex((e) => e.name === media), 1);
+      parts.replaced.delete(media);
+    }
+  }
+  setPart(parts, drawingPath, drawing);
+  setPart(parts, drawingRelsPath, rels);
+  return xml;
+}
+
+/** Whether any relationship (other than in `except`, whose new text is `exceptText`) points at `part`. */
+async function usedElsewhere(parts: Parts, part: string, except: string, exceptText: string): Promise<boolean> {
+  for (const e of parts.entries) {
+    if (!e.name.endsWith('.rels')) continue;
+    const text = e.name === except ? exceptText : await parts.current(e.name);
+    const source = e.name.replace(/_rels\/([^/]+)\.rels$/, '$1');
+    if (tags(text, 'Relationship').some((r) => attr(r, 'TargetMode') !== 'External' && resolveTarget(source, attr(r, 'Target') ?? '') === part)) return true;
+  }
+  return false;
+}
+
 // ---- Zip -------------------------------------------------------------------------
 
 interface ZipEntry {
@@ -623,6 +963,13 @@ async function entryText(entry: ZipEntry): Promise<string> {
   if (entry.method !== 8) throw new WorkbookError('This workbook uses a compression the app can’t read.');
   const stream = new Blob([entry.data as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
   return new Response(stream).text();
+}
+
+async function entryBytes(entry: ZipEntry): Promise<Uint8Array> {
+  if (entry.method === 0) return entry.data;
+  if (entry.method !== 8) throw new WorkbookError('This workbook uses a compression the app can’t read.');
+  const stream = new Blob([entry.data as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 async function deflateEntry(entry: ZipEntry, text: string): Promise<ZipEntry> {
