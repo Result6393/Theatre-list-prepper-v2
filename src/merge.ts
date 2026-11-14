@@ -33,8 +33,8 @@ export interface GridRow {
   note?: string;
   /** Screenshots of the patient's IOL report, saved as pictures on their row in your Excel file. */
   reports?: ReportImage[];
-  /** Locked against changes (until unlocked). */
-  locked?: boolean;
+  /** Unlocked for changes: every patient starts locked (see isLocked). */
+  unlocked?: boolean;
 }
 
 export interface MergeSummary {
@@ -439,9 +439,9 @@ export function keepReports(rows: GridRow[], before: GridRow[], layout: Layout):
     const reports = (r.patient && byPatient.get(r.patient)) || byKey.get(keyOf(r))?.shift();
     if (reports) r.reports = reports;
   }
-  // Locks stay with their patients too.
-  const locked = new Set(before.filter((r) => r.locked).map((r) => r.patient ?? keyOf(r)));
-  for (const r of rows) if ((r.patient && locked.has(r.patient)) || locked.has(keyOf(r))) r.locked = true;
+  // A patient you'd unlocked stays unlocked (everyone else starts locked).
+  const unlocked = new Set(before.filter((r) => r.unlocked).map((r) => r.patient ?? keyOf(r)));
+  for (const r of rows) if ((r.patient && unlocked.has(r.patient)) || unlocked.has(keyOf(r))) r.unlocked = true;
 }
 
 function isEmptyRow(row: string[]): boolean {
@@ -473,4 +473,9 @@ function inEveryLongestRun(values: number[]): Set<number> {
     if (onSome[i]) atStep.set(ending[i], (atStep.get(ending[i]) ?? 0) + 1);
   });
   return new Set(values.map((_, i) => i).filter((i) => onSome[i] && atStep.get(ending[i]) === 1));
+}
+
+/** Every patient is locked against changes until unlocked (cancelled ones have nothing to lock). */
+export function isLocked(r: GridRow): boolean {
+  return r.status !== 'cancelled' && !r.unlocked;
 }

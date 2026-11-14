@@ -6,7 +6,7 @@ import { allergyColumn, allergyPending, lacksAllergyDetails, pendingAllergies } 
 import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, outlookComposeUrl, weekdayLabel } from './email';
 import { extractSessions, type Patient, type Session } from './extract';
 import { combineSessions, listOfPatient, orderedSelection } from './lists';
-import { copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, keepReports, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
+import { copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, isLocked, keepReports, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
 import { lensEmailHtml, lensEmailText, lensLines, type LensItem } from './lenslist';
 import { absentText, cycleFinding, findingGroups, findingState, hasToken, isLensSurgery, lensCode, readGrading, writeGrading, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
@@ -1734,11 +1734,7 @@ function renderPrep(): HTMLElement | null {
         'Copy lens list',
       );
     })(),
-    h(
-      'button',
-      { disabled: active.length < 2, title: 'Change the order of the patients in a short list', 'data-key': 'reorder', onclick: () => ((state.reorderOpen = true), render()) },
-      '⇅ Reorder',
-    ),
+    renderReorderButton(active.length),
     renderLockAll(grid),
     h('span', { class: 'toolbar-count muted' }, `${count} of ${active.length} ticked`),
     renderViewSwitch(),
@@ -1798,34 +1794,6 @@ function renderPrep(): HTMLElement | null {
       r.note ? h('div', { class: 'who' }, r.note) : null,
     ];
   };
-  /** The ⠿ handle: drag to move (pointer, so fingers work too), or ↑ ↓ keys. */
-  const gripOf = (r: GridRow, index: number, items: string) =>
-    r.status === 'cancelled'
-      ? null
-      : h(
-          'button',
-          {
-            class: 'grip',
-            title: 'Drag to move (or use the ↑ ↓ keys)',
-            'aria-label': `Move ${rowName(r)}: use the up and down arrow keys`,
-            'data-key': `${rowKey(r)}:grip`,
-            onclick: (e: Event) => e.stopPropagation(),
-            onpointerdown: (e: Event) =>
-              startDrag(e as PointerEvent, {
-                items: [...app.querySelectorAll<HTMLElement>(items)],
-                from: index,
-                label: rowName(r),
-                onDrop: (from, to) => moveRow(grid, from, to),
-              }),
-            onkeydown: (e: Event) => {
-              const key = (e as KeyboardEvent).key;
-              if (key !== 'ArrowUp' && key !== 'ArrowDown') return;
-              e.preventDefault();
-              moveRow(grid, index, key === 'ArrowUp' ? index - 1 : index + 1);
-            },
-          },
-          '⠿',
-        );
   const tickOf = (r: GridRow) =>
     h('input', {
       type: 'checkbox',
@@ -1908,7 +1876,7 @@ function renderPrep(): HTMLElement | null {
           // A screenshot pasted into a lens patient's box becomes their IOL report.
           onpaste: (e: Event) => {
             const files = pastedImages(e as ClipboardEvent);
-            if (!files.length || !takesReports(r) || r.locked) return;
+            if (!files.length || !takesReports(r) || isLocked(r)) return;
             e.preventDefault();
             void addReports(r, files);
           },
@@ -1939,7 +1907,7 @@ function renderPrep(): HTMLElement | null {
     const main = h(
       'tr',
       {},
-      h('td', { class: 'handle' }, index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null, r.status === 'cancelled' ? null : lockToggle(r), gripOf(r, index, 'tbody.patient.active'), tickOf(r)),
+      h('td', { class: 'handle' }, index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null, r.status === 'cancelled' ? null : lockToggle(r), tickOf(r)),
       h('td', { class: 'time', title: p?.consultant ?? '' }, h('div', { class: 'time-value' }, p?.time ?? ''), who ? h('div', { class: 'who' }, who) : null, ...badgesOf(r)),
       layout.columns.map((c, col) => {
         const { area, change } = editorOf(r, col, Boolean(prompts), (target) => (target.parentElement!.className = classFor(r, col, target.value)));
@@ -2018,7 +1986,18 @@ function renderPrep(): HTMLElement | null {
           'div',
           { class: 'pcard-body' },
           layout.columns.map((c, col) => {
-            if (col === eyeCol) return h('div', { class: 'pfield' }, h('span', { class: 'pfield-label' }, c.heading || 'Eye'), eyeButtons, r.changes[col] !== undefined ? editorOf(r, col, false, () => undefined).change : null);
+            if (col === eyeCol) return h('div', { class: 'pfield' }, h('span', { class: 'pfield-label' }, c.heading || 'Eye'), isLocked(r) ? h('div', { class: 'pc-value' }, eye || '—') : eyeButtons, r.changes[col] !== undefined && !isLocked(r) ? editorOf(r, col, false, () => undefined).change : null);
+            if (isLocked(r)) {
+              // Locked: just the information, as text.
+              const value = (r.cells[col] ?? '').trim();
+              return h(
+                'div',
+                { class: `pfield ${classFor(r, col, r.cells[col])}` },
+                h('span', { class: 'pfield-label' }, c.heading || `Column ${col + 1}`),
+                h('div', { class: value ? 'pc-value' : 'pc-value empty' }, value || '—'),
+                col === promptCols.lens ? renderReports(r) : null,
+              );
+            }
             const { area, change } = editorOf(r, col, Boolean(prompts), () => undefined);
             // The prompts sit under the box they fill in: findings under Diagnosis, lens and target under Implants.
             const near = prompts && col === promptCols.findings ? renderPrompts(r, 'findings') : prompts && col === promptCols.lens ? renderPrompts(r, 'lens') : null;
@@ -2031,8 +2010,6 @@ function renderPrep(): HTMLElement | null {
             : h(
                 'div',
                 { class: 'pcard-move' },
-                h('button', { disabled: index <= 0, 'data-key': `${key}:up`, onclick: () => moveRow(grid, index, index - 1) }, '↑ Move up'),
-                h('button', { disabled: index >= active.length - 1, 'data-key': `${key}:down`, onclick: () => moveRow(grid, index, index + 1) }, '↓ Move down'),
                 h('button', { class: 'ghost lock-keep', onclick: toggle }, 'Done'),
               ),
         )
@@ -2057,7 +2034,6 @@ function renderPrep(): HTMLElement | null {
         },
         index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
         r.status === 'cancelled' ? null : lockToggle(r),
-        gripOf(r, index, '.pcard.active'),
         h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}` }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?'),
         h(
           'div',
@@ -2083,9 +2059,20 @@ function renderPrep(): HTMLElement | null {
     const p = r.patient;
     const cancelledRow = r.status === 'cancelled';
     const lensRow = !cancelledRow && isLensRow(r);
+    const locked = isLocked(r);
     const field = (col: number, compact = false) => {
       if (col < 0) return null;
       const c = layout.columns[col];
+      // Locked: just the information, as text.
+      if (locked) {
+        const value = (r.cells[col] ?? '').trim();
+        return h(
+          'div',
+          { class: `pc-field pc-info ${classFor(r, col, r.cells[col])}${compact ? ' compact' : ''}` },
+          h('span', { class: 'pc-label' }, c.heading || `Column ${col + 1}`),
+          h('div', { class: value ? 'pc-value' : 'pc-value empty' }, value || '—'),
+        );
+      }
       const wrap = h('label', { class: `pc-field ${classFor(r, col, r.cells[col])}${compact ? ' compact' : ''}` });
       const { area, change } = editorOf(r, col, lensRow, (target) => (wrap.className = `pc-field ${classFor(r, col, target.value)}${compact ? ' compact' : ''}`));
       if (col === examCol) area.setAttribute('placeholder', 'VA / IOP');
@@ -2097,7 +2084,9 @@ function renderPrep(): HTMLElement | null {
     };
     const eye = eyeCol >= 0 ? r.cells[eyeCol].trim().toUpperCase() : '';
     const eyeSwitch =
-      eyeCol >= 0
+      eyeCol >= 0 && locked
+        ? h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}`, title: eye || 'Eye not set' }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?')
+        : eyeCol >= 0
         ? h(
             'div',
             { class: 'pc-eye', role: 'group', 'aria-label': `Eye for ${rowName(r)}` },
@@ -2120,7 +2109,7 @@ function renderPrep(): HTMLElement | null {
     const sub = [p?.time, procedure, whoOf(r)].filter(Boolean).join(' · ');
     const todo = cancelledRow ? [] : toDoOf(r, examCol, findingsCol, lensCol);
     const nameField =
-      keyIndex >= 0
+      keyIndex >= 0 && !locked
         ? h('textarea', {
             class: 'pc-name',
             rows: 1,
@@ -2144,7 +2133,6 @@ function renderPrep(): HTMLElement | null {
         // Where the patient is on the theatre list.
         index >= 0 ? h('span', { class: 'pc-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
         cancelledRow ? null : lockToggle(r),
-        gripOf(r, index, 'article.prep-card.active'),
         tickOf(r),
         eyeSwitch,
         h('div', { class: 'pc-title' }, nameField, sub ? h('div', { class: 'pc-sub' }, sub) : null),
@@ -2166,10 +2154,10 @@ function renderPrep(): HTMLElement | null {
         'div',
         { class: 'pc-body' },
         findingsCol >= 0
-          ? h('section', { class: 'pc-section' }, lensRow ? renderFindingControls(r, findingsCol) : null, field(findingsCol))
+          ? h('section', { class: 'pc-section' }, lensRow && !locked ? renderFindingControls(r, findingsCol) : null, field(findingsCol))
           : null,
         lensCol >= 0
-          ? h('section', { class: 'pc-section pc-lens' }, lensRow ? renderLensControls(r, lensCol) : null, field(lensCol), lensRow || r.reports?.length ? renderReportBlock(r) : null)
+          ? h('section', { class: 'pc-section pc-lens' }, lensRow && !locked ? renderLensControls(r, lensCol) : null, field(lensCol), (lensRow && !locked) || r.reports?.length ? renderReportBlock(r) : null)
           : null,
       ),
       rest.length ? h('div', { class: 'pc-foot' }, rest.map((col) => field(col, true))) : null,
@@ -2209,6 +2197,7 @@ function renderPrep(): HTMLElement | null {
       for (const r of active) r.included = on;
       render();
     } }), ` ${count} of ${active.length} ticked`),
+    h('span', { class: 'pcards-actions' }, renderReorderButton(active.length), renderLockAll(grid)),
   );
 
   return h(
@@ -2230,8 +2219,20 @@ function renderPrep(): HTMLElement | null {
       ? h('p', { class: 'source-bar muted' }, 'Working from your prepped sheet, without a run sheet: times, New, Moved and the Medical Records email need the run sheet.')
       : renderSource(grid),
     renderUpdate(grid),
+    active.length && active.every((r) => isLocked(r))
+      ? h('p', { class: 'lock-note muted' }, '🔒 Patients start locked against changes: unlock one with its 🔒 to edit, or Unlock all.')
+      : null,
     allergyBanner(),
     phone ? [openAll, cards] : state.tableView ? h('div', { class: 'table-wrap' }, table) : prepCards,
+  );
+}
+
+/** ⇅ Reorder: the only place to change the patients' order. */
+function renderReorderButton(patients: number): HTMLElement {
+  return h(
+    'button',
+    { disabled: patients < 2, title: 'Change the order of the patients in a short list', 'data-key': 'reorder', onclick: () => ((state.reorderOpen = true), (state.moreMenuOpen = false), render()) },
+    '⇅ Reorder',
   );
 }
 
@@ -2445,6 +2446,7 @@ function renderPhoneBar(grid: Grid, count: number, cancelledCount: number): HTML
             item('Copy email text', 'To paste into any email', run(() => void copyEmailText(grid)), !ticked),
             hasRecipients ? null : h('p', { class: 'menu-note' }, 'Add the Medical Records address in Settings to open a draft.'),
             lensItems(grid) ? item('Copy lens list', 'Patients and lenses, for the theatre coordinator', run(() => void copyLensList(grid))) : null,
+            item('Reorder', 'Change the order of the patients', run(() => ((state.reorderOpen = true), render()))),
             item('Copy summary', 'The prepped list, to paste into an email', run(() => void copySummary(grid))),
             item('Print / save as PDF', 'The prepped list as a page', run(() => printSummary(grid))),
           )
@@ -2758,7 +2760,8 @@ function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | nu
   const { prompts, layout } = state.settings;
   const reports = only !== 'findings' ? renderReports(r) : null;
   const cols = promptColumns(layout, prompts);
-  if (!prompts.enabled || !isLensRow(r) || (cols.findings === -1 && cols.lens === -1)) return reports ? h('div', { class: 'prompts' }, reports) : null;
+  // Locked: no buttons, just the report (if any).
+  if (isLocked(r) || !prompts.enabled || !isLensRow(r) || (cols.findings === -1 && cols.lens === -1)) return reports ? h('div', { class: 'prompts' }, reports) : null;
   const key = rowKey(r);
   const set = (col: number, value: string) => {
     r.cells[col] = value;
@@ -3107,6 +3110,7 @@ function renderReportBlock(r: GridRow): HTMLElement {
     },
   });
   if (!reports.length) {
+    if (isLocked(r)) return h('div', {});
     return h(
       'div',
       { 'data-report-row': rowKey(r) },
@@ -3121,10 +3125,10 @@ function renderReportBlock(r: GridRow): HTMLElement {
       'div',
       { class: 'pc-thumbs' },
       reports.map((image, i) => reportThumb(r, image, i)),
-      h('button', { class: 'chip', 'data-key': `${rowKey(r)}:report:add`, title: 'Add another screenshot (or click here and paste)', onclick: () => input.click() }, '+'),
-      input,
+      isLocked(r) ? null : h('button', { class: 'chip', 'data-key': `${rowKey(r)}:report:add`, title: 'Add another screenshot (or click here and paste)', onclick: () => input.click() }, '+'),
+      isLocked(r) ? null : input,
     ),
-    h('div', { class: 'pc-check' }, renderReportStatus(r), ' ', readAgainButton(r, 'Re-read')),
+    h('div', { class: 'pc-check' }, renderReportStatus(r), ' ', isLocked(r) ? null : readAgainButton(r, 'Re-read')),
     renderAlerts(r),
   );
 }
@@ -3136,18 +3140,18 @@ function lockToggle(r: GridRow): HTMLElement {
   return h(
     'button',
     {
-      class: `lock-toggle lock-keep${r.locked ? ' on' : ''}`,
-      'aria-pressed': r.locked ? 'true' : 'false',
-      title: r.locked ? 'Locked: click to unlock and make changes' : 'Lock this patient against changes',
-      'aria-label': `${r.locked ? 'Unlock' : 'Lock'} ${rowLabel(r)}`,
+      class: `lock-toggle lock-keep${isLocked(r) ? ' on' : ''}`,
+      'aria-pressed': isLocked(r) ? 'true' : 'false',
+      title: isLocked(r) ? 'Locked: click to unlock and make changes' : 'Lock this patient against changes',
+      'aria-label': `${isLocked(r) ? 'Unlock' : 'Lock'} ${rowLabel(r)}`,
       'data-key': `${rowKey(r)}:lock`,
       onclick: (e: Event) => {
         e.stopPropagation();
-        r.locked = !r.locked;
+        r.unlocked = isLocked(r) ? true : undefined;
         render();
       },
     },
-    r.locked ? '🔒' : '🔓',
+    isLocked(r) ? '🔒' : '🔓',
   );
 }
 
@@ -3156,11 +3160,14 @@ function lockToggle(r: GridRow): HTMLElement {
  * can be typed, picked, ticked, dragged or pasted. Opening the IOL report (and the lock) still work.
  */
 function applyLock(el: HTMLElement, r: GridRow): HTMLElement {
-  if (!r.locked) return el;
+  if (!isLocked(r)) return el;
   el.classList.add('locked');
   for (const c of el.querySelectorAll<HTMLElement>('textarea, input, select, button')) {
     if (c.closest('.lock-keep')) continue;
-    if (c instanceof HTMLTextAreaElement || (c instanceof HTMLInputElement && c.type === 'text')) c.readOnly = true;
+    if (c instanceof HTMLTextAreaElement || (c instanceof HTMLInputElement && c.type === 'text')) {
+      c.readOnly = true;
+      c.title = 'Locked: unlock this patient (🔒) to change it';
+    }
     else (c as HTMLButtonElement | HTMLInputElement | HTMLSelectElement).disabled = true;
   }
   return el;
@@ -3169,7 +3176,7 @@ function applyLock(el: HTMLElement, r: GridRow): HTMLElement {
 /** Toolbar: lock or unlock every patient on the list. */
 function renderLockAll(grid: Grid): HTMLElement {
   const active = activeRows(grid);
-  const allLocked = active.length > 0 && active.every((r) => r.locked);
+  const allLocked = active.length > 0 && active.every((r) => isLocked(r));
   return h(
     'button',
     {
@@ -3177,7 +3184,7 @@ function renderLockAll(grid: Grid): HTMLElement {
       title: allLocked ? 'Unlock every patient on the list' : 'Lock every patient on the list against changes',
       'data-key': 'lock-all',
       onclick: () => {
-        for (const r of active) r.locked = !allLocked;
+        for (const r of active) r.unlocked = allLocked ? true : undefined;
         say(allLocked ? 'Unlocked every patient.' : 'Locked every patient: unlock one with its 🔒, or Unlock all.');
       },
     },
@@ -3242,7 +3249,7 @@ function reportSaveHint(): string {
 }
 
 async function addReports(r: GridRow, files: Blob[]): Promise<void> {
-  if (r.locked) {
+  if (isLocked(r)) {
     say(`${rowLabel(r)} is locked: unlock it (🔒) to add a screenshot.`);
     return;
   }
@@ -3277,7 +3284,9 @@ function reportThumb(r: GridRow, image: ReportImage, i: number): HTMLElement {
     'span',
     { class: asking ? 'report-thumb asking' : 'report-thumb' },
     h('button', { class: 'report-open lock-keep', title: 'Open full screen, e.g. to check at timeout', 'data-key': `${rowKey(r)}:report:${i}`, onclick: () => openViewer(r, i) }, h('img', { src: imageUrl(image), alt: `IOL report ${i + 1} for ${rowLabel(r)}` })),
-    asking
+    isLocked(r)
+      ? null
+      : asking
       ? h(
           'span',
           { class: 'confirm-remove', role: 'group', 'aria-label': 'Remove this screenshot?' },
@@ -3331,6 +3340,7 @@ function simLens(r: GridRow, sim: SimState): PickedLens {
 /** Thumbnails of the patient's IOL report screenshots, with a way to add more. */
 function renderReports(r: GridRow): HTMLElement | null {
   if (!takesReports(r)) return null;
+  if (isLocked(r) && !r.reports?.length) return null;
   const key = rowKey(r);
   const reports = r.reports ?? [];
   const input = h('input', {
@@ -3352,13 +3362,13 @@ function renderReports(r: GridRow): HTMLElement | null {
     },
     h('span', { class: 'prompt-label' }, 'IOL report'),
     reports.map((image, i) => reportThumb(r, image, i)),
-    h(
+    isLocked(r) ? null : h(
       'button',
       { class: 'chip', 'data-key': `${key}:report:add`, title: 'Choose a screenshot of the IOL report, or click here and paste one with Ctrl+V', onclick: () => input.click() },
       reports.length ? '+ Add' : '+ Add screenshot',
     ),
     input,
-    reports.length ? renderReportStatus(r) : h('span', { class: 'hint small report-hint' }, 'or paste one (Ctrl+V) into the Implants box'),
+    reports.length ? renderReportStatus(r) : isLocked(r) ? null : h('span', { class: 'hint small report-hint' }, 'or paste one (Ctrl+V) into the Implants box'),
     reports.length ? renderAlerts(r) : null,
   );
 }
@@ -3821,8 +3831,8 @@ function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
     h('p', { class: 'sim-chosen' }, describe(chosen)),
     h(
       'button',
-      { class: 'primary', 'data-key': 'sim:apply', disabled: r.locked || lensCol < 0 || Boolean(lens.family && !lens.family.number), title: r.locked ? 'This patient is locked: unlock them (🔒) to apply a lens' : '', onclick: apply },
-      r.locked ? '🔒 Locked: unlock the patient to apply' : `Apply: ${result.code} ${signed(chosen.power)}D, target ${result.target === 0 ? 'plano' : signed(result.target)}`,
+      { class: 'primary', 'data-key': 'sim:apply', disabled: isLocked(r) || lensCol < 0 || Boolean(lens.family && !lens.family.number), title: isLocked(r) ? 'This patient is locked: unlock them (🔒) to apply a lens' : '', onclick: apply },
+      isLocked(r) ? '🔒 Locked: unlock the patient to apply' : `Apply: ${result.code} ${signed(chosen.power)}D, target ${result.target === 0 ? 'plano' : signed(result.target)}`,
     ),
     result.notes.map((n) => h('p', { class: 'report-check note' }, n)),
     result.working.length

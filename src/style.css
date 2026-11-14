@@ -2508,3 +2508,81 @@ button.lock-toggle.on {
 .prep-card.locked .pc-head {
   background: var(--accent-soft);
 }
+
+/* Phone: cards (and their heading) fit the screen width, the name shrinking with "…" first. */
+.pcards > .pcard,
+.pcard-head,
+.pcard-body {
+  min-width: 0;
+}
+
+.pcard-head .pcard-title {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.pcard-head .pcard-name,
+.pcard-head .pcard-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pcard-head .row-num {
+  min-width: 1.1em;
+  margin-right: 0;
+}
+
+.pcard-head .lock-toggle {
+  padding: 2px 3px;
+}
+
+.pcard-head .grip {
+  padding: 8px 2px;
+}
+
+.lock-note {
+  margin: 4px 0 8px;
+  font-size: 0.85rem;
+}
+
+.pcards-tools {
+  justify-content: space-between;
+}
+
+/* Locked: just the information. */
+.pc-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 2px 0;
+}
+
+.pc-value.empty {
+  color: var(--muted);
+}
+
+.pc-field.pc-info.needs-info .pc-value {
+  background: var(--missing-bg);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.prep-card.locked .pc-strip,
+.prep-card.locked .pc-foot {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.pcard-move {
+  justify-content: flex-end;
+}
+
+.pcards-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.pcards-actions button {
+  padding: 4px 8px;
+  font-size: 0.85rem;
+}

@@ -6,7 +6,7 @@ Turns a whole day's theatre run sheet (SurgiNet SN006A export) into rows for one
 2. **Click the list you're prepping** (theatre + AM/PM, e.g. "OR 3 · PM · Smith").
    - **Lists that run on together:** tick more than one list (e.g. OR 3 AM and PM without a break) to prep them as one list. Each patient shows which list they're on. Edits you've already made on a list carry over when you tick it in with another.
    - The run sheet can cover several days; lists are grouped by day.
-3. **Check and edit** the rows: untick patients you don't want, type in any cell, and **drag** the ⠿ handle to reorder (or click the handle and use the ↑ ↓ keys). Edits and unticks are remembered while you switch between lists.
+3. **Check and edit** the rows: untick patients you don't want, type in any cell, and change the order with **⇅ Reorder**. Patients start locked: unlock one (🔒) to edit it. Edits and unticks are remembered while you switch between lists.
 4. **Copy for Excel**, click the first cell of your sheet (B5 by default) and press Ctrl+V.
 5. **Email Medical Records ▾** (optional) asks for the paper files of the ticked patients on all the ticked lists, grouped under a heading per list when there are several (e.g. "…patients having surgery on Tuesday 13/10" and a list of `MRN NAME`). Check the draft and press Send. Choose how to open it:
    - **Outlook on the web** opens a draft in a new tab.
@@ -18,7 +18,7 @@ Click any of Consultant, Date, OR or Session above the list to copy it for your 
 
 ## Standard and Compact views
 
-On a computer, the **Standard | Compact** switch in the toolbar (which stays at the top as you scroll) chooses how the list looks (remembered on that computer). **⇅ Reorder** beside *Copy lens list* opens a short list of the patients to put in order (drag ⠿, or ↑ ↓), without scrolling through the cards. While you drag (there, or the ⠿ on a card or row), the others slide apart to open a gap where the patient will go, outlined in dashed blue.
+On a computer, the **Standard | Compact** switch in the toolbar (which stays at the top as you scroll) chooses how the list looks (remembered on that computer). **⇅ Reorder** beside *Copy lens list* (on a phone, beside the tick count or in ⋯) is where you change the order: a short list of the patients to drag (⠿) or move with ↑ ↓. While you drag, the others slide apart to open a gap where the patient will go, outlined in dashed blue. The cards and rows themselves have no handles, so nothing gets moved by accident.
 
 - **Standard** (a card per patient): the patient's number on the list (top left), name, eye (**R / L / B**) and time along the top, with a **To do** badge listing what's still missing (1st/2nd eye, cataract grade, VA/IOP, lens) or **✓ Ready**; *Exam (VA / IOP)* and *Drops / allergies* on one line; then *Diagnosis* with 1st / 2nd eye, the findings and dilation, beside the *Lens* panel: the lens in one dropdown (with its number for one like `ZCU…`), the power with **−** / **+** in 0.5 D steps (starting from the report's best power for the target, once a report has been read), the target (**Plano**, **−0.25**, **−0.50** or other), the *Implants* box, and the IOL report (click the box under it and paste, or drop a screenshot on it). *Procedure*, *Ordered*, *Alerts*, *Plan & notes* and any other columns are along the bottom.
 - **Compact**: the columns as a table, like your sheet, with the prompts under each patient.
@@ -27,14 +27,14 @@ Both edit the same cells, so your Excel file is the same whichever you use.
 
 ## Locking
 
-**🔓 / 🔒** beside each patient's number locks them against changes: their boxes become read-only (you can still select and copy the text), and the buttons, lens dropdown, tick, drag handle and pasting a screenshot are off. Opening their IOL report still works (Apply in it is off). **🔒 Lock all / 🔓 Unlock all** in the toolbar does every patient. Locks last while the page is open (and through updates from the run sheet), not in your Excel file.
+Every patient **starts locked** against changes (🔒 beside their number), and a locked patient shows just their information: the text of each column (which you can select and copy), the eye, and their IOL report thumbnail and check (which still opens full screen; Apply in it is off). The buttons, boxes, lens dropdown, drag handle and pasting a screenshot appear when you unlock them. Tap **🔒** to unlock one (and again to lock it), or **🔓 Unlock all / 🔒 Lock all** (in the toolbar on a computer, beside the tick count on a phone). Patients you unlock stay unlocked while the page is open (and through updates from the run sheet); reopening the file locks everyone again.
 
 ## On a phone
 
 On a narrow screen the list becomes a stack of patient cards instead of a wide table, so there's no scrolling sideways:
 
 - Each card shows the eye (R / L / B), the patient, procedure and time, any New / Moved / Cancelled badge, and alerts. Tap it to open it: every column is a full-width box, the eye is three big buttons, and the cataract prompts sit under the box they fill in (findings under Diagnosis, lens and target under Implants). One patient is open at a time, and their name stays at the top of the screen as you scroll through them.
-- Move a patient by dragging its ⠿ handle with your finger, or with **↑ Move up** / **↓ Move down** in the open card.
+- Change the order with **⇅ Reorder** (beside the tick count, or in ⋯): drag ⠿ with your finger, or use ↑ ↓.
 - **Copy**, **Save** and **⋯** (Update from my sheet, Email Medical Records) are in a bar at the bottom of the screen.
 
 ## Allergies
