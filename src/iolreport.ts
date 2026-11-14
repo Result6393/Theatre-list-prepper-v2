@@ -305,6 +305,8 @@ export interface PickedLens {
   /** The patient as on your list, to compare with the report's. */
   mrn: string;
   surname: string;
+  /** First given name, if known. */
+  givenName?: string;
 }
 
 export type CheckLevel = 'ok' | 'warn' | 'error';
@@ -361,6 +363,10 @@ export interface LensCheck {
   facts: string[];
   flags: { level: CheckLevel; text: string }[];
   notes: string[];
+  /** Set when the report's name isn't this patient's: it must be impossible to miss. */
+  nameMismatch?: string;
+  /** When the report's ID isn't the list's MRN (often another system's number): a note, not an error. */
+  idNote?: string;
   estimate?: LensEstimate;
   /** What to mark on the screenshot. */
   highlights: Highlight[];
@@ -402,6 +408,39 @@ export function combineReadings(readings: ReportReading[]): ReportReading | null
     right: eye('right'),
     left: eye('left'),
   };
+}
+
+const letters = (text: string) => text.toUpperCase().replace(/[^A-Z]/g, '');
+
+/** Two names the same, allowing one letter misread by OCR in a longer name, and part of a double-barrelled one. */
+function similarName(a: string, b: string): boolean {
+  const [x, y] = [letters(a), letters(b)];
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (Math.min(x.length, y.length) >= 3 && (x.includes(y) || y.includes(x))) return true;
+  return editDistance(x, y) <= (Math.max(x.length, y.length) > 4 ? 1 : 0);
+}
+
+/**
+ * Whether the name on the report ("SURNAME, Given …") is this patient's: the surname, and the first
+ * given name when both are known (an initial matches its name). Family members can share a surname.
+ */
+export function sameName(reportName: string, surname: string, givenName: string): boolean {
+  const [before, after = ''] = reportName.split(',');
+  const hasComma = reportName.includes(',');
+  const words = reportName.split(/[\s,]+/).filter((w) => letters(w).length > 0);
+  const surnameParts = surname.split(/[\s-]+/).filter((w) => letters(w).length > 1);
+  const reportSurnames = hasComma ? before.split(/[\s-]+/) : words;
+  const surnameOk = (surnameParts.length ? surnameParts : [surname]).some((part) => reportSurnames.some((w) => similarName(w, part)));
+  const given = letters(givenName.split(/\s+/)[0] ?? '');
+  if (!given) return surnameOk;
+  const reportGivens = hasComma ? after.split(/\s+/).filter((w) => letters(w)) : words;
+  if (!reportGivens.length) return surnameOk;
+  const givenOk = reportGivens.some((w) => {
+    const g = letters(w);
+    return similarName(g, given) || (g.length === 1 && g === given[0]) || (given.length === 1 && given === g[0]);
+  });
+  return surnameOk && givenOk;
 }
 
 function editDistance(a: string, b: string): number {
@@ -666,16 +705,23 @@ export function checkLens(reading: ReportReading, lens: PickedLens, constants: L
   const operated: Highlight['eye'] = lens.eye === 'RIGHT' ? 'right' : lens.eye === 'LEFT' ? 'left' : 'both';
   const highlights: Highlight[] = [...box(reading.nameWords, operated), ...box(reading.dobWords, operated), ...box(reading.idWords, operated)];
 
-  // Is it this patient's report?
+  // Is it this patient's report? The name must match (surname and given name); the ID often won't,
+  // as the IOLMaster may use another system's number, so that's only a note.
+  let nameMismatch: string | undefined;
+  let idNote: string | undefined;
+  const ourName = [lens.surname, lens.givenName].filter(Boolean).join(', ');
+  if (/[A-Za-z]{2}/.test(reading.name) && lens.surname.trim()) {
+    if (!sameName(reading.name, lens.surname, lens.givenName ?? '')) {
+      nameMismatch = `NAME MISMATCH: the report is for “${reading.name}”, not “${ourName}”. Check you have this patient’s report.`;
+      flags.push({ level: 'error', text: nameMismatch });
+    }
+  } else if (lens.surname.trim()) {
+    flags.push({ level: 'warn', text: 'Couldn’t read the patient’s name on the report: check it’s this patient’s.' });
+  }
   const reportId = reading.id.replace(/\D/g, '').replace(/^0+/, '');
   const ourId = lens.mrn.replace(/\D/g, '').replace(/^0+/, '');
   if (reportId.length >= 4 && ourId.length >= 4 && reportId !== ourId) {
-    flags.push({ level: 'error', text: `The report is for patient ID ${reading.id}, not ${lens.mrn}.` });
-  }
-  const surname = lens.surname.toUpperCase().replace(/[^A-Z]/g, '');
-  const reportWords = reading.name.toUpperCase().split(/[^A-Z]+/).filter((w) => w.length > 1);
-  if (surname.length >= 2 && reportWords.length && !reportWords.some((w) => editDistance(w, surname) <= (surname.length > 4 ? 1 : 0))) {
-    flags.push({ level: 'error', text: `The report’s name (${reading.name}) doesn’t match ${lens.surname}.` });
+    idNote = `The report’s patient ID (${reading.id}) isn’t the MRN on the list (${lens.mrn}): often another system’s number, so check the name and date of birth.`;
   }
 
   const sides: ('right' | 'left')[] = lens.eye === 'RIGHT' ? ['right'] : lens.eye === 'LEFT' ? ['left'] : ['right', 'left'];
@@ -743,7 +789,7 @@ export function checkLens(reading: ReportReading, lens: PickedLens, constants: L
     }
   }
   const level: LensCheck['level'] = flags.some((f) => f.level === 'error') ? 'error' : flags.length ? 'warn' : facts.length ? 'ok' : 'none';
-  return { level, facts, flags, notes, estimate, highlights };
+  return { level, facts, flags, notes, estimate, highlights, nameMismatch, idNote };
 }
 
 function tablesOf(eye: EyeReading, code: string): LensRow[] {
