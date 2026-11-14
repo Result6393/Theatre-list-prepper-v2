@@ -105,6 +105,7 @@ function importPrompts(value: unknown, defaults: PromptSettings): PromptSettings
     findings: Array.isArray(value.findings) ? stringList(value.findings) : defaults.findings,
     lenses: Array.isArray(value.lenses) && stringList(value.lenses).join() !== OLD_DEFAULT_LENSES ? stringList(value.lenses) : defaults.lenses,
     constants: Array.isArray(value.constants) ? stringList(value.constants) : defaults.constants,
+    equivalents: Array.isArray(value.equivalents) ? stringList(value.equivalents) : defaults.equivalents,
     limits: importLimits(value.limits, defaults.limits),
     findingsColumn: typeof value.findingsColumn === 'string' ? value.findingsColumn : defaults.findingsColumn,
     lensColumn: typeof value.lensColumn === 'string' ? value.lensColumn : defaults.lensColumn,

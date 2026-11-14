@@ -840,6 +840,35 @@ export function estimateLens(
 }
 
 
+
+/** Lenses the report's calculation for another lens applies to, e.g. { from: 'DIUx', to: 'ZCUx' } (same platform and A-constant). */
+export interface LensEquivalent {
+  from: string;
+  to: string;
+}
+
+/** "DIUx = ZCUx" per line, as in Settings. */
+export function parseEquivalents(lines: string[]): LensEquivalent[] {
+  return lines.flatMap((line) => {
+    const m = line.trim().match(/^(\S+)\s*(?:=|→|->)\s*(\S+)$/);
+    return m ? [{ from: m[1], to: m[2] }] : [];
+  });
+}
+
+/** The lens whose calculation on the report to use instead (DIU150 → ZCU150), if one is set for this lens. */
+export function equivalentLens(lens: PickedLens, equivalents: LensEquivalent[]): PickedLens | null {
+  for (const e of equivalents) {
+    const fromAt = e.from.indexOf('x');
+    const toAt = e.to.indexOf('x');
+    if (fromAt >= 0 && toAt >= 0 && lens.family && canonical(lens.family.base) === canonical(e.from.slice(0, fromAt))) {
+      const base = e.to.slice(0, toAt);
+      return { ...lens, code: `${base}${lens.family.number}${e.to.slice(toAt + 1)}`, family: { base, number: lens.family.number } };
+    }
+    if (fromAt < 0 && canonical(lens.code) === canonical(e.from)) return { ...lens, code: e.to.replace('x', ''), family: undefined };
+  }
+  return null;
+}
+
 // ---- Trying another lens ------------------------------------------------------------
 
 export interface SimRow {
@@ -872,7 +901,7 @@ export interface Simulation {
  * is on it (its own table, or the toric calculation for a toric), otherwise estimated from a lens that
  * is (see estimateLens). Returns a reason instead when it can't be worked out.
  */
-export function simulateLens(reading: ReportReading, side: 'right' | 'left', lens: PickedLens, constants: LensConstant[]): Simulation | string {
+export function simulateLens(reading: ReportReading, side: 'right' | 'left', lens: PickedLens, constants: LensConstant[], equivalents: LensEquivalent[] = []): Simulation | string {
   const eye = reading[side];
   if (!eye) return `Couldn’t read the ${side} eye’s side of the report.`;
   if (!lens.code) return 'Choose a lens.';
@@ -885,7 +914,18 @@ export function simulateLens(reading: ReportReading, side: 'right' | 'left', len
   let base: LensRow[] = [];
   let shift = 0;
 
-  const tables = tablesFor(eye, lens);
+  let tables = tablesFor(eye, lens);
+  // Not on the report, but the same calculation as one that is (e.g. a DIU as its ZCU)?
+  let via: PickedLens | null = null;
+  if (!tables.length) {
+    const alias = equivalentLens(lens, equivalents);
+    const aliasTables = alias ? tablesFor(eye, alias) : [];
+    if (alias && aliasTables.length) {
+      tables = aliasTables;
+      via = alias;
+      notes.push(`${lens.code} isn’t on the report: read from its ${alias.code} calculation (the same lens platform and A-constant, as set in Settings).`);
+    }
+  }
   const toric = lens.family ? tables.find((t) => t.toric) : undefined;
   if (toric) {
     const number = canonical(lens.family!.number);
@@ -895,7 +935,7 @@ export function simulateLens(reading: ReportReading, side: 'right' | 'left', len
     const matching = toric.rows.filter((r) => !r.model || canonical(r.model) === number);
     base = matching.length >= 2 ? matching : toric.rows;
     if (recommended && canonical(recommended) !== number) {
-      const what = /^[A-Z]+$/.test(recommended) ? 'a non-toric lens' : `${lens.family!.base}${recommended}`;
+      const what = /^[A-Z]+$/.test(recommended) ? 'a non-toric lens' : `${(via ?? lens).family!.base}${recommended}`;
       notes.push(
         `The report’s toric calculation (Barrett Toric) chose ${what} for this eye${axis !== undefined ? ` at ${axis}°` : ''}. ` +
           `The spherical equivalents below still apply to ${lens.code}, but its axis and residual astigmatism aren’t calculated here: check them with a toric calculator.`,
@@ -951,7 +991,13 @@ export function simulateLens(reading: ReportReading, side: 'right' | 'left', len
 }
 
 /** Your lens checked against the report: found for the eye you're operating on, or what's wrong. */
-export function checkLens(reading: ReportReading, lens: PickedLens, constants: LensConstant[] = [], limits: BiometryLimits = defaultLimits()): LensCheck {
+export function checkLens(
+  reading: ReportReading,
+  lens: PickedLens,
+  constants: LensConstant[] = [],
+  limits: BiometryLimits = defaultLimits(),
+  equivalents: LensEquivalent[] = [],
+): LensCheck {
   const facts: string[] = [];
   const flags: LensCheck['flags'] = [];
   const notes = [...reading.warnings];
@@ -992,18 +1038,29 @@ export function checkLens(reading: ReportReading, lens: PickedLens, constants: L
         flags.push({ level: 'warn', text: `Couldn’t read the ${EYE_NAME[side]} eye’s side of the report.` });
         continue;
       }
-      const tables = tablesFor(eye, lens);
-      const hit = rowFor(tables, lens);
+      let tables = tablesFor(eye, lens);
+      // Not on the report, but the same calculation as one that is (e.g. a DIU as its ZCU)?
+      let match = lens;
+      if (!tables.length) {
+        const alias = equivalentLens(lens, equivalents);
+        const aliasTables = alias ? tablesFor(eye, alias) : [];
+        if (alias && aliasTables.length) {
+          tables = aliasTables;
+          match = alias;
+        }
+      }
+      const hit = rowFor(tables, match);
       if (hit) {
         found = true;
         highlights.push(...box(hit.table.titleWords, side), ...box(hit.row.words, side));
         const { row } = hit;
         const toric = row.cyl !== undefined && row.axis !== undefined && row.cyl > 0 ? `, axis ${row.axis}°` : '';
-        facts.push(`${side === 'right' ? 'Right' : 'Left'} eye: ${lens.code} ${signed(row.power)}${toric} → predicted ${signed(row.ref)}`);
+        const from = match !== lens ? ` (from the report’s ${match.code} calculation)` : '';
+        facts.push(`${side === 'right' ? 'Right' : 'Left'} eye: ${lens.code} ${signed(row.power)}${toric} → predicted ${signed(row.ref)}${from}`);
         continue;
       }
       const other = side === 'right' ? 'left' : 'right';
-      const elsewhere = sides.length === 1 ? rowFor(tablesFor(reading[other], lens), lens) : null;
+      const elsewhere = sides.length === 1 ? rowFor(tablesFor(reading[other], match), match) : null;
       if (elsewhere) {
         highlights.push(...box(elsewhere.table.titleWords, other, true), ...box(elsewhere.row.words, other, true));
         flags.push({ level: 'error', text: `${signed(lens.power)} is in the ${other.toUpperCase()} eye’s column of the report, not the ${side}’s.` });

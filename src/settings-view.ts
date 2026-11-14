@@ -240,6 +240,12 @@ function renderPrompts(props: Props): HTMLElement {
       prompts.constants,
       (v) => (prompts.constants = v),
     ),
+    lines(
+      'Same-calculation lenses',
+      'One per line: a lens that uses another’s calculation on the IOL report (the same platform and A-constant), e.g. DIUx = ZCUx, so a DIU150 is read from the report’s ZCU150.',
+      prompts.equivalents,
+      (v) => (prompts.equivalents = v),
+    ),
     h('h4', { class: 'settings-sub' }, 'Biometry alerts'),
     h('p', { class: 'hint' }, 'From the IOL report, for the eye being operated on: flagged in amber under the report and on the patient (an eye that’s already pseudophakic is red). Change the cutoffs to suit your practice.'),
     h(
