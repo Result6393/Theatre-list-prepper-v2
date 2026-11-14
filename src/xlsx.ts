@@ -29,6 +29,22 @@ export interface Workbook {
   entries: ZipEntry[];
   /** Sheet name → its part in the file, e.g. "xl/worksheets/sheet2.xml". */
   paths: Map<string, string>;
+  /** What OCR read in the file's pictures, saved with them (by imageKey), so they needn't be read again. */
+  ocr: Map<string, OcrRecord>;
+}
+
+/** The words OCR found in a picture: [text, x0, y0, x1, y1] in a copy `width` × `height` pixels. */
+export interface OcrRecord {
+  /** Which OCR (and settings) read it; a record from another is read again. */
+  engine: string;
+  width: number;
+  height: number;
+  words: [string, number, number, number, number][];
+}
+
+/** Identifies a picture by its bytes. */
+export function imageKey(bytes: Uint8Array): string {
+  return `${crc32(bytes).toString(16).padStart(8, '0')}-${bytes.length}`;
 }
 
 export class WorkbookError extends Error {}
@@ -69,7 +85,7 @@ export async function openWorkbook(data: ArrayBuffer): Promise<Workbook> {
       paths.set(name, path);
     }
   }
-  return { sheets, entries, paths };
+  return { sheets, entries, paths, ocr: await readOcr(entries) };
 }
 
 // ---- Saving changes --------------------------------------------------------------
@@ -106,6 +122,8 @@ export interface SaveOptions {
   keepOnly?: string[];
   /** The sheet the file opens on (and the only selected tab). */
   activeSheet?: string;
+  /** What OCR read in pictures: saved in the file for the pictures it has (and only those). */
+  ocr?: Map<string, OcrRecord>;
 }
 
 export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: NewSheet[] = [], options: SaveOptions = {}): Promise<SaveResult> {
@@ -195,6 +213,7 @@ export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: Ne
   }
   let kept = entries;
   if (options.keepOnly) kept = await keepOnlySheets(entries, paths, replaced, current, options.keepOnly, options.activeSheet ?? options.keepOnly[0]);
+  if (options.ocr) await writeOcr({ entries: kept, replaced, current: async (path) => replaced.get(path) ?? (await entryText(kept.find((e) => e.name === path)!)) }, options.ocr);
   const written = await Promise.all(kept.map(async (e) => (replaced.has(e.name) ? deflateEntry(e, replaced.get(e.name)!) : e)));
   return { bytes: writeZip(written), changed, formulas };
 }
@@ -903,6 +922,71 @@ async function usedElsewhere(parts: Parts, part: string, except: string, exceptT
     if (tags(text, 'Relationship').some((r) => attr(r, 'TargetMode') !== 'External' && resolveTarget(source, attr(r, 'Target') ?? '') === part)) return true;
   }
   return false;
+}
+
+// ---- OCR results kept with the pictures --------------------------------------------
+
+const OCR_NS = 'urn:theatre-list-prepper:ocr:1';
+
+function isOcrPart(name: string): boolean {
+  return /^customXml\/item\d+\.xml$/.test(name);
+}
+
+async function readOcr(entries: ZipEntry[]): Promise<Map<string, OcrRecord>> {
+  const records = new Map<string, OcrRecord>();
+  for (const entry of entries.filter((e) => isOcrPart(e.name))) {
+    const xml = await entryText(entry).catch(() => '');
+    if (!xml.includes(OCR_NS)) continue;
+    for (const image of tags(xml, 'image')) {
+      const key = attr(image, 'key');
+      try {
+        const words = JSON.parse(decode(image.replace(/^<[^>]*>/, '').replace(/<\/[^>]*>$/, '')));
+        if (key && Array.isArray(words)) {
+          records.set(key, { engine: decode(attr(image, 'engine') ?? ''), width: Number(attr(image, 'width')), height: Number(attr(image, 'height')), words });
+        }
+      } catch {
+        // A damaged record is just read again.
+      }
+    }
+  }
+  return records;
+}
+
+/**
+ * Saves what OCR read in the file's pictures as a custom XML part of the workbook: Excel keeps it
+ * when it saves the file but doesn't show it. Only pictures still in the file are kept.
+ */
+async function writeOcr(parts: Parts, records: Map<string, OcrRecord>): Promise<void> {
+  const inFile = new Set<string>();
+  for (const e of parts.entries) if (e.name.startsWith('xl/media/')) inFile.add(imageKey(await entryBytes(e)));
+  const keep = [...records].filter(([key]) => inFile.has(key));
+  let path: string | undefined;
+  for (const e of parts.entries) if (isOcrPart(e.name) && (await parts.current(e.name)).includes(OCR_NS)) path = e.name;
+  if (!path && !keep.length) return;
+  const xml =
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<tlp:ocr xmlns:tlp="${OCR_NS}">` +
+    keep
+      .map(([key, r]) => `<tlp:image key="${key}" engine="${escapeXml(r.engine).replace(/"/g, '&quot;')}" width="${r.width}" height="${r.height}">${escapeXml(JSON.stringify(r.words))}</tlp:image>`)
+      .join('') +
+    '</tlp:ocr>';
+  if (path) {
+    parts.replaced.set(path, xml);
+    return;
+  }
+  path = freePartName(parts, 'customXml/item', 'xml');
+  const n = path.match(/(\d+)\.xml$/)![1];
+  const props = `customXml/itemProps${n}.xml`;
+  setPart(parts, path, xml);
+  setPart(
+    parts,
+    props,
+    `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<ds:datastoreItem ds:itemID="{${crypto.randomUUID().toUpperCase()}}" xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml"><ds:schemaRefs><ds:schemaRef ds:uri="${OCR_NS}"/></ds:schemaRefs></ds:datastoreItem>`,
+  );
+  setPart(parts, `customXml/_rels/item${n}.xml.rels`, appendChild(EMPTY_RELS, 'Relationships', `<Relationship Id="rId1" Type="${REL_NS}/customXmlProps" Target="itemProps${n}.xml"/>`));
+  const workbookRels = await parts.current('xl/_rels/workbook.xml.rels');
+  parts.replaced.set('xl/_rels/workbook.xml.rels', appendChild(workbookRels, 'Relationships', `<Relationship Id="${freeRelId(workbookRels, 'rIdTlpOcr')}" Type="${REL_NS}/customXml" Target="../${path}"/>`));
+  await addContentType(parts, '<Default Extension="xml" ContentType="application/xml"/>', /Extension="xml"/i);
+  await addContentType(parts, `<Override PartName="/${props}" ContentType="application/vnd.openxmlformats-officedocument.customXmlProperties+xml"/>`, new RegExp(`PartName="/${props}"`));
 }
 
 // ---- Zip -------------------------------------------------------------------------

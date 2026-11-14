@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { imageSize, reportImage, sniffImageType, type ReportImage } from '../src/report';
-import { blockPictures, openWorkbook, saveWorkbook, withEdit, type Workbook } from '../src/xlsx';
+import { blockPictures, imageKey, openWorkbook, saveWorkbook, withEdit, type OcrRecord, type Workbook } from '../src/xlsx';
 import { makeZip } from './xlsx-helper';
 
 /** Just enough of a PNG (signature and IHDR) for its type and size; `tag` keeps them apart. */
@@ -117,5 +117,37 @@ describe('pictures on a list’s rows in Excel', () => {
     const edited = withEdit(sheet, { sheet: 'List', cell: 'B1', rows: [['Row 2'], ['Row 1']], pictures: [[b], [a]] });
     expect(blockPictures(edited, 0, 1, 2)).toEqual([[b], [a]]);
     expect(withEdit(sheet, { sheet: 'List', cell: 'B1', rows: [['x'], ['y']] }).pictures).toBe(sheet.pictures);
+  });
+});
+
+describe('OCR results saved with the pictures', () => {
+  const a = png(800, 600, 1);
+  const b = png(600, 800, 2);
+  const record = (word: string): OcrRecord => ({ engine: 'test-ocr', width: 1600, height: 1200, words: [[word, 1, 2, 3, 4]] });
+
+  it('keeps what was read for the file’s pictures, and drops the rest', async () => {
+    const ocr = new Map([[imageKey(a.bytes), record('ALPHA')], [imageKey(b.bytes), record('not in the file')]]);
+    const saved = await saveWorkbook(await book(), [{ sheet: 'List', cell: 'B2', rows: [['Row 2']], pictures: [[a]] }], [], { ocr });
+    const reopened = await openWorkbook(saved.bytes.buffer as ArrayBuffer);
+    expect([...reopened.ocr]).toEqual([[imageKey(a.bytes), record('ALPHA')]]);
+    const types = await text(saved.bytes, '[Content_Types].xml');
+    expect(types).toContain('customXmlProperties+xml');
+    expect(await text(saved.bytes, 'xl/_rels/workbook.xml.rels')).toContain('relationships/customXml" Target="../customXml/item1.xml"');
+    expect(await text(saved.bytes, 'customXml/item1.xml')).toContain('[["ALPHA",1,2,3,4]]');
+  });
+
+  it('updates the same part on later saves, so the file doesn’t grow', async () => {
+    const first = await saveWorkbook(await book(), [{ sheet: 'List', cell: 'B2', rows: [['Row 2'], ['Row 3']], pictures: [[a], []] }], [], { ocr: new Map([[imageKey(a.bytes), record('one')]]) });
+    const opened = await openWorkbook(first.bytes.buffer as ArrayBuffer);
+    const ocr = new Map([...opened.ocr, [imageKey(b.bytes), record('two')]]);
+    const second = await saveWorkbook(opened, [{ sheet: 'List', cell: 'B2', rows: [['Row 2'], ['Row 3']], pictures: [[a], [b]] }], [], { ocr });
+    const reopened = await openWorkbook(second.bytes.buffer as ArrayBuffer);
+    expect(reopened.entries.filter((e) => e.name.startsWith('customXml/item') && !e.name.includes('Props')).map((e) => e.name)).toEqual(['customXml/item1.xml']);
+    expect(new Set(reopened.ocr.keys())).toEqual(new Set([imageKey(a.bytes), imageKey(b.bytes)]));
+  });
+
+  it('identifies a picture by its bytes', () => {
+    expect(imageKey(a.bytes)).toBe(imageKey(new Uint8Array(a.bytes)));
+    expect(imageKey(a.bytes)).not.toBe(imageKey(b.bytes));
   });
 });
