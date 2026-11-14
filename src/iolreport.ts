@@ -57,6 +57,7 @@ export interface ReportReading {
   left?: EyeReading;
   nameWords?: OcrWord[];
   idWords?: OcrWord[];
+  dobWords?: OcrWord[];
 }
 
 interface Row {
@@ -220,16 +221,27 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
 /** The report's patient, warnings and each eye's lens tables, or null if it isn't an IOL calculation. */
 export function readReport(words: OcrWord[]): ReportReading | null {
   const rows = rowsOf(words.filter((w) => w.text.trim()));
-  // OD and OS head the two eyes' halves, in large type on the same line.
-  let headings: { row: number; od: OcrWord; os: OcrWord } | null = null;
+  // OD and OS head the two eyes' halves, in large type on the same line (OCR may read them as "0D", "O5"…).
+  const eyeWord = (w: OcrWord) => w.text.replace(/[^A-Za-z0-9]/g, '').toUpperCase().replace(/[0Q]/g, 'O').replace(/5/g, 'S');
+  let headings: { row: number; od?: OcrWord; os?: OcrWord; middle: number } | null = null;
   rows.forEach((r, i) => {
-    const od = r.words.find((w) => /^[O0Q]D$/i.test(w.text));
-    const os = r.words.find((w) => /^[O0Q]S$/i.test(w.text));
-    if (od && os && od.x1 < os.x0 && !headings) headings = { row: i, od, os };
+    const od = r.words.find((w) => eyeWord(w) === 'OD');
+    const os = r.words.find((w) => eyeWord(w) === 'OS');
+    if (od && os && od.x1 < os.x0 && !headings) headings = { row: i, od, os, middle: (od.x1 + os.x0) / 2 };
   });
-  if (!headings) return null;
-  const { row: headingRow, od, os } = headings as { row: number; od: OcrWord; os: OcrWord };
-  const middle = (od.x1 + os.x0) / 2;
+  if (!headings) {
+    // Without them, the formula lines ("- Barrett … -"), centred over each lens's table, split the eyes:
+    // four tables (two an eye) or a toric calculation each.
+    const isBarrett = (w: OcrWord) => /^barr?ett$/i.test(w.text.replace(/[^A-Za-z]/g, ''));
+    const at = rows.findIndex((r) => r.words.filter(isBarrett).length >= 2);
+    if (at === -1) return null;
+    const centres = rows[at].words.filter(isBarrett).map(centre).sort((a, b) => a - b);
+    const middle = (centres[Math.floor(centres.length / 2) - 1] + centres[Math.floor(centres.length / 2)]) / 2;
+    // The calculation starts at its title, or else a few lines above the first lens heading.
+    const title = rows.findIndex((r) => /IOL\s*calculation|eye\s*status/i.test(text(r.words)));
+    headings = { row: title !== -1 && title < at ? title : Math.max(0, at - 18), middle };
+  }
+  const { row: headingRow, od, os, middle } = headings as { row: number; od?: OcrWord; os?: OcrWord; middle: number };
 
   const header = rows.slice(0, headingRow);
   const after = (label: RegExp, row: Row) => {
@@ -238,8 +250,10 @@ export function readReport(words: OcrWord[]): ReportReading | null {
   };
   let nameWords: OcrWord[] = [];
   let idWords: OcrWord[] = [];
+  let dobWords: OcrWord[] = [];
   for (const r of header) {
     const line = text(r.words);
+    if (/date\s*of\s*birth/i.test(line)) dobWords = after(/birth$/i, r).filter((w) => /\d{1,2}[./-]\d{1,2}[./-]\d{2,4}/.test(w.text)).slice(0, 1);
     if (/patient\s*id\b/i.test(line)) idWords = after(/patient\s*id$/i, r);
     else if (/^patient\b/i.test(line) && !nameWords.length) nameWords = after(/^patient$/i, r);
   }
@@ -260,13 +274,14 @@ export function readReport(words: OcrWord[]): ReportReading | null {
   // "OD" / "OS" with "right" / "left" under them.
   const under = (big: OcrWord, word: RegExp) =>
     body.slice(0, 2).flatMap((r) => r.words).find((w) => word.test(w.text) && w.x0 < big.x1 + (big.x1 - big.x0) && w.x1 > big.x0 - (big.x1 - big.x0));
-  right.headingWords = [od, under(od, /^r[il1]ght$/i)].filter((w): w is OcrWord => Boolean(w));
-  left.headingWords = [os, under(os, /^[l1I]eft$/i)].filter((w): w is OcrWord => Boolean(w));
+  if (od) right.headingWords = [od, under(od, /^r[il1]ght$/i)].filter((w): w is OcrWord => Boolean(w));
+  if (os) left.headingWords = [os, under(os, /^[l1I]eft$/i)].filter((w): w is OcrWord => Boolean(w));
   return {
     name,
     id: id.replace(/[^A-Za-z0-9]/g, ''),
     nameWords: nameWords.length ? nameWords : undefined,
     idWords: idWords.length ? idWords : undefined,
+    dobWords: dobWords.length ? dobWords : undefined,
     warnings,
     right: right.tables.length || right.target !== null ? right : undefined,
     left: left.tables.length || left.target !== null ? left : undefined,
@@ -380,6 +395,7 @@ export function combineReadings(readings: ReportReading[]): ReportReading | null
     id: readings.find((r) => r.id)?.id ?? '',
     nameWords: readings.find((r) => r.nameWords)?.nameWords,
     idWords: readings.find((r) => r.idWords)?.idWords,
+    dobWords: readings.find((r) => r.dobWords)?.dobWords,
     warnings: [...new Set(readings.flatMap((r) => r.warnings))],
     right: eye('right'),
     left: eye('left'),
@@ -642,7 +658,7 @@ export function checkLens(reading: ReportReading, lens: PickedLens, constants: L
   const notes = [...reading.warnings];
   let estimate: LensEstimate | undefined;
   const operated: Highlight['eye'] = lens.eye === 'RIGHT' ? 'right' : lens.eye === 'LEFT' ? 'left' : 'both';
-  const highlights: Highlight[] = [...box(reading.nameWords, operated), ...box(reading.idWords, operated)];
+  const highlights: Highlight[] = [...box(reading.nameWords, operated), ...box(reading.dobWords, operated), ...box(reading.idWords, operated)];
 
   // Is it this patient's report?
   const reportId = reading.id.replace(/\D/g, '').replace(/^0+/, '');
@@ -657,6 +673,8 @@ export function checkLens(reading: ReportReading, lens: PickedLens, constants: L
   }
 
   const sides: ('right' | 'left')[] = lens.eye === 'RIGHT' ? ['right'] : lens.eye === 'LEFT' ? ['left'] : ['right', 'left'];
+  // The eye's heading and ΔK are marked whether or not a lens has been picked.
+  for (const side of sides) highlights.push(...box(reading[side]?.headingWords, side), ...box(reading[side]?.deltaKWords, side));
   if (!lens.eye) flags.push({ level: 'warn', text: 'The eye isn’t set, so both eyes on the report were checked.' });
   if (!lens.code || lens.power === null) {
     flags.push({ level: 'warn', text: 'No lens and power picked yet to check against the report.' });
@@ -670,7 +688,6 @@ export function checkLens(reading: ReportReading, lens: PickedLens, constants: L
       }
       const tables = tablesFor(eye, lens);
       const hit = rowFor(tables, lens);
-      highlights.push(...box(eye.headingWords, side), ...box(eye.deltaKWords, side));
       if (hit) {
         found = true;
         highlights.push(...box(hit.table.titleWords, side), ...box(hit.row.words, side));

@@ -593,6 +593,30 @@ button.chip.on {
   font-weight: 600;
 }
 
+/* "No PXF": looked for and not there (a second click; a third clears it). */
+button.chip.no {
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--muted);
+}
+
+/* Something still to fill in: 1st or 2nd eye not picked, an empty VA / IOP box. */
+.segmented.needs {
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: var(--missing-bg);
+}
+
+.segmented.needs button.chip {
+  color: var(--text);
+  border-style: solid;
+}
+
+.needs-info,
+td.needs-info textarea.cell {
+  background: var(--missing-bg);
+}
+
 input.prompt-input {
   padding: 1px 6px;
   font-size: 0.8rem;

@@ -9,7 +9,7 @@ import { combineSessions, listOfPatient, orderedSelection } from './lists';
 import { copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, keepReports, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
 import { lensEmailHtml, lensEmailText, lensLines, type LensItem } from './lenslist';
-import { findingGroups, hasToken, isLensSurgery, lensCode, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
+import { absentText, cycleFinding, findingGroups, findingState, hasToken, isLensSurgery, lensCode, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
 import { headingCells, type HeadingCell } from './heading';
@@ -1819,11 +1819,14 @@ function renderPrep(): HTMLElement | null {
       r.status === 'new' || r.reinstated ? 'row-new' : '',
     ].filter(Boolean);
   /** A cell's colour class. The allergy cell is red until the details are typed (or acknowledged). */
+  const examCol = layout.columns.findIndex((c) => /\b(va|iop)\b|exam/i.test(c.heading));
   const classFor = (r: GridRow, col: number, value: string) => {
     if (col === allergyCol && r.patient?.allergyPending && r.status !== 'cancelled') {
       if (allergyPending(r, allergyCol)) return 'allergy-pending';
       if (r.allergyAck && lacksAllergyDetails(value)) return 'allergy-ack';
     }
+    // An empty VA / IOP box stands out until it's filled in.
+    if (col === examCol && r.status !== 'cancelled' && !value.trim()) return 'needs-info';
     return cellClass(layout.columns[col].source, value);
   };
   /** "Acknowledge" under a red allergy box: you've seen it, and will add the details later. */
@@ -2467,7 +2470,8 @@ function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | nu
     const order = readEyeOrder(cell);
     const eyeOrder = h(
       'span',
-      { class: 'segmented' },
+      // Stands out until 1st or 2nd eye is picked.
+      { class: order ? 'segmented' : 'segmented needs', title: order ? '' : 'Pick 1st or 2nd eye' },
       h('span', { class: 'prompt-label' }, 'Eye'),
       chip('1st', order === 'first', () => set(col, writeEyeOrder(cell, order === 'first' ? null : 'first')), '1st eye: goes at the top of the box'),
       chip('2nd', order === 'second', () => set(col, writeEyeOrder(cell, order === 'second' ? null : 'second')), '2nd eye: goes at the top of the box'),
@@ -2478,10 +2482,26 @@ function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | nu
         { class: 'prompt-set' },
         eyeOrder,
         findingGroups(prompts.findings).map((g) => {
+          if (g.options.length === 1) {
+            // One click: present; the next: not present; the next: not recorded.
+            const o = g.options[0];
+            const found = findingState(cell, o.token);
+            return h(
+              'button',
+              {
+                class: found === 'present' ? 'chip on' : found === 'absent' ? 'chip no' : 'chip',
+                'aria-pressed': found === 'present' ? 'true' : found === 'absent' ? 'mixed' : 'false',
+                title: `${o.token}: click for present, again for not present (“${absentText(o.token)}”), again to clear`,
+                'data-key': `${key}:chip:${o.token}`,
+                onclick: () => set(col, cycleFinding(cell, o.token, prompts.findings)),
+              },
+              found === 'absent' ? `No ${o.short}` : o.short,
+            );
+          }
           const chips = g.options.map((o) =>
             chip(o.short, hasToken(cell, o.token), () => set(col, toggleFinding(cell, g, o.token, prompts.findings)), o.token),
           );
-          return g.options.length > 1 ? h('span', { class: 'segmented' }, g.label ? h('span', { class: 'prompt-label' }, g.label) : null, chips) : chips[0];
+          return h('span', { class: 'segmented' }, g.label ? h('span', { class: 'prompt-label' }, g.label) : null, chips);
         }),
       ),
     );
@@ -2888,7 +2908,8 @@ function pickedLens(r: GridRow): PickedLens {
 }
 
 interface ReportStatus {
-  state: 'reading' | 'unreadable' | 'checked';
+  /** 'failed': OCR itself didn't work; 'unreadable': no IOL calculation found in what it read. */
+  state: 'reading' | 'unreadable' | 'failed' | 'checked';
   check?: LensCheck;
 }
 
@@ -2900,18 +2921,43 @@ function reportStatus(r: GridRow): ReportStatus | null {
   if (states.includes('reading')) return { state: 'reading' };
   const read = states.filter((s): s is ReadReport => typeof s === 'object').map((s) => s.reading);
   const combined = combineReadings(read);
-  if (!combined) return { state: 'unreadable' };
+  if (!combined) return { state: states.includes('failed') ? 'failed' : 'unreadable' };
   return { state: 'checked', check: checkLens(combined, pickedLens(r), parseConstants(state.settings.prompts.constants)) };
 }
 
 const CHECK_ICON: Record<string, string> = { ok: '✓', warn: '⚠', error: '⛔', none: '' };
+
+function unreadText(state: ReportStatus['state']): string {
+  return state === 'failed'
+    ? 'The app couldn’t run its text reading on this picture: check the report by eye.'
+    : 'Couldn’t find an IOL calculation (OD / OS lens tables) in it: check it by eye.';
+}
+
+/** Reads a row's screenshots again from scratch (e.g. after the app was updated). */
+function readAgainButton(r: GridRow): HTMLElement {
+  return h(
+    'button',
+    {
+      class: 'link',
+      'data-key': `${rowKey(r)}:read-again`,
+      onclick: () => {
+        for (const image of r.reports ?? []) {
+          readings.delete(image);
+          ocrCache.delete(imageKey(image.bytes));
+        }
+        render();
+      },
+    },
+    'Read again',
+  );
+}
 
 /** One line under the thumbnails: what the report says for this lens, or what doesn't match. */
 function renderReportStatus(r: GridRow): HTMLElement | null {
   const status = reportStatus(r);
   if (!status) return null;
   if (status.state === 'reading') return h('span', { class: 'report-check reading' }, 'Reading the report…');
-  if (status.state === 'unreadable' || !status.check) return h('span', { class: 'report-check none' }, 'Couldn’t read it as an IOL calculation: check it by eye.');
+  if (status.state !== 'checked' || !status.check) return h('span', { class: 'report-check none' }, `${unreadText(status.state)} `, readAgainButton(r));
   const { level, facts, flags, notes } = status.check;
   const first = flags.find((f) => f.level === 'error') ?? flags[0];
   // Errors stand alone; a warning comes after what the report says.
@@ -3137,7 +3183,7 @@ function renderViewerCheck(r: GridRow): HTMLElement | null {
   const status = reportStatus(r);
   if (!status) return null;
   if (status.state === 'reading') return h('div', { class: 'viewer-check' }, h('div', { class: 'report-check reading' }, 'Reading the report…'));
-  if (status.state === 'unreadable' || !status.check) return h('div', { class: 'viewer-check' }, h('div', { class: 'report-check none' }, 'Couldn’t read it as an IOL calculation: check it by eye.'));
+  if (status.state !== 'checked' || !status.check) return h('div', { class: 'viewer-check' }, h('div', { class: 'report-check none' }, `${unreadText(status.state)} `, readAgainButton(r)));
   const { facts, flags, notes } = status.check;
   return h(
     'div',
