@@ -8,6 +8,7 @@ import { extractSessions, type Patient, type Session } from './extract';
 import { combineSessions, listOfPatient, orderedSelection } from './lists';
 import { copyBlock, findInSheet, findListBlock, findPreppedRows, freshRows, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
+import { lensLines, lensListText, type LensItem } from './lenslist';
 import { findingGroups, hasToken, isLensSurgery, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
@@ -1261,6 +1262,49 @@ function summaryText(s: MergeSummary): string {
 }
 
 
+/** Ticked cataract patients with what's in their Implants box, or null if prompts/lens column aren't on your sheet. */
+function lensItems(grid: Grid): LensItem[] | null {
+  const { layout, prompts } = state.settings;
+  const lensCol = prompts.enabled ? promptColumns(layout, prompts).lens : -1;
+  if (lensCol === -1) return null;
+  const eyeCol = layout.columns.findIndex((c) => c.source === 'field:eye');
+  const keyCol = layout.columns.findIndex((c) => c.source === 'field:patient' || c.source === 'field:name' || c.source === 'field:mrn');
+  return activeRows(grid)
+    .filter((r) => r.included && isLensRow(r))
+    .map((r) => ({
+      who: r.patient ? [r.patient.mrn, r.patient.name].filter(Boolean).join(' ') : (keyCol >= 0 ? r.cells[keyCol] : '').split('\n')[0],
+      eye: eyeCol >= 0 ? r.cells[eyeCol] : r.patient?.eye ?? '',
+      cell: r.cells[lensCol] ?? '',
+    }));
+}
+
+/** Copies "who, eye, lens, target" for each ticked cataract patient, to paste into an email to the theatre coordinator. */
+async function copyLensList(grid: Grid): Promise<void> {
+  const items = lensItems(grid);
+  if (!items) {
+    say('Turn on the cataract prompts, with an Implants column, in Settings to copy a lens list.');
+    return;
+  }
+  const { lines, missing } = lensLines(items, state.settings.prompts.lenses);
+  if (!lines.length) {
+    say(items.length ? 'No lenses picked yet: choose one under each patient (or type it in the Implants box).' : 'No cataract patients are ticked.');
+    return;
+  }
+  const { combined } = grid;
+  const list = [combined.or, combined.ampm, combined.consultant || combined.slotName].filter(Boolean).join(' · ');
+  const heading = ['Lenses for', [combined.date ? weekdayLabel(combined.date) : '', list].filter(Boolean).join(' · ')].join(' ');
+  const text = lensListText(lines, heading);
+  try {
+    await copyHtml(emailBodyHtml({ to: [], cc: [], subject: '', body: text }), text);
+    say(
+      `Copied ${lines.length} lens${lines.length === 1 ? '' : 'es'} for the theatre coordinator.` +
+        (missing.length ? ` Left out, no lens picked: ${missing.map((m) => m.who).join('; ')}.` : ''),
+    );
+  } catch {
+    say('Your browser blocked copying. Try again.');
+  }
+}
+
 /**
  * Before a list leaves the app (copy or save), asks if ticked patients still have an allergy with no
  * details. Asked in the page, like the save questions, so it can't be hidden by the browser.
@@ -1623,6 +1667,20 @@ function renderPrep(): HTMLElement | null {
           grid.summary ? 'Update again from my sheet…' : 'Update from my sheet…',
         ),
     renderEmailMenu(grid),
+    (() => {
+      const items = lensItems(grid);
+      if (!items) return null;
+      const ready = lensLines(items, state.settings.prompts.lenses).lines.length;
+      return h(
+        'button',
+        {
+          disabled: ready === 0,
+          title: ready ? 'Copies each ticked cataract patient with their lens, to paste into an email to the theatre coordinator' : 'Pick a lens under a cataract patient first',
+          onclick: () => void copyLensList(grid),
+        },
+        'Copy lens list',
+      );
+    })(),
     h('span', { class: 'toolbar-count muted' }, `${count} of ${active.length} ticked`),
   );
 
@@ -2026,6 +2084,7 @@ function renderPhoneBar(grid: Grid, count: number, cancelledCount: number): HTML
             canShare ? item('Share…', 'Text only: add the address yourself', run(() => void shareEmail(grid)), !ticked) : null,
             item('Copy email text', 'To paste into any email', run(() => void copyEmailText(grid)), !ticked),
             hasRecipients ? null : h('p', { class: 'menu-note' }, 'Add the Medical Records address in Settings to open a draft.'),
+            lensItems(grid) ? item('Copy lens list', 'Patients and lenses, for the theatre coordinator', run(() => void copyLensList(grid))) : null,
           )
         : null,
     ),
