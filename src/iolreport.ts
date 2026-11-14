@@ -21,6 +21,8 @@ export interface LensRow {
   ref: number;
   cyl?: number;
   axis?: number;
+  /** Predicted residual cylinder (toric calculation). */
+  refCyl?: number;
   /** Where it is on the screenshot (for highlighting). */
   words?: OcrWord[];
 }
@@ -132,8 +134,9 @@ function toricRow(words: OcrWord[]): LensRow | null {
   const cyl = readNumber(t[start + 1]);
   const axis = readAxis(t[start + 2]);
   const ref = readNumber(t[start + 3]);
+  const refCyl = t[start + 5] !== undefined ? readNumber(t[start + 5]) : null;
   if (power === null || cyl === null || ref === null || power <= -15 || power >= 45) return null;
-  return { model, power, ref, cyl, axis: axis ?? undefined, words };
+  return { model, power, ref, cyl, axis: axis ?? undefined, refCyl: refCyl ?? undefined, words };
 }
 
 function readEye(rows: Row[], left: number, right: number): EyeReading {
@@ -314,6 +317,8 @@ export interface LensEstimate {
   working: string[];
   /** Estimated predicted refraction for each power of the lens. */
   table: { power: number; ref: number }[];
+  /** The report's rows for the lens it's worked out from. */
+  referenceRows: LensRow[];
 }
 
 /** A box to draw on the screenshot: red for the right eye, blue for the left, purple for both or unknown. */
@@ -449,7 +454,13 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
  * A-constants in this eye (SRK/T with the report's AL and K; or the A-constant difference itself if
  * those couldn't be read).
  */
-export function estimateLens(eye: EyeReading, side: 'right' | 'left', lens: PickedLens, constants: LensConstant[]): LensEstimate | null {
+export function estimateLens(
+  eye: EyeReading,
+  side: 'right' | 'left',
+  lens: PickedLens,
+  constants: LensConstant[],
+  target = eye.target ?? lens.target ?? 0,
+): LensEstimate | null {
   const own = constantFor(lens.code, constants);
   if (!own) return null;
   let reference: { table: LensTable; code: string; a: number } | null = null;
@@ -466,7 +477,6 @@ export function estimateLens(eye: EyeReading, side: 'right' | 'left', lens: Pick
   }
   if (!reference) return null;
   const rows = reference.table.rows;
-  const target = eye.target ?? lens.target ?? 0;
   const measured = eye.axialLength !== undefined && eye.k !== undefined;
   const shift = round2(
     measured ? srktPower(eye.axialLength!, eye.k!, own.value, target) - srktPower(eye.axialLength!, eye.k!, reference.a, target) : own.value - reference.a,
@@ -493,7 +503,8 @@ export function estimateLens(eye: EyeReading, side: 'right' | 'left', lens: Pick
   }
   const powers = rows.map((r) => r.power);
   const table: LensEstimate['table'] = [];
-  for (let p = Math.ceil((Math.min(...powers) + shift) * 2) / 2; p <= Math.max(...powers) + shift + 1e-9; p += 0.5) {
+  // Highest power first, as on the report.
+  for (let p = Math.floor((Math.max(...powers) + shift) * 2) / 2; p >= Math.min(...powers) + shift - 1e-9; p -= 0.5) {
     table.push({ power: p, ref: round2(refractionAt(rows, p - shift).ref) });
   }
   if (lens.power !== null) {
@@ -507,10 +518,121 @@ export function estimateLens(eye: EyeReading, side: 'right' | 'left', lens: Pick
   }
   if (table.length) {
     const best = table.reduce((a, b) => (Math.abs(b.ref - target) < Math.abs(a.ref - target) ? b : a));
-    working.push(`For the report’s target of ${signed(target)}: ${code} ${signed(best.power)} (about ${signed(best.ref)}).`);
+    working.push(`For a target of ${signed(target)}: ${code} ${signed(best.power)} (about ${signed(best.ref)}).`);
   }
   if (lens.family && lens.family.number.replace(/0/g, '') !== '') working.push('This is the spherical equivalent only: check the cylinder and axis with a toric calculator.');
-  return { side, reference: ref, shift, working, table };
+  return { side, reference: ref, shift, working, table, referenceRows: rows };
+}
+
+
+// ---- Trying another lens ------------------------------------------------------------
+
+export interface SimRow {
+  power: number;
+  ref: number;
+  /** Beyond the powers on the report, so read along the table's slope: less certain. */
+  outside?: boolean;
+  cyl?: number;
+  axis?: number;
+  refCyl?: number;
+}
+
+export interface Simulation {
+  side: 'right' | 'left';
+  code: string;
+  target: number;
+  source: 'report' | 'estimate';
+  /** For an estimate: the lens on the report it's worked out from, and the working. */
+  reference?: string;
+  working: string[];
+  notes: string[];
+  /** Powers around the best one for the target (and the one chosen). */
+  rows: SimRow[];
+  best: SimRow;
+  selected?: SimRow;
+}
+
+/**
+ * Any lens and target against one eye of the report: straight from the report's numbers when the lens
+ * is on it (its own table, or the toric calculation for a toric), otherwise estimated from a lens that
+ * is (see estimateLens). Returns a reason instead when it can't be worked out.
+ */
+export function simulateLens(reading: ReportReading, side: 'right' | 'left', lens: PickedLens, constants: LensConstant[]): Simulation | string {
+  const eye = reading[side];
+  if (!eye) return `Couldn’t read the ${side} eye’s side of the report.`;
+  if (!lens.code) return 'Choose a lens.';
+  if (lens.family && !lens.family.number) return `Choose the number for ${lens.family.base}… (e.g. the toric model).`;
+  const target = lens.target ?? eye.target ?? 0;
+  const notes: string[] = [];
+  let working: string[] = [];
+  let reference: string | undefined;
+  let source: Simulation['source'] = 'report';
+  let base: LensRow[] = [];
+  let shift = 0;
+
+  const tables = tablesFor(eye, lens);
+  const toric = lens.family ? tables.find((t) => t.toric) : undefined;
+  if (toric) {
+    const number = canonical(lens.family!.number);
+    const models = toric.rows.map((r) => r.model).filter(Boolean);
+    const recommended = models.sort((a, b) => models.filter((m) => m === b).length - models.filter((m) => m === a).length)[0] ?? '';
+    const axis = toric.rows.find((r) => r.axis !== undefined)?.axis;
+    const matching = toric.rows.filter((r) => !r.model || canonical(r.model) === number);
+    base = matching.length >= 2 ? matching : toric.rows;
+    if (recommended && canonical(recommended) !== number) {
+      const what = /^[A-Z]+$/.test(recommended) ? 'a non-toric lens' : `${lens.family!.base}${recommended}`;
+      notes.push(
+        `The report’s toric calculation (Barrett Toric) chose ${what} for this eye${axis !== undefined ? ` at ${axis}°` : ''}. ` +
+          `The spherical equivalents below still apply to ${lens.code}, but its axis and residual astigmatism aren’t calculated here: check them with a toric calculator.`,
+      );
+      base = toric.rows.map((r) => ({ ...r, cyl: undefined, axis: undefined, refCyl: undefined }));
+    } else {
+      notes.push(`From the report’s toric calculation (Barrett Toric) for ${lens.code}${axis !== undefined ? `: axis ${axis}°` : ''}.`);
+    }
+  } else if (tables.some((t) => !t.toric && t.rows.length >= 2)) {
+    base = tables.find((t) => !t.toric && t.rows.length >= 2)!.rows;
+  } else {
+    const estimate = estimateLens(eye, side, lens, constants, target);
+    if (!estimate) {
+      return constantFor(lens.code, constants)
+        ? `${lens.code} isn’t on the ${side} eye’s side of the report, and there’s no lens on it with an A-constant in Settings to work it out from.`
+        : `${lens.code} isn’t on the ${side} eye’s side of the report. Add its A-constant in Settings to estimate it from a lens that is.`;
+    }
+    source = 'estimate';
+    reference = estimate.reference;
+    working = estimate.working;
+    base = estimate.referenceRows;
+    shift = estimate.shift;
+    if (lens.family && /[1-9]/.test(lens.family.number)) notes.push('Spherical equivalent only: choose the cylinder and axis with a toric calculator.');
+  }
+
+  const powers = base.map((r) => r.power + shift);
+  const low = Math.min(...powers);
+  const high = Math.max(...powers);
+  const row = (power: number): SimRow => {
+    const exact = source === 'report' ? base.find((r) => Math.abs(r.power - power) < 0.01) : undefined;
+    return {
+      power,
+      ref: round2(exact ? exact.ref : refractionAt(base, power - shift).ref),
+      outside: power < low - 0.25 || power > high + 0.25 || undefined,
+      cyl: exact?.cyl,
+      axis: exact?.axis,
+      refCyl: exact?.refCyl,
+    };
+  };
+  // The best power is the half-dioptre step nearest the target (the more myopic of two equally near).
+  let best = row(Math.round(low * 2) / 2);
+  for (let p = Math.floor((low - 4) * 2) / 2; p <= high + 4; p += 0.5) {
+    const candidate = row(p);
+    const gap = Math.abs(candidate.ref - target) - Math.abs(best.ref - target);
+    if (gap < -0.001 || (Math.abs(gap) <= 0.001 && candidate.ref < best.ref)) best = candidate;
+  }
+  const shown = new Set([-1, -0.5, 0, 0.5, 1].map((d) => best.power + d));
+  const selected = lens.power !== null ? row(lens.power) : undefined;
+  if (selected) shown.add(selected.power);
+  const rows = [...shown].sort((a, b) => b - a).map(row);
+  if (rows.some((r) => r.outside)) notes.push('Powers marked ≈ are beyond those on the report, read along its slope: less certain.');
+  return { side, code: lens.code, target, source, reference, working, notes, rows, best, selected };
 }
 
 /** Your lens checked against the report: found for the eye you're operating on, or what's wrong. */

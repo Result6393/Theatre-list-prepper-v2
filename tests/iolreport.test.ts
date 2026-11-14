@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkLens, combineReadings, parseConstants, readNumber, readReport, type OcrWord, type PickedLens } from '../src/iolreport';
+import { checkLens, combineReadings, parseConstants, readNumber, readReport, simulateLens, type OcrWord, type PickedLens, type Simulation } from '../src/iolreport';
 import { srktPower, srktRefraction } from '../src/srkt';
 
 /**
@@ -168,7 +168,7 @@ describe('estimating a lens that isn’t on the report', () => {
     // +20.50 of CNA0T0 is like DCB00 +20.75 or so: between −0.33 (+20.50) and −0.68 (+21.00).
     const predicted = -0.33 + ((20.5 - check.estimate!.shift - 20.5) / 0.5) * (-0.68 + 0.33);
     expect(check.facts).toEqual([`Right eye (estimated): CNA0T0 +20.50 → about −${Math.abs(Math.round(predicted * 100) / 100).toFixed(2)}`]);
-    expect(check.estimate!.table.map((t) => t.power)).toEqual([20, 20.5, 21]);
+    expect(check.estimate!.table.map((t) => t.power)).toEqual([21, 20.5, 20]);
   });
 
   it('says how to estimate a lens it has no A-constant for', () => {
@@ -207,5 +207,55 @@ describe('highlighting the screenshot', () => {
   it('dashes the lens an estimate comes from, and the powers either side', () => {
     const marks = boxes(lens({ code: 'CNA0T0', family: { base: 'CNA0T', number: '0' }, power: 20.5 }));
     expect(marks.filter((m) => m.dashed).length).toBe(3);
+  });
+});
+
+describe('trying another lens in the report view', () => {
+  const report = readReport(REPORT)!;
+  const constants = parseConstants(['DCB00 119.3', 'CNA0Tx 119.1']);
+  const sim = (over: Partial<PickedLens>, side: 'right' | 'left' = 'right') => simulateLens(report, side, lens({ power: null, ...over }), constants);
+  const table = (s: Simulation | string) => (s as Simulation).rows.map((r) => [r.power, r.ref, r.outside ?? false]);
+
+  it('lists powers highest first, from the report, with the best for the target', () => {
+    const s = sim({}) as Simulation;
+    expect(s.source).toBe('report');
+    expect(s.best).toMatchObject({ power: 20.5, ref: -0.33 });
+    expect(table(s)).toEqual([[21.5, -1.03, false], [21, -0.68, false], [20.5, -0.33, false], [20, 0.02, false], [19.5, 0.37, true]]);
+    expect(s.notes).toContain('Powers marked ≈ are beyond those on the report, read along its slope: less certain.');
+  });
+
+  it('finds the best power for another target, and keeps a chosen power in the list', () => {
+    expect((sim({ target: 0 }) as Simulation).best.power).toBe(20);
+    const s = sim({ target: 0, power: 22.5 }) as Simulation;
+    expect(s.selected).toMatchObject({ power: 22.5, outside: true });
+    expect(s.rows[0].power).toBe(22.5);
+  });
+
+  it('gives a toric’s cylinder, axis and residual cylinder from the report’s toric calculation', () => {
+    const s = sim({ eye: 'LEFT', code: 'ZCU150', family: { base: 'ZCU', number: '150' }, target: -0.25 }, 'left') as Simulation;
+    expect(s.source).toBe('report');
+    expect(s.rows.find((r) => r.power === 22)).toMatchObject({ ref: -0.51, cyl: 1.5, axis: 167, refCyl: 0.25 });
+    expect(s.notes[0]).toBe('From the report’s toric calculation (Barrett Toric) for ZCU150: axis 167°.');
+  });
+
+  it('says when the report chose another toric, and leaves out the axis', () => {
+    const s = sim({ eye: 'LEFT', code: 'ZCU100', family: { base: 'ZCU', number: '100' } }, 'left') as Simulation;
+    expect(s.notes[0]).toMatch(/^The report’s toric calculation \(Barrett Toric\) chose ZCU150 for this eye at 167°\./);
+    expect(s.rows.every((r) => r.axis === undefined)).toBe(true);
+  });
+
+  it('estimates a lens that isn’t on the report, with the working', () => {
+    const s = sim({ code: 'CNA0T0', family: { base: 'CNA0T', number: '0' } }) as Simulation;
+    expect(s.source).toBe('estimate');
+    expect(s.reference).toBe('DCB00');
+    expect(s.working[1]).toBe('A-constants used (SRK/T, from Settings): CNA0T0 119.1 (as CNA0Tx), DCB00 119.3.');
+    expect(s.best.power).toBe(20.5);
+    // A Clareon toric is the spherical equivalent only.
+    expect((sim({ code: 'CNA0T4', family: { base: 'CNA0T', number: '4' } }) as Simulation).notes).toContain('Spherical equivalent only: choose the cylinder and axis with a toric calculator.');
+  });
+
+  it('says why it can’t work a lens out', () => {
+    expect(sim({ code: 'DIU150', family: { base: 'DIU', number: '150' } })).toBe('DIU150 isn’t on the right eye’s side of the report. Add its A-constant in Settings to estimate it from a lens that is.');
+    expect(sim({ code: 'ZCU', family: { base: 'ZCU', number: '' } })).toBe('Choose the number for ZCU… (e.g. the toric model).');
   });
 });
