@@ -1,7 +1,8 @@
 import Papa from 'papaparse';
 import type { Patient, Session } from './extract';
 import { buildRow, cellValue, type Layout } from './layout';
-import { columnIndex, columnName, type SheetData } from './xlsx';
+import type { ReportImage } from './report';
+import { blockPictures, columnIndex, columnName, type SheetData } from './xlsx';
 
 /**
  * Keeping your prep when the list changes on the day: rows copied back out of the cheat sheet are
@@ -30,6 +31,8 @@ export interface GridRow {
   changes: Record<number, string>;
   /** For a cancelled row: the list the patient is on now, if they moved to another one. */
   note?: string;
+  /** Screenshots of the patient's IOL report, saved as pictures on their row in your Excel file. */
+  reports?: ReportImage[];
 }
 
 export interface MergeSummary {
@@ -108,6 +111,7 @@ export function findListBlock(sheet: SheetData, layout: Layout): FoundRows | nul
         cell: `${columnName(start)}${first + 1}`,
         matches: patients,
         others: 0,
+        pictures: blockPictures(sheet, first, start, last - first + 1),
       };
     }
   }
@@ -115,7 +119,7 @@ export function findListBlock(sheet: SheetData, layout: Layout): FoundRows | nul
 }
 
 /** Editable rows from a block on your sheet: patients in order, then any under the CANCELLED row. */
-export function sheetRows(block: string[][], idPrefix: string): GridRow[] {
+export function sheetRows(block: string[][], idPrefix: string, pictures: ReportImage[][] = []): GridRow[] {
   let cancelled = false;
   const rows: GridRow[] = [];
   block.forEach((cells, i) => {
@@ -125,7 +129,8 @@ export function sheetRows(block: string[][], idPrefix: string): GridRow[] {
       cancelled = true;
       return;
     }
-    rows.push({ patient: null, id: `${idPrefix}:${i}`, cells: [...cells], included: true, status: cancelled ? 'cancelled' : 'sheet', changes: {} });
+    const reports = pictures[i]?.length ? [...pictures[i]] : undefined;
+    rows.push({ patient: null, id: `${idPrefix}:${i}`, cells: [...cells], included: true, status: cancelled ? 'cancelled' : 'sheet', changes: {}, reports });
   });
   return rows;
 }
@@ -185,6 +190,8 @@ export interface FoundRows {
   matches: number;
   /** Patients on the sheet who aren't on this list (cancelled, or another list's). */
   others: number;
+  /** Pictures on each of those rows (e.g. IOL reports), left to right. */
+  pictures: ReportImage[][];
 }
 
 /**
@@ -239,6 +246,7 @@ export function findInSheet(sheet: SheetData, session: Session, layout: Layout):
       cell: `${columnName(start)}${first + 1}`,
       matches,
       others,
+      pictures: blockPictures(sheet, first, start, last - first + 1),
     };
     if (fit(found) > fit(best)) best = found;
   }
@@ -251,6 +259,8 @@ export function mergePrepped(
   allSessions: Session[],
   layout: Layout,
   describe: (session: Session) => string,
+  /** Pictures on each pasted row (from your Excel file); pasted text has none. */
+  pictures: ReportImage[][] = [],
 ): MergeResult {
   const width = layout.columns.length;
   const key = keyColumn(layout);
@@ -280,13 +290,14 @@ export function mergePrepped(
     waiting.set(mrn, [...(waiting.get(mrn) ?? []), p]);
   }
 
-  const matched = new Map<Patient, { cells: string[]; oldPos: number; wasCancelled: boolean }>();
+  const matched = new Map<Patient, { cells: string[]; oldPos: number; wasCancelled: boolean; reports?: ReportImage[] }>();
   const cancelled: GridRow[] = [];
   let inCancelled = false;
   let position = 0;
   let padTo = 0;
 
-  for (const raw of pasted) {
+  for (const [at, raw] of pasted.entries()) {
+    const reports = pictures[at]?.length ? [...pictures[at]] : undefined;
     const cells = Array.from({ length: width }, (_, i) => raw[offset + i] ?? '');
     if (cells.some(Boolean) && cells.every((c, i) => c.trim().toLowerCase() === headings[i])) continue;
     padTo += 1;
@@ -295,7 +306,7 @@ export function mergePrepped(
     const patient = waiting.get(mrn)?.shift();
     if (patient) {
       if (!inCancelled) position += 1;
-      matched.set(patient, { cells, oldPos: position, wasCancelled: inCancelled });
+      matched.set(patient, { cells, oldPos: position, wasCancelled: inCancelled, reports });
       continue;
     }
     const first = cells.find((c) => c.trim()) ?? '';
@@ -312,6 +323,7 @@ export function mergePrepped(
       status: 'cancelled',
       changes: {},
       note: now ? `Now on ${describe(now)}` : undefined,
+      reports,
     });
   }
 
@@ -340,6 +352,7 @@ export function mergePrepped(
       status: 'kept',
       reinstated: prepped.wasCancelled || undefined,
       changes,
+      reports: prepped.reports,
     };
   });
 
@@ -371,18 +384,59 @@ export function mergePrepped(
 export function copyBlock(rows: GridRow[], layout: Layout, padTo = 0): string[][] {
   const width = layout.columns.length;
   const blank = () => Array.from({ length: width }, () => '');
-  const out = rows.filter((r) => r.status !== 'cancelled' && r.included).map((r) => r.cells);
+  return blockOrder(rows, padTo).map((r) => {
+    if (r === 'blank') return blank();
+    if (r === 'label') {
+      const label = blank();
+      label[0] = CANCELLED_LABEL;
+      let noteAt = layout.columns.findIndex((c) => c.source === 'field:patient' || c.source === 'field:mrn');
+      if (noteAt <= 0) noteAt = width > 1 ? 1 : -1;
+      if (noteAt > 0) label[noteAt] = CANCELLED_NOTE;
+      return label;
+    }
+    return r.cells;
+  });
+}
+
+/** The pictures for each row of copyBlock's rows (e.g. IOL reports), to save on those rows. */
+export function copyPictures(rows: GridRow[], padTo = 0): ReportImage[][] {
+  return blockOrder(rows, padTo).map((r) => (typeof r === 'string' ? [] : [...(r.reports ?? [])]));
+}
+
+/** The block's rows in order: the list, then the ticked cancelled patients under a label row, then blanks. */
+function blockOrder(rows: GridRow[], padTo: number): (GridRow | 'blank' | 'label')[] {
+  const out: (GridRow | 'blank' | 'label')[] = rows.filter((r) => r.status !== 'cancelled' && r.included);
   const cancelled = rows.filter((r) => r.status === 'cancelled' && r.included);
-  if (cancelled.length) {
-    const label = blank();
-    label[0] = CANCELLED_LABEL;
-    let noteAt = layout.columns.findIndex((c) => c.source === 'field:patient' || c.source === 'field:mrn');
-    if (noteAt <= 0) noteAt = width > 1 ? 1 : -1;
-    if (noteAt > 0) label[noteAt] = CANCELLED_NOTE;
-    out.push(blank(), label, ...cancelled.map((r) => r.cells));
-  }
-  while (out.length < padTo) out.push(blank());
+  if (cancelled.length) out.push('blank', 'label', ...cancelled);
+  while (out.length < padTo) out.push('blank');
   return out;
+}
+
+/**
+ * Keeps each patient's IOL reports when their rows are rebuilt (e.g. updated from rows pasted from
+ * your sheet, which carry no pictures): matched by booking, or else by MRN.
+ */
+export function keepReports(rows: GridRow[], before: GridRow[], layout: Layout): void {
+  const byPatient = new Map<Patient, ReportImage[]>();
+  const byKey = new Map<string, ReportImage[][]>();
+  let key: KeyColumn | null = null;
+  try {
+    key = keyColumn(layout);
+  } catch {
+    key = null;
+  }
+  const keyOf = (r: GridRow) => (key ? key.read(r.cells[key.index] ?? '') : '');
+  for (const r of before) {
+    if (!r.reports?.length) continue;
+    if (r.patient) byPatient.set(r.patient, r.reports);
+    const k = keyOf(r);
+    if (k) byKey.set(k, [...(byKey.get(k) ?? []), r.reports]);
+  }
+  for (const r of rows) {
+    if (r.reports?.length) continue;
+    const reports = (r.patient && byPatient.get(r.patient)) || byKey.get(keyOf(r))?.shift();
+    if (reports) r.reports = reports;
+  }
 }
 
 function isEmptyRow(row: string[]): boolean {

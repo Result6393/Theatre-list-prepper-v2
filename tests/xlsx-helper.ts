@@ -1,12 +1,12 @@
 /** Builds a minimal .xlsx (zip of XML parts) in memory for tests. CRCs are left at 0: the reader ignores them. */
-export async function makeZip(files: Record<string, string>, deflate = true): Promise<ArrayBuffer> {
+export async function makeZip(files: Record<string, string | Uint8Array>, deflate = true): Promise<ArrayBuffer> {
   const encoder = new TextEncoder();
   const chunks: Uint8Array[] = [];
   const central: Uint8Array[] = [];
   let offset = 0;
   for (const [name, content] of Object.entries(files)) {
-    const raw = encoder.encode(content);
-    const data = deflate ? new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer()) : raw;
+    const raw = typeof content === 'string' ? encoder.encode(content) : content;
+    const data = deflate ? new Uint8Array(await new Response(new Blob([raw as BlobPart]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer()) : raw;
     const nameBytes = encoder.encode(name);
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true);

@@ -6,7 +6,7 @@ import { allergyColumn, allergyPending, lacksAllergyDetails, pendingAllergies } 
 import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, outlookComposeUrl, weekdayLabel } from './email';
 import { extractSessions, type Patient, type Session } from './extract';
 import { combineSessions, listOfPatient, orderedSelection } from './lists';
-import { copyBlock, findInSheet, findListBlock, findPreppedRows, freshRows, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
+import { copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, keepReports, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
 import { lensEmailHtml, lensEmailText, lensLines, type LensItem } from './lenslist';
 import { findingGroups, hasToken, isLensSurgery, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
@@ -17,6 +17,7 @@ import { openWorkbook, overwrittenBelow, saveWorkbook, sheetNameProblem, withEdi
 import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore } from './settings';
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
+import { reportImage, type ReportImage } from './report';
 
 /** The list being prepped: one list, or several ticked together that run on as one. */
 interface Grid {
@@ -114,6 +115,8 @@ const state = {
   fileError: '',
   /** A message under the header, e.g. after importing a settings file. */
   notice: null as { text: string; error: boolean } | null,
+  /** A patient's IOL report open full screen (for timeout): the row, and which screenshot. */
+  viewer: null as { key: string; index: number; actualSize: boolean } | null,
 };
 
 const app = document.getElementById('app')!;
@@ -438,7 +441,7 @@ function openSheet(): void {
       id: key, theatre: '', or: '', date: '', start: '', end: '', ampm: '', slotName: block.sheet, slotOwner: '', consultant: '', patients: [],
     };
     grid = {
-      sessions: [], combined, listOf: new Map(), rows: sheetRows(block.rows, key), padTo: block.rows.length, pasteAt: block.cell,
+      sessions: [], combined, listOf: new Map(), rows: sheetRows(block.rows, key, block.pictures), padTo: block.rows.length, pasteAt: block.cell,
       summary: null, undo: null, fromWorkbook: wb, fromSheet: block.sheet, sheetOnly: true,
     };
     state.grids.set(key, grid);
@@ -461,7 +464,7 @@ function keepSheetEdits(): void {
     if (!grid.sheetOnly || grid.fromWorkbook !== wb || !grid.fromSheet || !grid.pasteAt) continue;
     const at = wb.sheets.findIndex((s) => s.name === grid.fromSheet);
     if (at === -1) continue;
-    wb.sheets[at] = withEdit(wb.sheets[at], { sheet: grid.fromSheet, cell: grid.pasteAt, rows: copyBlock(grid.rows, state.settings.layout, grid.padTo) });
+    wb.sheets[at] = withEdit(wb.sheets[at], blockEdit(grid, grid.fromSheet, grid.pasteAt, grid.padTo));
   }
   state.sheetSelected = '';
 }
@@ -841,7 +844,7 @@ async function saveToNewFileNow(grid: Grid): Promise<void> {
   const { book, sheet } = source;
   const template = book.sheets.find((s) => s.name === sheet)!;
   const { cell, oldLength } = newSheetPlace(grid, template, source.sameFile);
-  const edit = { sheet, cell, rows: copyBlock(grid.rows, state.settings.layout, oldLength) };
+  const edit = blockEdit(grid, sheet, cell, oldLength);
   const heading = headingFor(grid, template, sheet, cell);
   const keep = book.sheets
     .filter((s) => {
@@ -938,7 +941,7 @@ async function saveAsNewSheetNow(grid: Grid): Promise<void> {
     return;
   }
   const { cell, oldLength } = newSheetPlace(grid, template);
-  const edit = { sheet: name, cell, rows: copyBlock(grid.rows, state.settings.layout, oldLength) };
+  const edit = blockEdit(grid, name, cell, oldLength);
   const lost = overwrittenBelow(template, edit, oldLength);
   if (lost.length) {
     const go = await askInPage(
@@ -981,12 +984,17 @@ async function saveAsNewSheetNow(grid: Grid): Promise<void> {
   reportSave(outcome, `This list was`, ` It’s on the new sheet “${name}”, from ${cell}.${headingNote(heading.cells)}`);
 }
 
+/** A list's rows (and each patient's IOL report pictures) to write into a sheet from `cell`. */
+function blockEdit(grid: Grid, sheet: string, cell: string, padTo: number): SheetEdit {
+  return { sheet, cell, rows: copyBlock(grid.rows, state.settings.layout, padTo), pictures: copyPictures(grid.rows, padTo) };
+}
+
 /** Lists from your prepped file, each with the block it writes back: the most recent wins per sheet. */
 function workbookEdits(wb: SheetFile): { grid: Grid; edit: SheetEdit }[] {
   const bySheet = new Map<string, { grid: Grid; edit: SheetEdit }>();
   for (const grid of state.grids.values()) {
     if (grid.fromWorkbook !== wb || !grid.fromSheet || !grid.pasteAt) continue;
-    bySheet.set(grid.fromSheet, { grid, edit: { sheet: grid.fromSheet, cell: grid.pasteAt, rows: copyBlock(grid.rows, state.settings.layout, grid.padTo) } });
+    bySheet.set(grid.fromSheet, { grid, edit: blockEdit(grid, grid.fromSheet, grid.pasteAt, grid.padTo) });
   }
   return [...bySheet.values()];
 }
@@ -1092,7 +1100,7 @@ function applyWorkbook(grid: Grid, workbook: SheetFile, sheetName?: string | nul
     );
     return;
   }
-  const error = mergeInto(grid, found.rows, found.cell);
+  const error = mergeInto(grid, found.rows, found.cell, found.pictures);
   if (error) {
     say(error, false);
     return;
@@ -1225,10 +1233,12 @@ function updateFromSheet(grid: Grid, text: string, html: string): void {
 }
 
 /** Merges your rows into the list (Undo keeps what was there). Returns an error message, if any. */
-function mergeInto(grid: Grid, rows: string[][], pasteAt: string | null): string | null {
+function mergeInto(grid: Grid, rows: string[][], pasteAt: string | null, pictures: ReportImage[][] = []): string | null {
   try {
     const others = listedSessions().filter((s) => !grid.sessions.includes(s));
-    const result = mergePrepped(rows, grid.combined, others, state.settings.layout, listName);
+    const result = mergePrepped(rows, grid.combined, others, state.settings.layout, listName, pictures);
+    // Pasted rows carry no pictures, so reports already added stay with their patients.
+    keepReports(result.rows, grid.rows, state.settings.layout);
     grid.undo = { rows: grid.rows, padTo: grid.padTo, pasteAt: grid.pasteAt, summary: grid.summary };
     grid.rows = result.rows;
     grid.padTo = result.padTo;
@@ -1385,6 +1395,7 @@ function render(): void {
           done: closeSettings,
         }))
       : h('main', {}, renderSetup(), renderPrep()),
+    ...[state.view === 'main' ? renderViewer() : null].filter((v): v is HTMLElement => v !== null),
     h(
       'div',
       { class: 'toast-area', role: 'status', 'aria-live': 'polite' },
@@ -1394,6 +1405,7 @@ function render(): void {
     ),
   );
   for (const area of app.querySelectorAll<HTMLTextAreaElement>('textarea.cell')) autoGrow(area);
+  document.body.classList.toggle('viewing', Boolean(state.viewer));
   if (focusKey) app.querySelector<HTMLElement>(`[data-key="${CSS.escape(focusKey)}"]`)?.focus();
   window.scrollTo(0, scroll);
 }
@@ -1844,6 +1856,13 @@ function renderPrep(): HTMLElement | null {
             onEdit(target);
             autoGrow(target);
           },
+          // A screenshot pasted into a lens patient's box becomes their IOL report.
+          onpaste: (e: Event) => {
+            const files = pastedImages(e as ClipboardEvent);
+            if (!files.length || !takesReports(r)) return;
+            e.preventDefault();
+            void addReports(r, files);
+          },
         });
         const latest = r.changes[col];
         const change =
@@ -1954,6 +1973,8 @@ function renderPrep(): HTMLElement | null {
             const near = prompts && col === promptCols.findings ? renderPrompts(r, 'findings') : prompts && col === promptCols.lens ? renderPrompts(r, 'lens') : null;
             return h('div', { class: `pfield ${classFor(r, col, r.cells[col])}` }, h('label', { class: 'pfield-label', for: `cell-${rowKey(r)}-${col}` }, c.heading || `Column ${col + 1}`), area, change, acknowledgeOf(r, col), near);
           }),
+          // With no Implants column, the IOL report still has a place on the card.
+          promptCols.lens === -1 && prompts ? renderReports(r) : null,
           r.status === 'cancelled'
             ? null
             : h(
@@ -2396,9 +2417,9 @@ function isLensRow(r: GridRow): boolean {
 /** The prompts under a patient; `only` gives just the findings (Diagnosis) or the lens and target (Implants). */
 function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | null {
   const { prompts, layout } = state.settings;
-  if (!prompts.enabled || !isLensRow(r)) return null;
+  const reports = only !== 'findings' ? renderReports(r) : null;
   const cols = promptColumns(layout, prompts);
-  if (cols.findings === -1 && cols.lens === -1) return null;
+  if (!prompts.enabled || !isLensRow(r) || (cols.findings === -1 && cols.lens === -1)) return reports ? h('div', { class: 'prompts' }, reports) : null;
   const key = rowKey(r);
   const set = (col: number, value: string) => {
     r.cells[col] = value;
@@ -2478,6 +2499,7 @@ function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | nu
     );
     parts.push(lens, targetSet);
   }
+  if (reports) parts.push(reports);
   return parts.length ? h('div', { class: 'prompts' }, parts) : null;
 }
 
@@ -2508,11 +2530,237 @@ function cellClass(source: string, value: string): string {
   return '';
 }
 
+
+// ---- IOL reports -----------------------------------------------------------------
+
+/** A short name for a row: MRN and name, or the first line of its patient cell. */
+function rowLabel(r: GridRow): string {
+  if (r.patient) return [r.patient.mrn, r.patient.name].filter(Boolean).join(' ');
+  const { layout } = state.settings;
+  const col = layout.columns.findIndex((c) => c.source === 'field:patient' || c.source === 'field:name' || c.source === 'field:mrn');
+  return (col >= 0 ? r.cells[col] : '').split('\n')[0].trim() || 'this patient';
+}
+
+/** Cataract patients (and anyone who already has one) can have IOL report screenshots. */
+function takesReports(r: GridRow): boolean {
+  return Boolean(r.reports?.length) || (r.status !== 'cancelled' && isLensRow(r));
+}
+
+const imageUrls = new WeakMap<ReportImage, string>();
+
+function imageUrl(image: ReportImage): string {
+  let url = imageUrls.get(image);
+  if (!url) {
+    url = URL.createObjectURL(new Blob([image.bytes as BlobPart], { type: image.type }));
+    imageUrls.set(image, url);
+  }
+  return url;
+}
+
+/** Pictures on the clipboard, unless it also has text (as when copying cells from Excel). */
+function pastedImages(e: ClipboardEvent): File[] {
+  const data = e.clipboardData;
+  if (!data || data.getData('text/plain').trim()) return [];
+  return [...data.files].filter((f) => f.type.startsWith('image/'));
+}
+
+/** A screenshot as PNG, JPEG or GIF; anything else the browser can show (BMP, WebP…) becomes a PNG. */
+async function imageFromFile(file: Blob): Promise<ReportImage | null> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const direct = reportImage(bytes, file.type);
+  if (direct) return direct;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const canvas = h('canvas', { width: bitmap.width, height: bitmap.height });
+    canvas.getContext('2d')!.drawImage(bitmap, 0, 0);
+    const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+    return png ? reportImage(new Uint8Array(await png.arrayBuffer())) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where a new screenshot is kept: in your Excel file once you save. */
+function reportSaveHint(): string {
+  const grid = state.grid;
+  const wb = grid?.fromWorkbook && grid.fromSheet ? grid.fromWorkbook : null;
+  return wb ? `Save to keep it in ${wb.name}.` : 'Save the list to an Excel file to keep it.';
+}
+
+async function addReports(r: GridRow, files: Blob[]): Promise<void> {
+  const images = (await Promise.all(files.map(imageFromFile))).filter((i): i is ReportImage => i !== null);
+  if (!images.length) {
+    say('That isn’t a picture the app can read. Paste or choose a screenshot (PNG or JPEG).');
+    return;
+  }
+  r.reports = [...(r.reports ?? []), ...images];
+  const what = images.length === 1 ? 'an IOL report screenshot' : `${images.length} IOL report screenshots`;
+  say(`Added ${what} for ${rowLabel(r)}. ${reportSaveHint()}`);
+}
+
+async function removeReport(r: GridRow, index: number): Promise<void> {
+  const go = await askInPage(`Remove this IOL report screenshot for ${rowLabel(r)}?`, [
+    { label: 'Remove', value: true, primary: true },
+    { label: 'Keep it', value: false },
+  ]);
+  state.saveReport = null;
+  if (go && r.reports) {
+    r.reports = r.reports.filter((_, i) => i !== index);
+    if (state.viewer && state.viewer.key === rowKey(r)) state.viewer = r.reports.length ? { ...state.viewer, index: Math.min(index, r.reports.length - 1) } : null;
+    say(`Removed. ${reportSaveHint().replace('keep it in', 'take it out of')}`);
+    return;
+  }
+  render();
+}
+
+function openViewer(r: GridRow, index: number): void {
+  state.viewer = { key: rowKey(r), index, actualSize: false };
+  render();
+}
+
+/** Thumbnails of the patient's IOL report screenshots, with a way to add more. */
+function renderReports(r: GridRow): HTMLElement | null {
+  if (!takesReports(r)) return null;
+  const key = rowKey(r);
+  const reports = r.reports ?? [];
+  const input = h('input', {
+    type: 'file',
+    accept: 'image/*',
+    multiple: true,
+    hidden: true,
+    onchange: (e: Event) => {
+      const files = [...((e.target as HTMLInputElement).files ?? [])];
+      if (files.length) void addReports(r, files);
+    },
+  });
+  return h(
+    'span',
+    {
+      class: reports.length ? 'reports has-reports' : 'reports',
+      'data-report-row': key,
+      title: 'Paste a screenshot of the IOL report here (click, then Ctrl+V), or drop one on it',
+    },
+    h('span', { class: 'prompt-label' }, 'IOL report'),
+    reports.map((image, i) =>
+      h(
+        'span',
+        { class: 'report-thumb' },
+        h(
+          'button',
+          { class: 'report-open', title: 'Open full screen, e.g. to check at timeout', 'data-key': `${key}:report:${i}`, onclick: () => openViewer(r, i) },
+          h('img', { src: imageUrl(image), alt: `IOL report ${i + 1} for ${rowLabel(r)}` }),
+        ),
+        h('button', { class: 'report-remove', title: 'Remove this screenshot', 'aria-label': `Remove IOL report ${i + 1} for ${rowLabel(r)}`, onclick: () => void removeReport(r, i) }, '×'),
+      ),
+    ),
+    h(
+      'button',
+      { class: 'chip', 'data-key': `${key}:report:add`, title: 'Choose a screenshot of the IOL report, or click here and paste one with Ctrl+V', onclick: () => input.click() },
+      reports.length ? '+ Add' : '+ Add screenshot',
+    ),
+    input,
+    reports.length ? null : h('span', { class: 'hint small report-hint' }, 'or paste one (Ctrl+V) into the Implants box'),
+  );
+}
+
+/** The lens picked for a row, as at timeout: eye, lens and power, target. */
+function lensFacts(r: GridRow): { eye: string; lens: string; target: string } {
+  const { layout, prompts } = state.settings;
+  const eyeCol = layout.columns.findIndex((c) => c.source === 'field:eye');
+  const eye = (eyeCol >= 0 ? r.cells[eyeCol] : r.patient?.eye ?? '').trim().toUpperCase();
+  const lensCol = promptColumns(layout, prompts).lens;
+  const line = lensCol >= 0 ? lensLines([{ who: '', eye, cell: r.cells[lensCol] ?? '' }], prompts.lenses).lines[0] : undefined;
+  return { eye, lens: line ? [line.model, line.power].filter(Boolean).join(' ') : '', target: line?.target ?? '' };
+}
+
+/** A patient's IOL report full screen, with the lens you picked above it, to check at timeout. */
+function renderViewer(): HTMLElement | null {
+  const v = state.viewer;
+  if (!v) return null;
+  const r = state.grid?.rows.find((row) => rowKey(row) === v.key);
+  const reports = r?.reports ?? [];
+  const image = reports[v.index];
+  if (!r || !image) {
+    state.viewer = null;
+    return null;
+  }
+  const close = () => ((state.viewer = null), render());
+  const go = (index: number) => ((state.viewer = { ...v, index, actualSize: false }), render());
+  const { eye, lens, target } = lensFacts(r);
+  const eyeLabel = eye === 'RIGHT' ? 'Right eye' : eye === 'LEFT' ? 'Left eye' : eye === 'BOTH' ? 'Both eyes' : 'Eye not set';
+  return h(
+    'div',
+    { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': `IOL report for ${rowLabel(r)}` },
+    h(
+      'div',
+      { class: 'viewer-head' },
+      h(
+        'div',
+        { class: 'viewer-facts' },
+        h('div', { class: 'viewer-name' }, rowLabel(r)),
+        h(
+          'div',
+          { class: 'viewer-lens' },
+          h('span', { class: `viewer-eye viewer-eye-${eye ? eye.toLowerCase() : 'missing'}` }, eyeLabel),
+          h('span', { class: lens ? 'viewer-iol' : 'viewer-iol missing' }, lens || 'No lens picked'),
+          target ? h('span', { class: 'viewer-target' }, `Target ${target}`) : null,
+        ),
+      ),
+      h(
+        'div',
+        { class: 'viewer-actions' },
+        reports.length > 1
+          ? [
+              h('button', { 'data-key': 'viewer:prev', disabled: v.index === 0, 'aria-label': 'Previous screenshot', onclick: () => go(v.index - 1) }, '‹'),
+              h('span', { class: 'viewer-count' }, `${v.index + 1} of ${reports.length}`),
+              h('button', { 'data-key': 'viewer:next', disabled: v.index >= reports.length - 1, 'aria-label': 'Next screenshot', onclick: () => go(v.index + 1) }, '›'),
+            ]
+          : null,
+        h(
+          'button',
+          { 'data-key': 'viewer:size', onclick: () => ((state.viewer = { ...v, actualSize: !v.actualSize }), render()) },
+          v.actualSize ? 'Fit to screen' : 'Actual size',
+        ),
+        h('button', { class: 'primary', 'data-key': 'viewer:close', onclick: close }, 'Close'),
+      ),
+    ),
+    h(
+      'div',
+      { class: v.actualSize ? 'viewer-body actual' : 'viewer-body' },
+      h('img', { src: imageUrl(image), alt: `IOL report for ${rowLabel(r)}`, onclick: () => ((state.viewer = { ...v, actualSize: !v.actualSize }), render()) }),
+    ),
+  );
+}
+
+/** The row a report box belongs to, for pasting or dropping a screenshot on it. */
+function reportRowAt(target: EventTarget | null): GridRow | null {
+  const key = (target as HTMLElement | null)?.closest?.<HTMLElement>('[data-report-row]')?.dataset.reportRow;
+  return key ? (state.grid?.rows.find((r) => rowKey(r) === key) ?? null) : null;
+}
+
 // Drop a run sheet or settings file anywhere on the page.
 const overlay = h('div', { class: 'drop-overlay', hidden: true }, 'Drop a run sheet (.csv) or a settings file (.json)');
 document.body.append(overlay);
 let dragDepth = 0;
-const hasFiles = (e: DragEvent) => Boolean(e.dataTransfer?.types.includes('Files'));
+const hasFiles = (e: DragEvent) => Boolean(e.dataTransfer?.types.includes('Files')) && !isImageDrag(e);
+/** Pictures dragged in are for a patient's IOL report box, not a run sheet. */
+const isImageDrag = (e: DragEvent) => {
+  const items = [...(e.dataTransfer?.items ?? [])];
+  return items.length > 0 && items.every((i) => i.kind === 'file' && i.type.startsWith('image/'));
+};
+document.addEventListener('dragover', (e) => {
+  if (!isImageDrag(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = reportRowAt(e.target) ? 'copy' : 'none';
+});
+document.addEventListener('drop', (e) => {
+  if (!isImageDrag(e)) return;
+  e.preventDefault();
+  const r = reportRowAt(e.target);
+  const files = [...(e.dataTransfer?.files ?? [])];
+  if (r) void addReports(r, files);
+  else say('Drop the screenshot on a patient’s IOL report box (under their lens).');
+});
 document.addEventListener('dragenter', (e) => {
   if (!hasFiles(e)) return;
   dragDepth += 1;
@@ -2552,7 +2800,26 @@ document.addEventListener('pointerdown', (e) => {
     render();
   }
 });
+document.addEventListener('paste', (e) => {
+  if ((e.target as HTMLElement | null)?.closest?.('textarea, input')) return;
+  const r = reportRowAt(e.target);
+  const files = pastedImages(e);
+  if (!r || !files.length) return;
+  e.preventDefault();
+  void addReports(r, files);
+});
 document.addEventListener('keydown', (e) => {
+  const v = state.viewer;
+  if (v) {
+    const count = state.grid?.rows.find((r) => rowKey(r) === v.key)?.reports?.length ?? 0;
+    if (e.key === 'Escape') state.viewer = null;
+    else if (e.key === 'ArrowLeft' && v.index > 0) state.viewer = { ...v, index: v.index - 1, actualSize: false };
+    else if (e.key === 'ArrowRight' && v.index < count - 1) state.viewer = { ...v, index: v.index + 1, actualSize: false };
+    else return;
+    e.preventDefault();
+    render();
+    return;
+  }
   if (e.key === 'Escape' && (state.emailMenuOpen || state.saveMenuOpen || state.moreMenuOpen)) {
     state.emailMenuOpen = false;
     state.saveMenuOpen = false;
