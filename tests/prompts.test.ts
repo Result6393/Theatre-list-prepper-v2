@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { defaultLayout } from '../src/layout';
-import { absentText, addToken, cycleFinding, defaultPrompts, findingGroups, findingState, formatPower, formatTarget, hasToken, promptColumns, readEyeOrder, readLens, readTarget, removeToken, toggleFinding, writeEyeOrder, writeLens, writeTarget } from '../src/prompts';
+import { absentText, addToken, cycleFinding, defaultPrompts, findingGroups, findingState, formatPower, formatTarget, hasToken, promptColumns, readEyeOrder, readGrading, readLens, readTarget, removeToken, toggleFinding, writeEyeOrder, writeGrading, writeLens, writeTarget } from '../src/prompts';
 import { defaultSettings, importSettings } from '../src/settings';
 
 const { findings, lenses } = defaultPrompts();
@@ -169,5 +169,29 @@ describe('findings with three states', () => {
     expect(findingState('no tamsulosin', 'Tamsulosin')).toBe('absent');
     expect(findingState('PXF OU', 'PXF')).toBe('present');
     expect([absentText('PXF'), absentText('Guttata'), absentText('Tamsulosin')]).toEqual(['No PXF', 'No guttata', 'No tamsulosin']);
+  });
+});
+
+describe('cataract grade at the top of the diagnosis box', () => {
+  it('goes after 1st / 2nd eye on the top line, before the findings', () => {
+    let cell = writeEyeOrder('PXF, Poor dilation\nPOAG', 'first');
+    cell = writeGrading(cell, 'NS2+ C1');
+    expect(cell).toBe('1st eye: NS2+ C1\nPXF, Poor dilation\nPOAG');
+    expect([readGrading(cell), readEyeOrder(cell)]).toEqual(['NS2+ C1', 'first']);
+    expect(writeEyeOrder(cell, 'second')).toBe('2nd eye: NS2+ C1\nPXF, Poor dilation\nPOAG');
+  });
+
+  it('stands on its own line until the eye is picked, and keeps its place when it is', () => {
+    const cell = writeGrading('PXF', 'NS3');
+    expect(cell).toBe('Cataract: NS3\nPXF');
+    expect(readGrading(cell)).toBe('NS3');
+    expect(writeEyeOrder(cell, 'second')).toBe('2nd eye: NS3\nPXF');
+    expect(writeEyeOrder('2nd eye: NS3\nPXF', null)).toBe('Cataract: NS3\nPXF');
+  });
+
+  it('is cleared, and read from a box typed by hand', () => {
+    expect(writeGrading('1st eye: NS2\nPXF', '')).toBe('1st eye\nPXF');
+    expect(readGrading('2nd eye. NS2 C1\nGuttata')).toBe('NS2 C1');
+    expect(readGrading('PXF\n1st eye')).toBe('');
   });
 });
