@@ -240,6 +240,47 @@ function renderPrompts(props: Props): HTMLElement {
       prompts.constants,
       (v) => (prompts.constants = v),
     ),
+    h('h4', { class: 'settings-sub' }, 'Biometry alerts'),
+    h('p', { class: 'hint' }, 'From the IOL report, for the eye being operated on: flagged in amber under the report and on the patient (an eye that’s already pseudophakic is red). Change the cutoffs to suit your practice.'),
+    h(
+      'div',
+      { class: 'limits-grid' },
+      ([
+        ['alVeryShort', 'Very short eye: AL under (mm)'],
+        ['alShort', 'Short eye: AL under (mm)'],
+        ['alLong', 'Long eye: AL over (mm)'],
+        ['alVeryLong', 'Very long eye: AL over (mm)'],
+        ['acdShallow', 'Shallow AC: ACD under (mm)'],
+        ['ltThick', 'Thick lens: LT over (mm)'],
+        ['kFlat', 'Flat cornea: K under (D)'],
+        ['kSteep', 'Steep cornea: K over (D)'],
+        ['toricCyl', 'Consider a toric: ΔK from (D)'],
+        ['kAgreeCyl', 'ΔK and ΔTK differ by over (D)'],
+        ['kAgreeAxis', '… or their axes by over (°)'],
+        ['alDiff', 'Eyes’ AL differ by over (mm)'],
+        ['kDiff', 'Eyes’ K differ by over (D)'],
+        ['wtwSmall', 'Small cornea: WTW under (mm)'],
+        ['wtwLarge', 'Large cornea: WTW over (mm)'],
+      ] as [keyof typeof prompts.limits, string][]).map(([key, label]) =>
+        h(
+          'label',
+          { class: 'limit' },
+          h('span', {}, label),
+          h('input', {
+            type: 'number',
+            step: '0.1',
+            value: String(prompts.limits[key]),
+            onchange: (e: Event) => {
+              const n = Number((e.target as HTMLInputElement).value);
+              if (Number.isFinite(n)) {
+                prompts.limits[key] = n;
+                changed(props);
+              }
+            },
+          }),
+        ),
+      ),
+    ),
     h(
       'div',
       { class: 'inline-form' },

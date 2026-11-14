@@ -1,3 +1,4 @@
+import { defaultLimits, type BiometryLimits } from './iolreport';
 import type { Patient } from './extract';
 import type { Layout } from './layout';
 
@@ -18,6 +19,8 @@ export interface PromptSettings {
    * report from one that is.
    */
   constants: string[];
+  /** Cutoffs for the biometry alerts on the IOL report (long eye, shallow AC…). */
+  limits: BiometryLimits;
   /** Column headings the picks go into; '' picks automatically. */
   findingsColumn: string;
   lensColumn: string;
@@ -29,6 +32,7 @@ export function defaultPrompts(): PromptSettings {
     findings: ['PXF', 'Guttata', 'Good dilation | Mod dilation | Poor dilation', 'Phacodonesis', 'Tamsulosin'],
     lenses: ['DCB00', 'DIB00', 'ZCUx', 'DIUx', 'CNA0Tx'],
     constants: ['DCB00 119.3', 'CNA0Tx 119.1'],
+    limits: defaultLimits(),
     findingsColumn: '',
     lensColumn: '',
   };

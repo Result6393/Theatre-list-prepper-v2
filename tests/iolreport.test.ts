@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkLens, combineReadings, parseConstants, readNumber, readReport, simulateLens, type OcrWord, type PickedLens, type Simulation } from '../src/iolreport';
+import { biometryAlerts, checkLens, combineReadings, defaultLimits, parseConstants, readNumber, readReport, simulateLens, type Biometry, type EyeReading, type OcrWord, type PickedLens, type ReportReading, type Simulation } from '../src/iolreport';
 import { srktPower, srktRefraction } from '../src/srkt';
 
 /**
@@ -316,5 +316,96 @@ describe('trying another lens in the report view', () => {
   it('says why it can’t work a lens out', () => {
     expect(sim({ code: 'DIU150', family: { base: 'DIU', number: '150' } })).toBe('DIU150 isn’t on the right eye’s side of the report. Add its A-constant in Settings to estimate it from a lens that is.');
     expect(sim({ code: 'ZCU', family: { base: 'ZCU', number: '' } })).toBe('Choose the number for ZCU… (e.g. the toric model).');
+  });
+});
+
+describe('biometry alerts', () => {
+  const words = (t: string): OcrWord[] => [{ text: t, x0: 0, y0: 0, x1: 10, y1: 10 }];
+  const m = (value: number) => ({ value, words: words(String(value)) });
+  const eye = (b: Partial<Biometry>, extra: Partial<EyeReading> = {}): EyeReading => ({ target: -0.5, tables: [], biometry: { borderline: [], ...b }, ...extra });
+  const reading = (right: Partial<Biometry>, left: Partial<Biometry> = {}): ReportReading => ({ name: '', id: '', warnings: [], right: eye(right), left: eye(left) });
+  const alerts = (r: ReportReading, over: Partial<PickedLens> = {}) => biometryAlerts(r, lens({ eye: 'RIGHT', ...over }), defaultLimits());
+
+  it('flags a short or long eye, more strongly when very short or long', () => {
+    expect(alerts(reading({ al: m(21.8) })).map((a) => a.text)).toEqual(['Short eye: AL 21.80 mm (under 22.0).']);
+    expect(alerts(reading({ al: m(20.5) }))[0].short).toBe('Very short eye');
+    expect(alerts(reading({ al: m(26.4) }))[0].text).toBe('Long eye: AL 26.40 mm (over 26.0).');
+    expect(alerts(reading({ al: m(29.1) }))[0].short).toBe('Very long eye');
+    expect(alerts(reading({ al: m(23.5) }))).toEqual([]);
+  });
+
+  it('flags a shallow AC and thick lens only in a phakic eye', () => {
+    expect(alerts(reading({ acd: m(2.31), lt: m(5.2), lensStatus: 'Phakic' })).map((a) => a.short)).toEqual(['Shallow AC', 'Thick lens']);
+    expect(alerts(reading({ acd: m(2.31), lensStatus: 'Pseudophakic' })).map((a) => a.short)).toEqual(['Pseudophakic RE']);
+  });
+
+  it('calls an eye that already has a lens an error', () => {
+    const a = alerts(reading({ lensStatus: 'Pseudophakic' }));
+    expect(a[0]).toMatchObject({ level: 'error', text: 'The report says the right eye is pseudophakic (no natural lens): check it’s the right eye.' });
+    // Only for the eye being operated on.
+    expect(alerts(reading({}, { lensStatus: 'Pseudophakic' }))).toEqual([]);
+  });
+
+  it('suggests a toric for astigmatism with a non-toric lens, and flags ΔK and ΔTK disagreeing', () => {
+    const astig = reading({ deltaK: { ...m(2.86), axis: 173 }, deltaTK: { ...m(2.9), axis: 175 } });
+    expect(alerts(astig).map((a) => a.text)).toEqual(['Corneal astigmatism ΔK 2.86 D @ 173° with a non-toric lens (DCB00): consider a toric.']);
+    expect(alerts(astig, { code: 'ZCU300', family: { base: 'ZCU', number: '300' } })).toEqual([]);
+    const disagree = reading({ deltaK: { ...m(0.9), axis: 10 }, deltaTK: { ...m(1.0), axis: 40 } });
+    expect(alerts(disagree, { code: 'ZCU100', family: { base: 'ZCU', number: '100' } }).map((a) => a.short)).toEqual(['K mismatch']);
+  });
+
+  it('flags a flat or steep cornea, an odd-sized cornea, borderline values and prior laser surgery', () => {
+    const r = reading({ k: m(40.2), wtw: m(10.8), lvc: 'Myopic LASIK', borderline: [{ text: 'TSE: 42.26 D (!) SD: 0.04D', words: [] }] });
+    expect(alerts(r).map((a) => a.short)).toEqual(['Prior LVC', 'Flat K', 'Small cornea', 'Borderline value']);
+  });
+
+  it('flags a difference between the eyes', () => {
+    const r = reading({ al: m(23.53), k: m(44.73) }, { al: m(23.1), k: m(43.5) });
+    expect(alerts(r).map((a) => a.short)).toEqual(['AL differs', 'K differs']);
+  });
+
+  it('survives combining several screenshots of the report', () => {
+    const combined = combineReadings([reading({ al: m(21.5) })])!;
+    expect(biometryAlerts(combined, lens({ eye: 'RIGHT' }), defaultLimits()).map((a) => a.short)).toEqual(['Short eye']);
+  });
+
+  it('comes with the lens check, and uses your cutoffs', () => {
+    const r = reading({ al: m(25.5) });
+    expect(checkLens(r, lens({}), [], { ...defaultLimits(), alLong: 25 }).alerts.map((a) => a.short)).toEqual(['Long eye']);
+    expect(checkLens(r, lens({})).alerts).toEqual([]);
+  });
+});
+
+describe('reading the biometry', () => {
+  const lines: [number, string][][] = [
+    [[0, 'Date of measurement:'], [22, '01/02/2026']],
+    [[4, 'OD'], [70, 'IOL calculation'], [160, 'OS']],
+    two('LS: Phakic          VS: Vitreous body', 'LS: Pseudophakic    VS: Vitreous body'),
+    two('LVC: Untreated      LVC mode: -', 'LVC: Myopic LASIK   LVC mode: -'),
+    two('Target ref.: -0.50 D', 'Target ref.: -0.50 D'),
+    two('AL: 21.80 mm     SD: 10 um', 'AL: 23.10 mm     SD: 7 um'),
+    two('ACD: 2.31 mm     SD: 8 um', 'ACD: 4.42 mm     SD: 7 um'),
+    two('LT: 5.20 mm      SD: 15 um', 'LT: 0.66 mm      SD: 8 um'),
+    two('WTW: 11.1 mm (!)', 'WTW: 108 mm'),
+    two('SE: 43.98 D   SD: 0.02 D   K1: 42.71 D @ 87°', 'SE: 42.91 D   SD: 0.02 D   K1: 40.67 D @103°'),
+    two('ΔK: +2.62 D @177°   K2: 45.33 D @177°', 'AK: +4.74 D @ 13°   K2: 45.41 D @ 13°'),
+    two('TSE: 43.89 D   SD: 0.02 D   TK1: 42.51 D @ 88°', 'TSE: 42.73 D   SD: 0.02 D'),
+    two('ATK: +2.86 D @178°   TK2: 45.36 D @178°', 'ATK: +4.88 D @ 11°'),
+  ];
+  const r = readReport(withLargeHeadings(page(lines)))!;
+
+  it('reads each eye’s ACD, LT, WTW, K, ΔK, ΔTK, lens status and laser surgery', () => {
+    const b = r.right!.biometry!;
+    expect([b.al?.value, b.acd?.value, b.lt?.value, b.wtw?.value, b.k?.value]).toEqual([21.8, 2.31, 5.2, 11.1, 43.98]);
+    expect([b.deltaK?.value, b.deltaK?.axis, b.deltaTK?.value, b.deltaTK?.axis]).toEqual([2.62, 177, 2.86, 178]);
+    expect([b.lensStatus, b.lvc]).toEqual(['Phakic', 'Untreated']);
+    expect(b.borderline.map((x) => x.text)).toEqual(['WTW: 11.1 mm (!)']);
+    const l = r.left!.biometry!;
+    expect([l.lensStatus, l.lvc, l.wtw?.value, l.lt?.value, l.deltaK?.value, l.deltaK?.axis]).toEqual(['Pseudophakic', 'Myopic', 10.8, 0.66, 4.74, 13]);
+  });
+
+  it('alerts for the eye being operated on', () => {
+    expect(biometryAlerts(r, lens({ eye: 'RIGHT' }), defaultLimits()).map((a) => a.short)).toEqual(['Short eye', 'Shallow AC', 'Thick lens', 'Astigmatism', 'Borderline value', 'AL differs', 'K differs']);
+    expect(biometryAlerts(r, lens({ eye: 'LEFT' }), defaultLimits()).map((a) => a.short)).toEqual(['Pseudophakic LE', 'Prior LVC', 'Astigmatism', 'Small cornea', 'AL differs', 'K differs']);
   });
 });
