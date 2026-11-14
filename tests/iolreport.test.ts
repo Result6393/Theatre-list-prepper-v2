@@ -77,6 +77,15 @@ describe('reading an IOL calculation report', () => {
     expect(['+20.50', '-0.33', '+2050', '-046', '421.00', '+0,25', '−1.03', '3°', 'abc'].map(readNumber)).toEqual([20.5, -0.33, 20.5, -0.46, 21, 0.25, -1.03, null, null]);
   });
 
+  it('still splits the eyes when OCR misreads or misses the OD / OS headings', () => {
+    const misread = readReport(REPORT.map((w) => (w.text === 'OS' ? { ...w, text: 'O5.' } : w)))!;
+    expect(misread.left?.tables[0].rows[0].power).toBe(23);
+    const missing = readReport(REPORT.filter((w) => w.text !== 'OD' && w.text !== 'OS'))!;
+    expect(missing.right?.tables[0].rows.map((r) => r.power)).toEqual([21.5, 21, 20.5, 20]);
+    expect(missing.left?.tables[0].rows.map((r) => r.power)).toEqual([23, 22.5, 22, 21.5]);
+    expect(missing.right?.target).toBe(-0.5);
+  });
+
   it('isn’t fooled by a page that isn’t an IOL calculation', () => {
     expect(readReport(page([[[0, 'Biometry'], [20, 'AL: 23.53 mm']]]))).toBeNull();
   });
@@ -193,9 +202,9 @@ describe('highlighting the screenshot', () => {
   it('marks the name, MRN, the eye, ΔK, the lens and the power, in the eye’s colour', () => {
     const marks = boxes(lens({}));
     expect(marks.every((m) => m.eye === 'right' && !m.dashed)).toBe(true);
-    expect(marks.map((m) => m.y0)).toEqual([at(0), at(2), at(5), at(9), at(10), at(17)]);
+    expect(marks.map((m) => m.y0)).toEqual([at(0), at(1), at(2), at(5), at(9), at(10), at(17)]);
     // ΔK stops before K2.
-    expect(marks[3].x1).toBeLessThan(200);
+    expect(marks[4].x1).toBeLessThan(200);
   });
 
   it('uses blue for the left eye, and dashes the other eye’s column when the power is in it', () => {

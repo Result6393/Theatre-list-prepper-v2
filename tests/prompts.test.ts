@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { defaultLayout } from '../src/layout';
-import {
-  addToken, defaultPrompts, findingGroups, formatPower, formatTarget, hasToken, promptColumns, readLens, readTarget,
-  readEyeOrder, removeToken, toggleFinding, writeEyeOrder, writeLens, writeTarget,
-} from '../src/prompts';
+import { absentText, addToken, cycleFinding, defaultPrompts, findingGroups, findingState, formatPower, formatTarget, hasToken, promptColumns, readEyeOrder, readLens, readTarget, removeToken, toggleFinding, writeEyeOrder, writeLens, writeTarget } from '../src/prompts';
 import { defaultSettings, importSettings } from '../src/settings';
 
 const { findings, lenses } = defaultPrompts();
@@ -142,5 +139,35 @@ describe('first or second eye', () => {
     expect(cell).toBe('1st eye\nDiabetic\nPXF');
     expect(toggle(cell, 'Guttata')).toBe('1st eye\nDiabetic\nPXF, Guttata');
     expect(writeEyeOrder(cell, 'second')).toBe('2nd eye\nDiabetic\nPXF');
+  });
+});
+
+describe('findings with three states', () => {
+  const { findings } = defaultPrompts();
+
+  it('goes present, then not present, then back to nothing', () => {
+    const present = cycleFinding('', 'PXF', findings);
+    expect(present).toBe('PXF');
+    const absent = cycleFinding(present, 'PXF', findings);
+    expect(absent).toBe('No PXF');
+    expect(findingState(absent, 'PXF')).toBe('absent');
+    expect(cycleFinding(absent, 'PXF', findings)).toBe('');
+  });
+
+  it('keeps the other findings on the same line', () => {
+    let cell = 'NS2\nPXF, Poor dilation';
+    cell = cycleFinding(cell, 'Guttata', findings);
+    expect(cell).toBe('NS2\nPXF, Poor dilation, Guttata');
+    cell = cycleFinding(cell, 'Guttata', findings);
+    expect(cell).toBe('NS2\nPXF, Poor dilation, No guttata');
+    expect([findingState(cell, 'PXF'), findingState(cell, 'Guttata'), findingState(cell, 'Tamsulosin')]).toEqual(['present', 'absent', null]);
+    expect(cycleFinding(cell, 'Guttata', findings)).toBe('NS2\nPXF, Poor dilation');
+  });
+
+  it('reads “no” and “nil” typed by hand', () => {
+    expect(findingState('nil PXF', 'PXF')).toBe('absent');
+    expect(findingState('no tamsulosin', 'Tamsulosin')).toBe('absent');
+    expect(findingState('PXF OU', 'PXF')).toBe('present');
+    expect([absentText('PXF'), absentText('Guttata'), absentText('Tamsulosin')]).toEqual(['No PXF', 'No guttata', 'No tamsulosin']);
   });
 });

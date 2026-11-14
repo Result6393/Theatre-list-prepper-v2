@@ -114,6 +114,34 @@ export function removeToken(cell: string, token: string): string {
     .join('\n');
 }
 
+export type FindingState = 'present' | 'absent' | null;
+
+/** "No PXF" or "nil guttata": the finding looked for and not there. */
+function absentPattern(token: string): RegExp {
+  return new RegExp(`(^|[^A-Za-z0-9])((?:no|nil)\\s+${escape(token)})(?=$|[^A-Za-z0-9])`, 'i');
+}
+
+/** Whether the cell says a finding is there, isn't ("No PXF", also typed as "nil PXF"), or says nothing about it. */
+export function findingState(cell: string, token: string): FindingState {
+  if (absentPattern(token).test(cell)) return 'absent';
+  return hasToken(cell, token) ? 'present' : null;
+}
+
+/** "No PXF", "No guttata" (a word in lower case, an abbreviation as it is). */
+export function absentText(token: string): string {
+  const abbreviation = (token.match(/[A-Z]/g) ?? []).length > 1 || !/[a-z]/.test(token);
+  return `No ${abbreviation ? token : token.charAt(0).toLowerCase() + token.slice(1)}`;
+}
+
+/** One click: present ("PXF"); the next: not present ("No PXF"); the next: back to saying nothing. */
+export function cycleFinding(cell: string, token: string, findings: string[]): string {
+  const state = findingState(cell, token);
+  if (state === null) return addToken(cell, token, findings);
+  if (state === 'present') return addToken(removeToken(cell, token), absentText(token), findings);
+  const said = cell.match(absentPattern(token))?.[2];
+  return said ? removeToken(cell, said) : cell;
+}
+
 /** Picks one option in a group (clearing the others), or clears the group when it's already picked. */
 export function toggleFinding(cell: string, group: FindingGroup, token: string, findings: string[]): string {
   const wasOn = hasToken(cell, token);
