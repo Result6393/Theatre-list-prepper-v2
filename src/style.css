@@ -2272,7 +2272,6 @@ button.dropzone:focus {
 }
 
 .view-switch {
-  margin-left: auto;
   flex: none;
 }
 
@@ -2322,4 +2321,65 @@ input.grade-input.needs-info {
   color: var(--brand);
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+/* Reorder: a short list of the patients over the page. */
+.reorder-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: grid;
+  place-items: start center;
+  padding: 6vh 16px;
+  background: rgb(0 0 0 / 0.35);
+  overflow-y: auto;
+}
+
+.reorder {
+  width: min(640px, 100%);
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.25);
+  overflow: hidden;
+}
+
+.reorder-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.reorder-head h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.reorder-head button {
+  margin-left: auto;
+}
+
+.reorder-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+}
+
+.reorder-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+}
+
+.reorder-item + .reorder-item {
+  border-top: 1px solid var(--border);
+}
+
+.reorder-name {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  font-weight: 600;
 }
