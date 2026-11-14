@@ -3,7 +3,7 @@ import {
   buildEmail, defaultEmailSettings, emailBodyHtml, emailBodyText, fillTemplate, isEmailAddress, joinList, mailtoUrl, outlookComposeUrl,
   weekdayLabel,
 } from '../src/email';
-import { extractSessions } from '../src/extract';
+import { extractSessions, type Patient, type Session } from '../src/extract';
 import { parseTable } from '../src/parse';
 import { defaultSettings, exportSettings, importSettings } from '../src/settings';
 import { nextDayRows, ROWS, runSheetCsv } from './fixtures';
@@ -172,5 +172,20 @@ describe('misc', () => {
     s.email.name = 'Sam';
     expect(importSettings(exportSettings(s)).email).toEqual(s.email);
     expect(importSettings('{"flagHospitals":["X"]}').email).toEqual(defaultEmailSettings());
+  });
+});
+
+describe('an email for a list from your prepped sheet, with no run sheet', () => {
+  const sheetPatient = (mrn: string, name: string) => ({ mrn, name }) as Patient;
+  const session = (over: Partial<Session>) => ({ date: '', or: '', ampm: '', consultant: '', ...over }) as Session;
+
+  it('uses the sheet’s date and theatre, or says “this list” when it has neither', () => {
+    const withHeading = buildEmail(defaultEmailSettings(), [{ session: session({ date: '14/10/2026', or: 'OR 4', ampm: 'AM' }), patients: [sheetPatient('3000001', 'ALPHA, Ann')] }]);
+    expect(withHeading.subject).toBe('Files for surgery on Wednesday 14/10');
+    expect(withHeading.body).toContain('- 3000001 ALPHA, Ann');
+    const noDate = buildEmail(defaultEmailSettings(), [{ session: session({ or: 'OR 4', ampm: 'AM' }), patients: [sheetPatient('3000001', 'ALPHA, Ann')] }]);
+    expect(noDate.subject).toBe('Files for surgery on OR 4 AM');
+    const nothing = buildEmail(defaultEmailSettings(), [{ session: session({}), patients: [sheetPatient('3000001', 'ALPHA, Ann')] }]);
+    expect(nothing.subject).toBe('Files for surgery on this list');
   });
 });

@@ -101,7 +101,8 @@ export function buildEmail(settings: EmailSettings, allGroups: EmailGroup[]): Em
   };
 
   const values = {
-    day: joinList(dates.map(weekdayLabel)),
+    // With no date known (a list from your sheet without a heading), the theatre stands in for it.
+    day: joinList(dates.filter(Boolean).map(weekdayLabel)) || joinList(unique(groups.map((g) => `${g.session.or} ${g.session.ampm}`.trim()).filter(Boolean))) || 'this list',
     date: joinList(dates),
     theatre: joinList(unique(groups.map((g) => `${g.session.or} ${g.session.ampm}`))),
     count: String(groups.reduce((n, g) => n + g.patients.length, 0)),
