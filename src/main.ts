@@ -13,13 +13,13 @@ import { findingGroups, hasToken, isLensSurgery, lensCode, promptColumns, readEy
 import Papa from 'papaparse';
 import { classifyFile } from './files';
 import { headingCells, type HeadingCell } from './heading';
-import { openWorkbook, overwrittenBelow, saveWorkbook, sheetNameProblem, withEdit, WorkbookError, type SheetData, type SheetEdit, type Workbook } from './xlsx';
+import { imageKey, openWorkbook, overwrittenBelow, saveWorkbook, sheetNameProblem, withEdit, WorkbookError, type OcrRecord, type SheetData, type SheetEdit, type Workbook } from './xlsx';
 import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore } from './settings';
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
 import { reportImage, type ReportImage } from './report';
 import { checkLens, combineReadings, parseConstants, readReport, signed, simulateLens, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
-import { readWords } from './ocr';
+import { OCR_ENGINE, readWords } from './ocr';
 
 /** The list being prepped: one list, or several ticked together that run on as one. */
 interface Grid {
@@ -359,7 +359,7 @@ async function copyEmailText(grid: Grid): Promise<void> {
 /** Reads a chosen or dropped file as sheets of cells: an Excel workbook, or a CSV as one sheet. */
 async function readSheets(file: File): Promise<{ sheets: SheetData[]; book: Workbook | null }> {
   if (classifyFile(file.name, file.type) === 'workbook') {
-    const book = await openWorkbook(await file.arrayBuffer());
+    const book = remember(await openWorkbook(await file.arrayBuffer()));
     return { sheets: [...book.sheets], book };
   }
   const rows = Papa.parse<string[]>((await file.text()).replace(/^\uFEFF/, ''), { skipEmptyLines: false }).data;
@@ -632,7 +632,7 @@ async function writeOut(wb: SheetFile, bytes: Uint8Array, permission: Promise<Pe
 }
 
 async function finishSave(wb: SheetFile, bytes: Uint8Array, outcome: SaveOutcome): Promise<SaveOutcome> {
-  wb.book = await openWorkbook(bytes.buffer as ArrayBuffer);
+  wb.book = remember(await openWorkbook(bytes.buffer as ArrayBuffer));
   wb.sheets = [...wb.book.sheets];
   wb.lastModified = wb.handle && outcome.how !== 'downloaded' ? ((await wb.handle.getFile().catch(() => null))?.lastModified ?? null) : wb.lastModified;
   return outcome;
@@ -714,7 +714,7 @@ async function loadStoredTemplate(): Promise<void> {
     if (!raw) return;
     const { name, data } = JSON.parse(raw) as { name: string; data: string };
     const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
-    state.template = { name, book: await openWorkbook(bytes.buffer as ArrayBuffer) };
+    state.template = { name, book: remember(await openWorkbook(bytes.buffer as ArrayBuffer)) };
   } catch {
     // Nothing kept, or it can't be read any more: choose it again when needed.
   }
@@ -774,7 +774,7 @@ function chooseTemplate(): void {
   pickFile('.xlsx,.xlsm', async (file) => {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const book = await openWorkbook(bytes.buffer as ArrayBuffer);
+      const book = remember(await openWorkbook(bytes.buffer as ArrayBuffer));
       state.template = { name: file.name, book };
       const kept = !hasPatients(book);
       if (kept) {
@@ -878,7 +878,7 @@ async function saveToNewFileNow(grid: Grid): Promise<void> {
     .map((s) => s.name);
   let result;
   try {
-    result = await saveWorkbook(book, [edit, ...heading.edits], [], { keepOnly: keep, activeSheet: sheet });
+    result = await saveWorkbook(book, [edit, ...heading.edits], [], { keepOnly: keep, activeSheet: sheet, ocr: ocrCache });
   } catch (e) {
     form.error = e instanceof WorkbookError ? e.message : `Couldn’t make the new file${e instanceof Error ? ` (${e.message})` : ''}.`;
     state.saveReport = null;
@@ -977,7 +977,7 @@ async function saveAsNewSheetNow(grid: Grid): Promise<void> {
   let heading: { cells: HeadingCell[]; edits: SheetEdit[] } = { cells: [], edits: [] };
   try {
     heading = headingFor(grid, template, name, cell);
-    result = await saveWorkbook(book, [edit, ...heading.edits], [{ name, copyOf: template.name }]);
+    result = await saveWorkbook(book, [edit, ...heading.edits], [{ name, copyOf: template.name }], { ocr: ocrCache });
   } catch (e) {
     form.error = e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}${e instanceof Error ? ` (${e.message})` : ''}.`;
     state.saveReport = null;
@@ -1063,7 +1063,7 @@ async function saveToWorkbookNow(): Promise<void> {
 
   let result;
   try {
-    result = await saveWorkbook(book, [...edits.map((e) => e.edit), ...headings.flatMap((h) => h.edits)]);
+    result = await saveWorkbook(book, [...edits.map((e) => e.edit), ...headings.flatMap((h) => h.edits)], [], { ocr: ocrCache });
   } catch (e) {
     state.saveReport = { ok: false, text: e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}${e instanceof Error ? ` (${e.message})` : ''}.` };
     render();
@@ -2808,16 +2808,39 @@ interface ReadReport {
 }
 type ReadState = ReadReport | 'reading' | 'unreadable' | 'failed';
 const readings = new WeakMap<ReportImage, ReadState>();
+
+/**
+ * What OCR read in each picture (by its bytes), from this session and from the Excel files opened:
+ * saved into the file with the pictures, so a reopened file needn't be read again. Never kept in the browser.
+ */
+const ocrCache = new Map<string, OcrRecord>();
+
+/** Takes in the OCR results saved in a workbook. */
+function remember(book: Workbook): Workbook {
+  for (const [key, record] of book.ocr) if (!ocrCache.has(key)) ocrCache.set(key, record);
+  return book;
+}
 let readQueue: Promise<void> = Promise.resolve();
 
 /** Reads a screenshot's report in the background (one at a time), then redraws. */
 function readingOf(image: ReportImage): ReadState {
   const known = readings.get(image);
   if (known) return known;
+  // Read before (in this session, or saved in your Excel file with the picture)?
+  const key = imageKey(image.bytes);
+  const saved = ocrCache.get(key);
+  if (saved && saved.engine === OCR_ENGINE) {
+    const words = saved.words.map(([text, x0, y0, x1, y1]) => ({ text, x0, y0, x1, y1 }));
+    const reading = readReport(words);
+    const state: ReadState = reading ? { reading, width: saved.width, height: saved.height } : 'unreadable';
+    readings.set(image, state);
+    return state;
+  }
   readings.set(image, 'reading');
   readQueue = readQueue.then(async () => {
     try {
       const { words, width, height } = await readWords(new Blob([image.bytes as BlobPart], { type: image.type }));
+      ocrCache.set(key, { engine: OCR_ENGINE, width, height, words: words.map((w) => [w.text, Math.round(w.x0), Math.round(w.y0), Math.round(w.x1), Math.round(w.y1)]) });
       const reading = readReport(words);
       readings.set(image, reading ? { reading, width, height } : 'unreadable');
     } catch (e) {

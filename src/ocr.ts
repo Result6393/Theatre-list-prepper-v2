@@ -9,6 +9,9 @@ import coreSource from 'tesseract.js-core/tesseract-core-lstm.wasm.js?raw';
 import languageBase64 from '@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz?base64';
 import type { OcrWord } from './iolreport';
 
+/** Identifies how a picture was read: OCR results saved by another engine or settings are read again. */
+export const OCR_ENGINE = 'tesseract.js 6, eng best_int, LSTM, grey 1900px';
+
 /** Where the worker asks for the English data; it never goes to the network (see below). */
 const LANG_PATH = 'https://offline.invalid/tessdata';
 
