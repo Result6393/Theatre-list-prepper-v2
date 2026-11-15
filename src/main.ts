@@ -5,11 +5,12 @@ import { startDrag } from './drag';
 import { allergyColumn, allergyPending, lacksAllergyDetails, pendingAllergies } from './allergy';
 import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, outlookComposeUrl, weekdayLabel } from './email';
 import { extractSessions, type Patient, type Session } from './extract';
+import { INVOLVEMENT_LEVELS, involvementColumns, missingHeadings, readInvolvement } from './involvement';
 import { combineSessions, listOfPatient, orderedSelection } from './lists';
 import { copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, isLocked, keepReports, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
 import { lensEmailHtml, lensEmailText, lensLines, type LensItem } from './lenslist';
-import { absentText, cycleFinding, findingGroups, findingState, hasToken, isLensSurgery, lensCode, readGrading, writeGrading, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
+import { absentText, cycleFinding, findingGroups, findingState, hasToken, isBackupLine, isLensSurgery, lensCode, readBackup, readGrading, writeBackup, writeGrading, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
 import { headingCells, readHeading, type HeadingCell } from './heading';
@@ -1090,7 +1091,7 @@ async function saveToNewFileNow(grid: Grid): Promise<void> {
     .map((s) => s.name);
   let result;
   try {
-    result = await saveWorkbook(book, [edit, ...heading.edits], [], { keepOnly: keep, activeSheet: sheet, ocr: ocrCache });
+    result = await saveWorkbook(book, [edit, ...heading.edits, ...involvementHeadingEdits(template, sheet, cell)], [], { keepOnly: keep, activeSheet: sheet, ocr: ocrCache });
   } catch (e) {
     form.error = e instanceof WorkbookError ? e.message : `Couldn’t make the new file${e instanceof Error ? ` (${e.message})` : ''}.`;
     state.saveReport = null;
@@ -1189,7 +1190,7 @@ async function saveAsNewSheetNow(grid: Grid): Promise<void> {
   let heading: { cells: HeadingCell[]; edits: SheetEdit[] } = { cells: [], edits: [] };
   try {
     heading = headingFor(grid, template, name, cell);
-    result = await saveWorkbook(book, [edit, ...heading.edits], [{ name, copyOf: template.name }], { ocr: ocrCache });
+    result = await saveWorkbook(book, [edit, ...heading.edits, ...involvementHeadingEdits(template, name, cell)], [{ name, copyOf: template.name }], { ocr: ocrCache });
   } catch (e) {
     form.error = e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}${e instanceof Error ? ` (${e.message})` : ''}.`;
     state.saveReport = null;
@@ -1218,7 +1219,18 @@ async function saveAsNewSheetNow(grid: Grid): Promise<void> {
 
 /** A list's rows (and each patient's IOL report pictures) to write into a sheet from `cell`. */
 function blockEdit(grid: Grid, sheet: string, cell: string, padTo: number): SheetEdit {
-  return { sheet, cell, rows: copyBlock(grid.rows, state.settings.layout, padTo), pictures: copyPictures(grid.rows, padTo) };
+  return { sheet, cell, rows: copyBlock(grid.rows, state.settings.layout, padTo), pictures: copyPictures(grid.rows, padTo), styleFromLeft: true };
+}
+
+/**
+ * A sheet made before the involvement columns has no headings for them: they're added beside its
+ * other headings (formatted like them), so what you record isn't left in unlabelled cells.
+ */
+function involvementHeadingEdits(sheet: SheetData | undefined, sheetName: string, listCell: string): SheetEdit[] {
+  if (!sheet) return [];
+  const { layout } = state.settings;
+  const { level, notes } = involvementColumns(layout);
+  return missingHeadings(sheet, listCell, layout, [level, notes]).map((m) => ({ sheet: sheetName, cell: m.cell, rows: [[m.heading]], styleFromLeft: true }));
 }
 
 /** Lists from your prepped file, each with the block it writes back: the most recent wins per sheet. */
@@ -1275,7 +1287,8 @@ async function saveToWorkbookNow(): Promise<void> {
 
   let result;
   try {
-    result = await saveWorkbook(book, [...edits.map((e) => e.edit), ...headings.flatMap((h) => h.edits)], [], { ocr: ocrCache });
+    const columnHeadings = edits.flatMap(({ edit }) => involvementHeadingEdits(book.sheets.find((s) => s.name === edit.sheet), edit.sheet, edit.cell));
+    result = await saveWorkbook(book, [...edits.map((e) => e.edit), ...headings.flatMap((h) => h.edits), ...columnHeadings], [], { ocr: ocrCache });
   } catch (e) {
     state.saveReport = { ok: false, text: e instanceof WorkbookError ? e.message : `Couldn’t save into ${wb.name}${e instanceof Error ? ` (${e.message})` : ''}.` };
     render();
@@ -1965,6 +1978,7 @@ function renderPrep(): HTMLElement | null {
   );
 
   const allergyCol = allergyColumn(layout);
+  const involvement = involvementColumns(layout);
   const keyIndex = layout.columns.findIndex((c) => c.source === 'field:patient' || c.source === 'field:name' || c.source === 'field:mrn');
   const rowName = (r: GridRow) => r.patient?.name || (keyIndex >= 0 ? r.cells[keyIndex] : '') || 'this patient';
   const combinedLists = grid.sessions.length > 1;
@@ -2106,6 +2120,26 @@ function renderPrep(): HTMLElement | null {
       h('td', { class: 'handle' }, index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null, r.status === 'cancelled' ? null : lockToggle(r), tickOf(r)),
       h('td', { class: 'time', title: p?.consultant ?? '' }, h('div', { class: 'time-value' }, p?.time ?? ''), who ? h('div', { class: 'who' }, who) : null, ...badgesOf(r)),
       layout.columns.map((c, col) => {
+        if (col === involvement.level && r.status !== 'cancelled') {
+          const value = (r.cells[col] ?? '').trim();
+          const picked = readInvolvement(value);
+          return h(
+            'td',
+            { class: 'involvement-cell' },
+            h(
+              'select',
+              {
+                class: 'pc-select',
+                'aria-label': `Your involvement for ${rowName(r)}`,
+                'data-key': `${rowKey(r)}:involvement`,
+                onchange: (e: Event) => ((r.cells[col] = (e.target as HTMLSelectElement).value), render()),
+              },
+              h('option', { value: '', selected: !value }, '—'),
+              INVOLVEMENT_LEVELS.map((level) => h('option', { value: level, selected: picked === level }, level)),
+              value && !picked ? h('option', { value, selected: true }, value) : null,
+            ),
+          );
+        }
         const { area, change } = editorOf(r, col, Boolean(prompts), (target) => (target.parentElement!.className = classFor(r, col, target.value)));
         return h('td', { class: classFor(r, col, r.cells[col]), style: `min-width:${columnWidth(c.source)}px` }, area, change, acknowledgeOf(r, col));
       }),
@@ -2194,7 +2228,9 @@ function renderPrep(): HTMLElement | null {
                 col === promptCols.lens ? renderReports(r) : null,
               );
             }
+            if (col === involvement.level) return h('div', { class: 'pfield' }, h('span', { class: 'pfield-label' }, c.heading || 'Involvement'), involvementChoice(r, col, 'involvement-grid'));
             const { area, change } = editorOf(r, col, Boolean(prompts), () => undefined);
+            if (col === involvement.notes) area.setAttribute('placeholder', 'e.g. did phaco only');
             // The prompts sit under the box they fill in: findings under Diagnosis, lens and target under Implants.
             const near = prompts && col === promptCols.findings ? renderPrompts(r, 'findings') : prompts && col === promptCols.lens ? renderPrompts(r, 'lens') : null;
             return h('div', { class: `pfield ${classFor(r, col, r.cells[col])}` }, h('label', { class: 'pfield-label', for: `cell-${rowKey(r)}-${col}` }, c.heading || `Column ${col + 1}`), area, change, acknowledgeOf(r, col), near);
@@ -2249,7 +2285,7 @@ function renderPrep(): HTMLElement | null {
   /** Desktop: one card per patient — name and eye, a compact VA/IOP and drops strip, diagnosis and lens side by side, then the other columns. */
   const lensCol = promptColumns(layout, state.settings.prompts).lens;
   const findingsCol = promptColumns(layout, state.settings.prompts).findings;
-  const placed = new Set([eyeCol, keyIndex, examCol, allergyCol, findingsCol, lensCol].filter((c) => c >= 0));
+  const placed = new Set([eyeCol, keyIndex, examCol, allergyCol, findingsCol, lensCol, involvement.level, involvement.notes].filter((c) => c >= 0));
   const renderPrepCard = (r: GridRow, index: number) => {
     const key = rowKey(r);
     const p = r.patient;
@@ -2322,7 +2358,7 @@ function renderPrep(): HTMLElement | null {
     const rest = layout.columns.map((_, col) => col).filter((col) => !placed.has(col));
     return applyLock(h(
       'article',
-      { class: ['prep-card', ...classesOf(r)].join(' ') },
+      { class: ['prep-card', eye ? `side-${eye.toLowerCase()}` : '', ...classesOf(r)].filter(Boolean).join(' ') },
       h(
         'div',
         { class: 'pc-head' },
@@ -2357,6 +2393,20 @@ function renderPrep(): HTMLElement | null {
           : null,
       ),
       rest.length ? h('div', { class: 'pc-foot' }, rest.map((col) => field(col, true))) : null,
+      cancelledRow || (involvement.level < 0 && involvement.notes < 0)
+        ? null
+        : h(
+            'div',
+            { class: 'pc-audit', title: 'Your own part in this case, for your logbook and audit. Saved in its own columns on your sheet.' },
+            h('span', { class: 'pc-label' }, 'My involvement'),
+            locked
+              ? h(
+                  'div',
+                  { class: 'pc-value' },
+                  [involvement.level, involvement.notes].map((col) => (col >= 0 ? (r.cells[col] ?? '').trim() : '')).filter(Boolean).join(' · ') || h('span', { class: 'pc-value empty' }, 'Not recorded'),
+                )
+              : [involvement.level >= 0 ? involvementChoice(r, involvement.level) : null, involvement.notes >= 0 ? involvementNotes(r, involvement.notes) : null],
+          ),
     ), r);
   };
   const prepCards = h(
@@ -2513,10 +2563,12 @@ function buildSummary(grid: Grid): ListSummary {
     ? c.slotName
     : [listName(c), c.date && !listName(c).includes(shortDay(c.date)) ? weekdayLabel(c.date) : ''].filter(Boolean).join(' · ');
   const rows = activeRows(grid).filter((r) => r.included && r.status !== 'cancelled');
+  const involvement = new Set(Object.values(involvementColumns(layout)).filter((i) => i >= 0));
   const nameColumns = [layout.columns.findIndex((col) => col.source === 'field:eye'), layout.columns.findIndex((col) => col.source === 'field:patient' || col.source === 'field:name' || col.source === 'field:mrn')].filter((i) => i >= 0);
   return {
     title,
-    headings: layout.columns.map((col, i) => col.heading || `Column ${i + 1}`),
+    // Your own involvement is for your audit, not for whoever the summary is sent to.
+    headings: layout.columns.map((col, i) => (involvement.has(i) ? '' : col.heading || `Column ${i + 1}`)),
     nameColumns,
     rows: rows.map((r) => {
       const status = r.reports?.length ? reportStatus(r) : null;
@@ -2527,7 +2579,7 @@ function buildSummary(grid: Grid): ListSummary {
         check = nameMismatch ?? `${CHECK_ICON[level]} ${[...facts, ...(first && level !== 'ok' ? [first.text] : [])].join(' · ')}`.trim();
         if (status.check.alerts.length) check += `${check ? ' · ' : ''}${status.check.alerts.map((a) => a.short).join(', ')}`;
       } else if (status) check = status.state === 'reading' ? 'Still being read' : 'Not read: check by eye';
-      return { time: r.patient?.time ?? '', cells: [...r.cells], check };
+      return { time: r.patient?.time ?? '', cells: r.cells.map((cell, i) => (involvement.has(i) ? '' : cell)), check };
     }),
   };
 }
@@ -3051,7 +3103,20 @@ function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | nu
         set(col, writeTarget(r.cells[col], prompts.lenses, v.trim() ? v : null)),
       ),
     );
+    const backup = readBackup(cell);
+    const backupSet = prompts.backupLenses.length || backup
+      ? h(
+          'span',
+          { class: 'prompt-set', title: 'A second lens to have available for a complex case, e.g. a sulcus lens' },
+          h('span', { class: 'prompt-label' }, 'Backup'),
+          [...new Set([...prompts.backupLenses, ...(backup ? [backup.model] : [])].map((l) => (l.toLowerCase() === backup?.model.toLowerCase() ? backup!.model : l)))].map((l) =>
+            chip(`${l}\u200b`, backup?.model === l, () => set(col, writeBackup(cell, prompts.lenses, backup?.model === l ? null : { model: l, power: backup?.power ?? '' })), `Backup lens: ${l}`),
+          ),
+          backup ? field('backup-power', backup.power, 'power', 'Backup lens power', (v) => set(col, writeBackup(r.cells[col], prompts.lenses, { ...backup, power: v })), 6) : null,
+        )
+      : null;
     parts.push(lens, targetSet);
+    if (backupSet) parts.push(backupSet);
   }
   if (reports) parts.push(reports);
   return parts.length ? h('div', { class: 'prompts' }, parts) : null;
@@ -3112,6 +3177,43 @@ function gradingInput(r: GridRow, col: number, cls: string): HTMLElement {
     'aria-label': `Cataract grade for ${rowLabel(r)}`,
     'data-key': `${rowKey(r)}:grade`,
     onchange: (e: Event) => setCell(r, col, writeGrading(r.cells[col] ?? '', (e.target as HTMLInputElement).value)),
+  });
+}
+
+/** Your involvement in the case: pick one (click it again to clear it). Goes in its own column, for your audit. */
+function involvementChoice(r: GridRow, col: number, cls = 'seg'): HTMLElement {
+  const value = (r.cells[col] ?? '').trim();
+  const picked = readInvolvement(value);
+  return h(
+    'div',
+    { class: `${cls} involvement-choice`, role: 'group', 'aria-label': `Your involvement for ${rowLabel(r)}` },
+    INVOLVEMENT_LEVELS.map((level) =>
+      h(
+        'button',
+        {
+          class: picked === level ? 'on' : '',
+          'aria-pressed': picked === level ? 'true' : 'false',
+          'data-key': `${rowKey(r)}:involvement:${level}`,
+          onclick: () => ((r.cells[col] = picked === level ? '' : level), render()),
+        },
+        level,
+      ),
+    ),
+    // Something else typed on the sheet is kept, and shown, until a level is picked over it.
+    value && !picked ? h('span', { class: 'involvement-other', title: 'On your sheet: pick a level to replace it' }, value) : null,
+  );
+}
+
+/** Free text about your involvement, e.g. "did phaco only". */
+function involvementNotes(r: GridRow, col: number): HTMLElement {
+  return h('input', {
+    type: 'text',
+    class: 'pc-input involvement-notes',
+    value: r.cells[col] ?? '',
+    placeholder: 'e.g. did phaco only',
+    'aria-label': `Involvement notes for ${rowLabel(r)}`,
+    'data-key': `${rowKey(r)}:cell${col}`,
+    oninput: (e: Event) => (r.cells[col] = (e.target as HTMLInputElement).value),
   });
 }
 
@@ -3276,6 +3378,62 @@ function renderLensControls(r: GridRow, col: number): HTMLElement {
         onchange: (e: Event) => setTarget((e.target as HTMLInputElement).value.trim() || null),
       }),
     ),
+    renderBackupLens(r, col),
+  );
+}
+
+/**
+ * A second lens to have in theatre for a complex case (e.g. a sulcus lens): its own line in the
+ * Implants box, and on the lens list. Its power starts from the first lens's: adjust it for where it sits.
+ */
+function renderBackupLens(r: GridRow, col: number): HTMLElement {
+  const { prompts } = state.settings;
+  const key = rowKey(r);
+  const cell = r.cells[col] ?? '';
+  const backup = readBackup(cell);
+  const listed = prompts.backupLenses.find((l) => l.toLowerCase() === backup?.model.toLowerCase());
+  const power = backup?.power.match(/[+-]?\d+(?:\.\d+)?/)?.[0] ?? '';
+  const write = (next: { model: string; power: string } | null) => setCell(r, col, writeBackup(r.cells[col] ?? '', prompts.lenses, next));
+  const step = (delta: number) => {
+    if (!backup) return;
+    const start = pickedLens(r).power ?? 20;
+    write({ ...backup, power: String(Math.round((power ? Number(power) + delta : start) * 2) / 2) });
+  };
+  return h(
+    'div',
+    { class: `pc-row backup-row${backup ? ' on' : ''}`, title: 'A second lens to have available for a complex case, e.g. a sulcus lens. It goes on its own line in the Implants box and on the lens list.' },
+    h('span', { class: 'pc-muted' }, 'Backup'),
+    h(
+      'select',
+      {
+        class: 'pc-select',
+        'aria-label': 'Backup lens',
+        'data-key': `${key}:backup`,
+        onchange: (e: Event) => {
+          const model = (e.target as HTMLSelectElement).value;
+          write(model ? { model, power: backup?.power ?? '' } : null);
+        },
+      },
+      h('option', { value: '', selected: !backup }, 'No backup lens'),
+      prompts.backupLenses.map((l) => h('option', { value: l, selected: listed === l }, l)),
+      backup && !listed ? h('option', { value: backup.model, selected: true }, `${backup.model} (typed)`) : null,
+    ),
+    backup
+      ? h(
+          'div',
+          { class: 'stepper' },
+          h('button', { 'aria-label': 'Backup lens power down 0.5 D', 'data-key': `${key}:backup-down`, onclick: () => step(-0.5) }, '−'),
+          h('input', {
+            type: 'text',
+            value: backup.power,
+            placeholder: 'power',
+            'aria-label': 'Backup lens power',
+            'data-key': `${key}:backup-power`,
+            onchange: (e: Event) => write({ ...backup, power: (e.target as HTMLInputElement).value }),
+          }),
+          h('button', { 'aria-label': 'Backup lens power up 0.5 D', 'data-key': `${key}:backup-up`, onclick: () => step(0.5) }, '+'),
+        )
+      : null,
   );
 }
 
@@ -3726,7 +3884,7 @@ function pickedLens(r: GridRow): PickedLens {
     if (pick.lens.includes('x')) family = { base: pick.lens.split('x')[0], number: pick.extra };
   } else {
     // A lens typed in the box, e.g. "AR40 +19.5D".
-    const line = cell.split('\n').find((l) => l.trim() && !/^target\b/i.test(l.trim())) ?? '';
+    const line = cell.split('\n').find((l) => l.trim() && !/^target\b/i.test(l.trim()) && !isBackupLine(l)) ?? '';
     const m = line.match(/\b([A-Z]{2,}[A-Z0-9]*\d[A-Z0-9]*)\b\s*([+-]?\d{1,2}(?:\.\d{1,2})?)?/i);
     if (m) {
       code = m[1].toUpperCase();

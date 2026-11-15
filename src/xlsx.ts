@@ -98,6 +98,11 @@ export interface SheetEdit {
   /** Write whole numbers as numbers even in cells that were empty (e.g. the OR number). */
   numbers?: boolean;
   /**
+   * A cell that isn't on the sheet yet takes the formatting of the cell to its left (not the one
+   * above): for a column added beside the list, so its heading and cells look like their neighbours.
+   */
+  styleFromLeft?: boolean;
+  /**
    * Pictures for each row of the block (e.g. a patient's IOL report), placed side by side just right
    * of it. Pictures already on these rows are replaced; leave it out to leave the sheet's pictures alone.
    */
@@ -185,7 +190,7 @@ export async function saveWorkbook(book: Workbook, edits: SheetEdit[], added: Ne
     edit.rows.forEach((cells, i) =>
       cells.forEach((value, j) => {
         const current = sheet.rows[startRow - 1 + i]?.[startCol + j] ?? '';
-        if (value !== current) changes.push({ row: startRow + i, col: startCol + j, value, blockStart: startRow, number: edit.numbers });
+        if (value !== current) changes.push({ row: startRow + i, col: startCol + j, value, blockStart: startRow, number: edit.numbers, fromLeft: edit.styleFromLeft });
       }),
     );
     const width = Math.max(0, ...edit.rows.map((r) => r.length));
@@ -522,6 +527,8 @@ interface Change {
   /** First row of the block, for borrowing the formatting of the cell above. */
   blockStart: number;
   number?: boolean;
+  /** A cell that isn't there yet takes the formatting of the cell to its left. */
+  fromLeft?: boolean;
 }
 
 interface SheetRow {
@@ -598,7 +605,8 @@ function patchSheet(xml: string, changes: Change[]): { xml: string; changed: num
       formulas++;
       continue;
     }
-    const style = (old ? attr(old, 's') : undefined) ?? styleAbove(change.row, change.col, change.blockStart);
+    const left = change.fromLeft && !old ? row.cells.filter((c) => c.col < change.col).pop()?.xml : undefined;
+    const style = (old ? attr(old, 's') : undefined) ?? (left ? attr(left, 's') : undefined) ?? styleAbove(change.row, change.col, change.blockStart);
     const wasNumber = Boolean(change.number || (old && /<(?:\w+:)?v>/.test(old) && (attr(old, 't') ?? 'n') === 'n'));
     const cell = cellXml(prefix, `${columnName(change.col)}${change.row}`, style, change.value, wasNumber);
     if (cell === null) {

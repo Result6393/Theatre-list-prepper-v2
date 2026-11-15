@@ -251,6 +251,12 @@ function renderPrompts(props: Props): HTMLElement {
     lines('Findings', 'One per line. Separate choices with | to pick just one, e.g. Good dilation | Mod dilation | Poor dilation.', prompts.findings, (v) => (prompts.findings = v)),
     lines('Lenses', 'One per line. Put x where you type a number, e.g. CNA0Tx for the toric power (CNA0T4).', prompts.lenses, (v) => (prompts.lenses = v)),
     lines(
+      'Backup lenses',
+      'One per line: lenses to offer as a second, backup lens for a complex case (e.g. a three-piece lens for the sulcus). The backup goes on its own line in the Implants box and on the lens list.',
+      prompts.backupLenses,
+      (v) => (prompts.backupLenses = v),
+    ),
+    lines(
       'A-constants (SRK/T)',
       'One per line: the lens and its SRK/T A-constant as on your IOLMaster, e.g. DCB00 119.3. A lens that isn’t on a patient’s IOL report is then estimated from one that is (put x where a number goes, e.g. CNA0Tx 119.1).',
       prompts.constants,

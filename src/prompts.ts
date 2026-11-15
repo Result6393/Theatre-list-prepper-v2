@@ -26,6 +26,11 @@ export interface PromptSettings {
   equivalents: string[];
   /** Cutoffs for the biometry alerts on the IOL report (long eye, shallow AC…). */
   limits: BiometryLimits;
+  /**
+   * Lenses to have on hand as a second, backup lens for a complex case (e.g. a three-piece lens for
+   * the sulcus). One code per entry.
+   */
+  backupLenses: string[];
   /** Column headings the picks go into; '' picks automatically. */
   findingsColumn: string;
   lensColumn: string;
@@ -38,6 +43,7 @@ export function defaultPrompts(): PromptSettings {
     lenses: ['DCB00', 'DIB00', 'ZCUx', 'DIUx', 'CNA0Tx'],
     constants: ['DCB00 119.3', 'CNA0Tx 119.1'],
     equivalents: ['DIUx = ZCUx'],
+    backupLenses: ['MA60AC', 'AR40e'],
     limits: defaultLimits(),
     findingsColumn: '',
     lensColumn: '',
@@ -278,6 +284,45 @@ export function formatPower(text: string): string {
 }
 
 const TARGET_LINE = /^\s*target\b[:\s]*(.*)$/i;
+
+// ---- Backup lens ------------------------------------------------------------------
+
+/**
+ * A second lens to have in theatre for a complex case, e.g. a sulcus lens in case the bag can't take
+ * the first: its own line in the Implants box, "Backup: MA60AC +19.0D", under the lens and target.
+ */
+export interface BackupLens {
+  /** The lens code, as picked or typed. */
+  model: string;
+  power: string;
+}
+
+const BACKUP_LINE = /^\s*back-?up(?:\s+lens)?\b\s*[:–-]?\s*(.*)$/i;
+
+export function isBackupLine(line: string): boolean {
+  return BACKUP_LINE.test(line);
+}
+
+export function readBackup(cell: string): BackupLens | null {
+  for (const line of cell.split('\n')) {
+    const m = line.match(BACKUP_LINE);
+    if (!m) continue;
+    const [model = '', ...rest] = m[1].trim().split(/\s+/);
+    return { model, power: rest.join(' ') };
+  }
+  return null;
+}
+
+/** Puts the backup lens line under the lens and target (replacing any old one), or removes it. */
+export function writeBackup(cell: string, lenses: string[], backup: BackupLens | null): string {
+  const lines = (cell ? cell.split('\n') : []).filter((line) => !isBackupLine(line));
+  if (backup?.model.trim()) {
+    const lens = findLensLine(lines, lenses)?.index ?? -1;
+    const target = lines.findIndex((line) => TARGET_LINE.test(line));
+    lines.splice(Math.max(lens, target) + 1, 0, ['Backup:', backup.model.trim(), formatPower(backup.power)].filter(Boolean).join(' '));
+  }
+  return lines.join('\n');
+}
 
 export function readTarget(cell: string): string | null {
   for (const line of cell.split('\n')) {

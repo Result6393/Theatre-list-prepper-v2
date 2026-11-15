@@ -1,5 +1,6 @@
 import { defaultEmailSettings, type EmailSettings } from './email';
 import { defaultLayout, type Column, type Layout } from './layout';
+import { withInvolvementColumns } from './involvement';
 import { defaultPrompts, type PromptSettings } from './prompts';
 
 export interface Settings {
@@ -66,8 +67,10 @@ export function importSettings(text: string): Settings {
 
   const layout = isObject(data.layout) ? data.layout : {};
   const columns = Array.isArray(layout.columns)
-    ? layout.columns.filter(isObject).map(
-        (c): Column => ({ heading: String(c.heading ?? ''), source: String(c.source ?? 'blank') }),
+    ? withInvolvementColumns(
+        layout.columns.filter(isObject).map(
+          (c): Column => ({ heading: String(c.heading ?? ''), source: String(c.source ?? 'blank') }),
+        ),
       )
     : defaults.layout.columns;
 
@@ -107,6 +110,7 @@ function importPrompts(value: unknown, defaults: PromptSettings): PromptSettings
     lenses: Array.isArray(value.lenses) && stringList(value.lenses).join() !== OLD_DEFAULT_LENSES ? stringList(value.lenses) : defaults.lenses,
     constants: Array.isArray(value.constants) ? stringList(value.constants) : defaults.constants,
     equivalents: Array.isArray(value.equivalents) ? stringList(value.equivalents) : defaults.equivalents,
+    backupLenses: Array.isArray(value.backupLenses) ? stringList(value.backupLenses) : defaults.backupLenses,
     limits: importLimits(value.limits, defaults.limits),
     findingsColumn: typeof value.findingsColumn === 'string' ? value.findingsColumn : defaults.findingsColumn,
     lensColumn: typeof value.lensColumn === 'string' ? value.lensColumn : defaults.lensColumn,
