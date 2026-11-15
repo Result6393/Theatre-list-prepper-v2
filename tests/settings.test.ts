@@ -19,6 +19,20 @@ describe('settings storage', () => {
     expect(s.flagHospitals).toEqual(['POWH', 'STG']);
   });
 
+  it('uses settings built into an offline copy only when the browser has none', () => {
+    const builtIn = defaultSettings();
+    builtIn.flagHospitals = ['XYZ'];
+    const text = exportSettings(builtIn);
+    expect(loadSettings(memoryStore(), text).flagHospitals).toEqual(['XYZ']);
+    const store = memoryStore();
+    const own = defaultSettings();
+    own.flagHospitals = ['OWN'];
+    saveSettings(store, own);
+    expect(loadSettings(store, text).flagHospitals).toEqual(['OWN']);
+    expect(loadSettings(memoryStore(), null)).toEqual(defaultSettings());
+    expect(loadSettings(memoryStore(), 'not json')).toEqual(defaultSettings());
+  });
+
   it('saves, loads and clears', () => {
     const store = memoryStore();
     const s = defaultSettings();

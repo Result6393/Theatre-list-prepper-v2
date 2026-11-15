@@ -13,6 +13,8 @@ interface Props {
   rerender: () => void;
   replace: (settings: Settings) => void;
   done: () => void;
+  /** Saves this page as one HTML file with the settings built in. */
+  downloadOffline: () => void;
 }
 
 export function renderSettings(props: Props): HTMLElement {
@@ -460,6 +462,16 @@ function renderBackup(props: Props): HTMLElement {
       'p',
       { class: 'hint' },
       'Settings are saved in this browser only. Export them to a file to keep a backup, use them on another computer, or share them with a colleague. No patient details are ever saved.',
+    ),
+    h(
+      'p',
+      { class: 'hint' },
+      'For a computer that blocks the web version or clears browser data: “Download offline copy” saves this app as one HTML file with your settings (and your kept Excel template) already inside. Open it from a USB stick or a shared drive. It contains your settings, such as email addresses, so keep it private.',
+    ),
+    h(
+      'div',
+      { class: 'inline-form' },
+      h('button', { onclick: props.downloadOffline }, 'Download offline copy with my settings'),
     ),
     h(
       'div',

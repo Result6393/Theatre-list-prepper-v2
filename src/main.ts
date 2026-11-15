@@ -1,6 +1,6 @@
 import './style.css';
 import { copyHtml, copyText, htmlTableRows, toTsv } from './clipboard';
-import { autoGrow, downloadBlob, h } from './dom';
+import { autoGrow, downloadBlob, downloadText, h } from './dom';
 import { startDrag } from './drag';
 import { allergyColumn, allergyPending, lacksAllergyDetails, pendingAllergies } from './allergy';
 import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, outlookComposeUrl, weekdayLabel } from './email';
@@ -14,6 +14,7 @@ import Papa from 'papaparse';
 import { classifyFile } from './files';
 import { headingCells, readHeading, type HeadingCell } from './heading';
 import { imageKey, openWorkbook, overwrittenBelow, saveWorkbook, sheetNameProblem, withEdit, WorkbookError, type OcrRecord, type SheetData, type SheetEdit, type Workbook } from './xlsx';
+import { capturePristine, embeddedSettings, embeddedTemplate, withEmbedded } from './offline';
 import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore } from './settings';
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
@@ -73,6 +74,9 @@ interface SaveReport {
 /** Remembers the desktop list view (cards or table) on this computer. */
 const VIEW_KEY = 'theatre-list-prepper:view';
 
+// The page before anything is drawn, so "Download offline copy" can save a clean copy of it.
+const pristine = capturePristine();
+
 const storage: KeyValueStore | null = (() => {
   try {
     return window.localStorage;
@@ -82,7 +86,7 @@ const storage: KeyValueStore | null = (() => {
 })();
 
 const state = {
-  settings: loadSettings(storage),
+  settings: loadSettings(storage, embeddedSettings()),
   view: 'main' as 'main' | 'settings',
   /** Settings as they were when the Settings page opened, to tell if the list needs rebuilding. */
   settingsSnapshot: '',
@@ -172,7 +176,7 @@ function persist(): void {
 
 /** Reloads settings after sync brought newer ones from another device. */
 function applySyncedSettings(): void {
-  state.settings = loadSettings(storage);
+  state.settings = loadSettings(storage, embeddedSettings());
   state.notice = { text: 'Settings updated from your other devices.', error: false };
   if (state.view === 'settings') state.settingsSnapshot = listSettings();
   else if (state.table) refreshSessions();
@@ -772,7 +776,7 @@ function toBase64(bytes: Uint8Array): string {
 /** A template file chosen before, if this computer kept it. */
 async function loadStoredTemplate(): Promise<void> {
   try {
-    const raw = storage?.getItem(TEMPLATE_KEY);
+    const raw = storage?.getItem(TEMPLATE_KEY) || embeddedTemplate();
     if (!raw) return;
     const { name, data } = JSON.parse(raw) as { name: string; data: string };
     const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
@@ -780,6 +784,17 @@ async function loadStoredTemplate(): Promise<void> {
   } catch {
     // Nothing kept, or it can't be read any more: choose it again when needed.
   }
+}
+
+/** Saves this page as one HTML file with the settings (and kept template) built in. */
+function downloadOfflineCopy(): void {
+  let template: string | null = null;
+  try {
+    template = storage?.getItem(TEMPLATE_KEY) || embeddedTemplate();
+  } catch {
+    template = embeddedTemplate();
+  }
+  downloadText(`theatre-list-prepper-v${__APP_VERSION__}-with-settings.html`, withEmbedded(pristine, exportSettings(state.settings), template), 'text/html');
 }
 
 function hasPatients(book: Workbook): boolean {
@@ -1510,6 +1525,7 @@ function render(): void {
             render();
           },
           done: closeSettings,
+          downloadOffline: downloadOfflineCopy,
         }))
       : h('main', {}, renderSetup(), renderPrep()),
     ...[state.view === 'main' ? renderViewer() : null, state.view === 'main' ? renderReorder() : null, state.view === 'main' ? renderSaveForms() : null].filter((v): v is HTMLElement => v !== null),
