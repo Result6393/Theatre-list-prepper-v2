@@ -1,46 +1,63 @@
 :root {
-  --bg: #f4f6f9;
+  --bg: #f3f5f9;
   --surface: #ffffff;
-  --text: #1b2430;
-  --muted: #5b6676;
-  --border: #d5dbe3;
-  --brand: #1f3864;
+  --surface-2: #f8fafc;
+  --text: #16202e;
+  --muted: #5d6878;
+  --border: #dfe4ec;
+  --border-strong: #c5cdd9;
+  --brand: #17294d;
+  --brand-2: #24407a;
   --brand-text: #ffffff;
-  --accent: #2f5aa8;
-  --accent-soft: #e6eefb;
-  --right-bg: #fde2e1;
-  --right-text: #a1201b;
-  --left-bg: #dde9fb;
-  --left-text: #1a4a9c;
-  --both-bg: #ece2fb;
-  --both-text: #5b2a9c;
-  --alert-bg: #fff1d6;
-  --missing-bg: #fff7c2;
+  --accent: #2b59c3;
+  --accent-soft: #eaf0fc;
+  --right-bg: #fde8e6;
+  --right-text: #b3261e;
+  --left-bg: #e2ecfd;
+  --left-text: #1d4fb0;
+  --both-bg: #efe6fc;
+  --both-text: #6431a8;
+  --alert-bg: #fff3dc;
+  --alert-text: #8a5300;
+  --missing-bg: #fff8d6;
+  --missing-border: #e6c84f;
   --danger: #b42318;
-  --ok: #1f7a3a;
+  --ok: #1a7f43;
+  --ok-bg: #e6f5ec;
+  --radius: 10px;
+  --shadow-1: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.06);
+  --shadow-2: 0 4px 10px rgb(16 24 40 / 0.06), 0 12px 28px rgb(16 24 40 / 0.1);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --bg: #12161c;
-    --surface: #1b212a;
-    --text: #e6eaf0;
-    --muted: #9aa5b4;
-    --border: #323b48;
-    --brand: #1a2b4c;
-    --accent: #7ea6ef;
-    --accent-soft: #22324f;
-    --right-bg: #4a1f1f;
+    --bg: #0f131a;
+    --surface: #181e27;
+    --surface-2: #1d2430;
+    --text: #e7ebf1;
+    --muted: #98a3b3;
+    --border: #2a3340;
+    --border-strong: #3b4656;
+    --brand: #131f38;
+    --brand-2: #1c3160;
+    --accent: #86acf5;
+    --accent-soft: #1f2e4b;
+    --right-bg: #47201f;
     --right-text: #ffb4ae;
-    --left-bg: #1d3253;
+    --left-bg: #1c3052;
     --left-text: #a9c8ff;
-    --both-bg: #36264f;
+    --both-bg: #33254c;
     --both-text: #d6bdff;
-    --alert-bg: #4a3814;
-    --missing-bg: #4a4414;
+    --alert-bg: #45350f;
+    --alert-text: #f3c56b;
+    --missing-bg: #3f3a12;
+    --missing-border: #8d7a22;
     --danger: #ff8a80;
     --ok: #7fd69a;
+    --ok-bg: #173524;
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow-2: 0 8px 28px rgb(0 0 0 / 0.5);
     color-scheme: dark;
   }
 }
@@ -53,7 +70,9 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  font: 15px/1.45 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 .topbar {
@@ -61,22 +80,44 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 16px;
-  background: var(--brand);
+  padding: 12px 24px;
+  background: linear-gradient(100deg, var(--brand) 0%, var(--brand-2) 100%);
   color: var(--brand-text);
+  box-shadow: 0 1px 0 rgb(0 0 0 / 0.2);
 }
 
 .topbar h1 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   margin: 0;
   font-size: 1.15rem;
-  font-weight: 600;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+/* A small lens mark beside the name. */
+.topbar h1::before {
+  content: '';
+  align-self: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgb(255 255 255 / 0.9);
+  box-shadow: inset 0 0 0 3px var(--brand), inset 0 0 0 9px rgb(255 255 255 / 0.85);
 }
 
 .topbar .ghost {
   color: var(--brand-text);
-  border-color: rgb(255 255 255 / 0.5);
+  border-color: rgb(255 255 255 / 0.35);
+  background: rgb(255 255 255 / 0.08);
+  box-shadow: none;
 }
 
+.topbar .ghost:hover:not(:disabled) {
+  border-color: rgb(255 255 255 / 0.7);
+  background: rgb(255 255 255 / 0.16);
+}
 
 
 main {
@@ -88,9 +129,10 @@ main {
 .step {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px 20px;
+  border-radius: 14px;
+  padding: 18px 20px;
   margin-bottom: 16px;
+  box-shadow: var(--shadow-1);
 }
 
 .step.dragging {
@@ -102,7 +144,9 @@ main {
   align-items: center;
   gap: 8px;
   margin: 0 0 10px;
-  font-size: 1rem;
+  font-size: 1.02rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
 .num {
@@ -111,23 +155,27 @@ main {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: var(--brand);
-  color: var(--brand-text);
-  font-size: 0.8rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
 button {
   font: inherit;
   padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
+  box-shadow: 0 1px 1px rgb(16 24 40 / 0.04);
+  transition: background-color 0.12s, border-color 0.12s, box-shadow 0.12s;
 }
 
 button:hover:not(:disabled) {
   border-color: var(--accent);
+  background: var(--surface-2);
 }
 
 button:disabled {
@@ -148,6 +196,11 @@ button.primary {
   border-color: var(--accent);
   color: #fff;
   font-weight: 600;
+  box-shadow: 0 1px 2px rgb(43 89 195 / 0.35);
+}
+
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -158,6 +211,7 @@ button.primary {
 
 button.ghost {
   background: transparent;
+  box-shadow: none;
 }
 
 button.danger {
@@ -168,8 +222,16 @@ button.link {
   padding: 0;
   border: none;
   background: none;
+  box-shadow: none;
   color: var(--accent);
   text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  text-underline-offset: 2px;
+}
+
+button.link:hover:not(:disabled) {
+  background: none;
+  text-decoration-color: currentColor;
 }
 
 button.mini {
@@ -184,12 +246,14 @@ textarea {
   font: inherit;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
   padding: 5px 8px;
 }
 
 textarea.paste {
+  padding: 10px 12px;
+  background: var(--surface-2);
   width: 100%;
   resize: vertical;
 }
@@ -221,7 +285,8 @@ textarea.paste {
 .table-wrap {
   overflow-x: auto;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 12px;
+  box-shadow: var(--shadow-1);
 }
 
 table {
@@ -243,9 +308,10 @@ thead th {
   background: var(--brand);
   color: var(--brand-text);
   font-weight: 600;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.01em;
   vertical-align: bottom;
-  padding: 6px;
+  padding: 8px 6px;
 }
 
 
@@ -495,10 +561,11 @@ label.stacked {
 .badge {
   display: inline-block;
   margin-top: 4px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 650;
+  line-height: 1.45;
   white-space: nowrap;
 }
 
@@ -612,8 +679,9 @@ button.chip.no {
   border-style: solid;
 }
 
-.needs-info,
-td.needs-info textarea.cell {
+td.needs-info,
+td.needs-info textarea.cell,
+.pfield.needs-info {
   background: var(--missing-bg);
 }
 
@@ -657,19 +725,23 @@ input.prompt-input {
 .list-card {
   display: flex;
   align-items: stretch;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
   background: var(--surface);
   overflow: hidden;
+  box-shadow: 0 1px 1px rgb(16 24 40 / 0.04);
+  transition: border-color 0.12s, box-shadow 0.12s, background-color 0.12s;
 }
 
 .list-card:hover {
   border-color: var(--accent);
+  box-shadow: var(--shadow-1);
 }
 
 .list-card.on {
   border-color: var(--accent);
   background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .list-card input[type='checkbox'] {
@@ -687,7 +759,12 @@ button.list-open {
   border: none;
   border-radius: 0;
   background: transparent;
+  box-shadow: none;
   text-align: left;
+}
+
+button.list-open:hover:not(:disabled) {
+  background: transparent;
 }
 
 .list-title {
@@ -724,10 +801,12 @@ button.fact {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
-  padding: 3px 10px;
+  padding: 4px 12px;
   border-radius: 999px;
+  border-color: var(--border);
   font-size: 0.85rem;
-  background: var(--bg);
+  background: var(--surface-2);
+  box-shadow: none;
 }
 
 .fact-label {
@@ -758,9 +837,11 @@ button.fact:focus-visible .copy-icon {
   align-items: center;
   gap: 8px;
   min-height: 56px;
-  margin: 8px -20px 12px;
+  margin: 10px -20px 14px;
   padding: 10px 20px;
-  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: saturate(1.4) blur(8px);
+  border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
 
@@ -789,15 +870,17 @@ button.fact:focus-visible .copy-icon {
   padding: 6px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+  border-radius: 12px;
+  box-shadow: var(--shadow-2);
 }
 
 button.menu-item {
   display: grid;
   gap: 1px;
-  padding: 7px 10px;
+  padding: 8px 10px;
   border: none;
+  border-radius: 8px;
+  box-shadow: none;
   text-align: left;
   background: transparent;
 }
@@ -834,10 +917,10 @@ button.menu-item:hover:not(:disabled) {
   align-items: center;
   gap: 12px;
   padding: 10px 10px 10px 16px;
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--text);
   color: var(--surface);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+  box-shadow: var(--shadow-2);
   animation: toast-in 0.2s ease-out;
 }
 
@@ -1019,10 +1102,10 @@ tbody.patient:focus-within .prompt-input {
 }
 
 .prepped-box {
-  padding: 12px 14px;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  background: var(--bg);
+  padding: 14px 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-2);
 }
 
 .prepped-box h3 {
@@ -1173,8 +1256,9 @@ body:has(.save-report) .toast-area {
 
 .pcard {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface);
+  box-shadow: var(--shadow-1);
   /* Not hidden: the open card's heading sticks to the top of the screen. */
   overflow: clip visible;
 }
@@ -1522,10 +1606,11 @@ td:not(.allergy-pending) > .ack-btn {
 }
 
 .allergy-banner {
-  margin: 8px 0;
-  padding: 8px 12px;
-  border: 2px solid var(--danger);
-  border-radius: 6px;
+  margin: 8px 0 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent);
+  border-left: 5px solid var(--danger);
+  border-radius: 10px;
   background: var(--right-bg);
   color: var(--right-text);
 }
@@ -1934,11 +2019,40 @@ table.sim-table tr.outside td {
 }
 
 .prep-card {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+  border-radius: 14px;
+  box-shadow: var(--shadow-1);
   overflow: hidden;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+
+.prep-card:hover,
+.prep-card:focus-within {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-2);
+}
+
+/* The eye being operated on runs down the card's edge: red for right, blue for left. */
+.prep-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--border-strong);
+}
+
+.prep-card.side-right::before {
+  background: var(--right-text);
+}
+
+.prep-card.side-left::before {
+  background: var(--left-text);
+}
+
+.prep-card.side-both::before {
+  background: var(--both-text);
 }
 
 .prep-card.row-new {
@@ -1959,7 +2073,7 @@ table.sim-table tr.outside td {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 14px;
+  padding: 10px 16px 10px 18px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1974,10 +2088,11 @@ table.sim-table tr.outside td {
 .pc-eye button {
   border: none;
   border-radius: 0;
-  padding: 4px 9px;
+  padding: 4px 10px;
   font-weight: 700;
   color: var(--muted);
   background: var(--surface);
+  box-shadow: none;
 }
 
 .pc-eye button + button {
@@ -2013,8 +2128,9 @@ div.pc-name {
   padding: 1px 4px;
   margin-left: -5px;
   font: inherit;
-  font-size: 1.05rem;
-  font-weight: 700;
+  font-size: 1.06rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   background: transparent;
   color: var(--text);
   resize: none;
@@ -2041,12 +2157,12 @@ textarea.pc-name:focus {
 }
 
 .badge-todo {
-  background: var(--missing-bg);
-  color: #7a5a00;
+  background: var(--alert-bg);
+  color: var(--alert-text);
 }
 
 .badge-ready {
-  background: transparent;
+  background: var(--ok-bg);
   color: var(--ok);
 }
 
@@ -2054,8 +2170,8 @@ textarea.pc-name:focus {
 .pc-foot {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 6px 14px;
-  padding: 8px 14px;
+  gap: 8px 16px;
+  padding: 10px 16px 10px 18px;
 }
 
 .pc-strip {
@@ -2064,7 +2180,7 @@ textarea.pc-name:focus {
 
 .pc-foot {
   border-top: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--surface-2);
 }
 
 .pc-field {
@@ -2086,24 +2202,47 @@ textarea.pc-name:focus {
 }
 
 .pc-label {
-  font-size: 0.7rem;
-  letter-spacing: 0.05em;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
-  font-weight: 700;
+  font-weight: 650;
   white-space: nowrap;
 }
 
 .pc-field textarea.cell {
   width: 100%;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
-  padding: 4px 8px;
+  padding: 5px 9px;
   background: var(--surface);
+  transition: border-color 0.12s, box-shadow 0.12s;
 }
 
+.pc-field textarea.cell:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  outline: none;
+}
+
+/* Still to fill in: the box itself is tinted, not the whole strip. */
 .pc-field.needs-info textarea.cell {
   background: var(--missing-bg);
+  border-color: var(--missing-border);
+  border-style: dashed;
+}
+
+.pc-field.alert textarea.cell {
+  background: var(--alert-bg);
+  border-color: color-mix(in srgb, var(--alert-text) 45%, transparent);
+}
+
+.pc-field.alert {
+  background: transparent;
+}
+
+.pc-field.alert .pc-label {
+  color: var(--alert-text);
 }
 
 .pc-field.allergy-pending textarea.cell {
@@ -2118,9 +2257,9 @@ textarea.pc-name:focus {
 
 .pc-section {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   align-content: start;
-  padding: 10px 14px;
+  padding: 12px 16px 14px 18px;
 }
 
 .pc-section + .pc-section {
@@ -2128,7 +2267,8 @@ textarea.pc-name:focus {
 }
 
 .pc-lens {
-  background: color-mix(in srgb, var(--accent-soft) 35%, var(--surface));
+  padding-left: 16px;
+  background: color-mix(in srgb, var(--accent-soft) 40%, var(--surface));
 }
 
 .pc-controls {
@@ -2159,9 +2299,10 @@ textarea.pc-name:focus {
 .seg button {
   border: none;
   border-radius: 0;
-  padding: 3px 11px;
+  padding: 4px 12px;
   font-size: 0.85rem;
   background: var(--surface);
+  box-shadow: none;
 }
 
 .seg button + button {
@@ -2189,8 +2330,9 @@ button.pill {
   border-radius: 999px;
   font-size: 0.85rem;
   color: var(--muted);
-  background: transparent;
-  border: 1px dashed var(--border);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: none;
 }
 
 button.pill.yes {
@@ -2228,9 +2370,10 @@ input.pc-input {
   border: none;
   border-radius: 0;
   padding: 3px 10px;
-  background: var(--bg);
+  background: var(--surface-2);
   color: var(--muted);
   font-weight: 700;
+  box-shadow: none;
 }
 
 .stepper input {
@@ -2252,10 +2395,11 @@ input.pc-input {
 
 button.dropzone {
   width: 100%;
-  padding: 10px;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  background: transparent;
+  padding: 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  box-shadow: none;
   color: var(--muted);
   font-size: 0.85rem;
 }
@@ -2322,11 +2466,11 @@ input.grade-input.needs-info {
   min-width: 30px;
   height: 30px;
   padding: 0 6px;
-  border-radius: 8px;
+  border-radius: 50%;
   background: var(--brand);
   color: var(--brand-text);
-  font-weight: 800;
-  font-size: 1rem;
+  font-weight: 700;
+  font-size: 0.95rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2473,8 +2617,8 @@ tbody.dragging td {
 }
 
 .badge-alert {
-  background: #fff1d6;
-  color: #7a4a00;
+  background: var(--alert-bg);
+  color: var(--alert-text);
 }
 
 /* Locking a patient against changes. */
@@ -2483,6 +2627,7 @@ button.lock-toggle {
   padding: 2px 6px;
   border: 1px solid transparent;
   background: transparent;
+  box-shadow: none;
   font-size: 0.95rem;
   line-height: 1;
   opacity: 0.45;
@@ -2507,7 +2652,7 @@ button.lock-toggle.on {
 }
 
 .prep-card.locked .pc-head {
-  background: var(--accent-soft);
+  background: var(--surface-2);
 }
 
 /* Phone: cards (and their heading) fit the screen width, the name shrinking with "…" first. */
@@ -2600,4 +2745,101 @@ button.lock-toggle.on {
 .save-dialog .update-open {
   margin: 0;
   border: none;
+}
+
+/* Your involvement in the case, for your audit: its own strip at the foot of the card. */
+.pc-audit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 9px 16px 10px 18px;
+  border-top: 1px dashed var(--border-strong);
+  background: var(--surface);
+}
+
+.pc-audit .pc-value {
+  padding: 0;
+}
+
+.involvement-choice.seg button.on {
+  background: var(--brand-2);
+}
+
+.involvement-other {
+  align-self: center;
+  padding: 0 10px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+input.involvement-notes {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+/* Phone: four big buttons, two by two. */
+.involvement-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.involvement-grid button {
+  min-height: 44px;
+  font-weight: 600;
+}
+
+.involvement-grid button.on {
+  background: var(--brand-2);
+  border-color: var(--brand-2);
+  color: #fff;
+}
+
+.involvement-grid .involvement-other {
+  grid-column: 1 / -1;
+  padding: 0;
+}
+
+td.involvement-cell select {
+  width: 100%;
+  min-width: 8.5em;
+}
+
+/* A backup lens (e.g. for the sulcus): quiet until one is picked. */
+.backup-row:not(.on) select {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.backup-row.on .pc-muted {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Phone: tinted boxes (to fill in, alert, allergy) get room around their text. */
+.pfield.needs-info,
+.pfield.alert,
+.pfield.allergy-pending,
+.pfield.allergy-ack {
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+@media (max-width: 760px) {
+  .topbar {
+    padding: 10px 14px;
+  }
+
+  .topbar h1 {
+    font-size: 1.05rem;
+    white-space: nowrap;
+  }
+
+  .topbar h1::before {
+    width: 14px;
+    height: 14px;
+    box-shadow: inset 0 0 0 2px var(--brand), inset 0 0 0 7px rgb(255 255 255 / 0.85);
+  }
 }

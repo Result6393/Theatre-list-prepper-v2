@@ -15,7 +15,7 @@ function memoryStore(): KeyValueStore {
 describe('settings storage', () => {
   it('starts empty with the default layout', () => {
     const s = loadSettings(memoryStore());
-    expect(s.layout.columns).toHaveLength(10);
+    expect(s.layout.columns).toHaveLength(12);
     expect(s.flagHospitals).toEqual(['POWH', 'STG']);
   });
 

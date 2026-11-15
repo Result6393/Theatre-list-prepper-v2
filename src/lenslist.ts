@@ -1,4 +1,4 @@
-import { formatPower, lensCode, readLens, readTarget } from './prompts';
+import { formatPower, isBackupLine, lensCode, readBackup, readLens, readTarget } from './prompts';
 
 /**
  * The lens email for the theatre coordinator: a table of each ticked cataract patient with the lens
@@ -23,6 +23,8 @@ export interface LensLine {
   power: string;
   /** e.g. "plano" or "-0.50"; empty if none set. */
   target: string;
+  /** A second lens to have on hand for this patient (e.g. for the sulcus), not the one planned. */
+  backup?: boolean;
 }
 
 export interface LensCount {
@@ -44,7 +46,7 @@ function lensOf(cell: string, lenses: string[]): { model: string; power: string 
   const typed = cell
     .split('\n')
     .map((line) => line.trim())
-    .filter((line) => line && !/^target\b/i.test(line))
+    .filter((line) => line && !/^target\b/i.test(line) && !isBackupLine(line))
     .join('; ');
   return { model: typed, power: '' };
 }
@@ -55,11 +57,11 @@ export function lensLines(items: LensItem[], lenses: string[]): { lines: LensLin
   const missing: LensItem[] = [];
   for (const item of items) {
     const { model, power } = lensOf(item.cell, lenses);
-    if (!model) {
-      missing.push(item);
-      continue;
-    }
-    lines.push({ eye: shortEye(item.eye), who: item.who, model, power, target: readTarget(item.cell) ?? '' });
+    if (model) lines.push({ eye: shortEye(item.eye), who: item.who, model, power, target: readTarget(item.cell) ?? '' });
+    else missing.push(item);
+    // The backup lens is its own line, straight after the patient's lens, and is counted in the summary.
+    const backup = readBackup(item.cell);
+    if (backup?.model) lines.push({ eye: shortEye(item.eye), who: item.who, model: backup.model, power: formatPower(backup.power), target: '', backup: true });
   }
   return { lines, missing };
 }
@@ -107,7 +109,7 @@ function signOff(info: LensEmailInfo): string[] {
   return ['All the best,', ...(info.name.trim() ? [info.name.trim()] : [])];
 }
 
-const patientRow = (l: LensLine) => [l.eye, l.who, l.model, l.power, l.target];
+const patientRow = (l: LensLine) => [l.eye, l.who, l.backup ? `${l.model} (backup)` : l.model, l.power, l.target];
 const summaryRow = (c: LensCount) => [c.model, c.power, String(c.count)];
 
 /** The whole email as plain text, for apps that don't take formatted text. */
@@ -118,7 +120,7 @@ export function lensEmailText(lines: LensLine[], info: LensEmailInfo): string {
     '',
     intro(info),
     '',
-    ...lines.map((l) => join([l.eye, l.who, l.model, l.power, l.target ? `Target ${l.target}` : ''])),
+    ...lines.map((l) => join([l.eye, l.who, l.backup ? `Backup: ${l.model}` : l.model, l.power, l.target ? `Target ${l.target}` : ''])),
     '',
     'In summary, here are the lenses needed:',
     '',

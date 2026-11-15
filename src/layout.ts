@@ -52,7 +52,10 @@ export const FIELDS: Field[] = [
 
 const FIELD_BY_ID = new Map(FIELDS.map((f) => [f.id, f]));
 
-/** Matches the consultant cheat sheet: paste at B5, columns B–K (A is a row-number formula). */
+/**
+ * Matches the consultant cheat sheet: paste at B5, columns B–K (A is a row-number formula), then your
+ * own involvement in each case in L and M, for your audit (see involvement.ts).
+ */
 export const DEFAULT_LAYOUT: Layout = {
   columns: [
     { heading: 'Eye', source: 'field:eye' },
@@ -65,6 +68,8 @@ export const DEFAULT_LAYOUT: Layout = {
     { heading: 'Ordered', source: 'blank' },
     { heading: 'Alerts', source: 'field:alerts' },
     { heading: 'Plan & notes', source: 'field:planNotes' },
+    { heading: 'Involvement', source: 'blank' },
+    { heading: 'Involvement notes', source: 'blank' },
   ],
   includeHeadings: false,
   pasteStart: 'B5',

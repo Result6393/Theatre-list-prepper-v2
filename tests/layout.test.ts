@@ -10,7 +10,7 @@ const patients = extractSessions(parseTable(runSheetCsv()), OPTIONS).flatMap((s)
 const byMrn = (mrn: string) => patients.find((p) => p.mrn === mrn)!;
 
 describe('layout', () => {
-  it('default layout fills cheat-sheet columns B–K', () => {
+  it('default layout fills cheat-sheet columns B–K, with your involvement blank in L and M', () => {
     expect(buildRow(byMrn('1000006'), defaultLayout())).toEqual([
       'LEFT',
       '1000006 MOCK, Frank 70F',
@@ -22,6 +22,8 @@ describe('layout', () => {
       '',
       'Risk of falls',
       'STG patient',
+      '',
+      '',
     ]);
   });
 
