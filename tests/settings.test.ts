@@ -19,6 +19,14 @@ describe('settings storage', () => {
     expect(s.flagHospitals).toEqual(['POWH', 'STG']);
   });
 
+  it('gives settings still on the old same-calculation lenses the AR40x pair, and keeps any others', () => {
+    const old = JSON.parse(exportSettings(defaultSettings()));
+    old.prompts.equivalents = ['DIUx = ZCUx'];
+    expect(importSettings(JSON.stringify(old)).prompts.equivalents).toEqual(['DIUx = ZCUx', 'AR40x = AR40']);
+    old.prompts.equivalents = ['DIUx = ZCUx', 'DIB00 = DCB00'];
+    expect(importSettings(JSON.stringify(old)).prompts.equivalents).toEqual(['DIUx = ZCUx', 'DIB00 = DCB00']);
+  });
+
   it('uses settings built into an offline copy only when the browser has none', () => {
     const builtIn = defaultSettings();
     builtIn.flagHospitals = ['XYZ'];

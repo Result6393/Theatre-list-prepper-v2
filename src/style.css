@@ -2876,7 +2876,9 @@ td.involvement-cell select {
   border-style: dashed;
 }
 
-.locked .add-backup input[type='text'] {
+.locked .lock-keep input[type='text'],
+.locked .lock-keep textarea,
+.locked .lock-keep select {
   background: var(--surface) !important;
   cursor: text;
 }

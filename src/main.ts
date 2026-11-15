@@ -2130,7 +2130,7 @@ function renderPrep(): HTMLElement | null {
           const picked = readInvolvement(value);
           return h(
             'td',
-            { class: 'involvement-cell' },
+            { class: 'involvement-cell lock-keep' },
             h(
               'select',
               {
@@ -2146,7 +2146,7 @@ function renderPrep(): HTMLElement | null {
           );
         }
         const { area, change } = editorOf(r, col, Boolean(prompts), (target) => (target.parentElement!.className = classFor(r, col, target.value)));
-        return h('td', { class: classFor(r, col, r.cells[col]), style: `min-width:${columnWidth(c.source)}px` }, area, change, acknowledgeOf(r, col));
+        return h('td', { class: `${classFor(r, col, r.cells[col])}${col === involvement.notes ? ' lock-keep' : ''}`.trim(), style: `min-width:${columnWidth(c.source)}px` }, area, change, acknowledgeOf(r, col));
       }),
     );
     return applyLock(h(
@@ -2222,6 +2222,13 @@ function renderPrep(): HTMLElement | null {
           { class: 'pcard-body' },
           layout.columns.map((c, col) => {
             if (col === eyeCol) return h('div', { class: 'pfield' }, h('span', { class: 'pfield-label' }, c.heading || 'Eye'), isLocked(r) ? h('div', { class: 'pc-value' }, eye || '—') : eyeButtons, r.changes[col] !== undefined && !isLocked(r) ? editorOf(r, col, false, () => undefined).change : null);
+            // Your involvement stays editable on a locked patient.
+            if (isLocked(r) && col === involvement.level) return h('div', { class: 'pfield lock-keep' }, h('span', { class: 'pfield-label' }, c.heading || 'Involvement'), involvementChoice(r, col, 'involvement-grid'));
+            if (isLocked(r) && col === involvement.notes) {
+              const { area } = editorOf(r, col, false, () => undefined);
+              area.setAttribute('placeholder', 'e.g. did phaco only');
+              return h('div', { class: 'pfield lock-keep' }, h('label', { class: 'pfield-label', for: `cell-${rowKey(r)}-${col}` }, c.heading || 'Involvement notes'), area);
+            }
             if (isLocked(r)) {
               // Locked: just the information, as text.
               const value = (r.cells[col] ?? '').trim();
@@ -2403,15 +2410,11 @@ function renderPrep(): HTMLElement | null {
         ? null
         : h(
             'div',
-            { class: 'pc-audit', title: 'Your own part in this case, for your logbook and audit. Saved in its own columns on your sheet.' },
+            // lock-keep: your own record stays editable when the patient is locked against changes.
+            { class: 'pc-audit lock-keep', title: 'Your own part in this case, for your logbook and audit. Saved in its own columns on your sheet. Still editable while the patient is locked.' },
             h('span', { class: 'pc-label' }, 'My involvement'),
-            locked
-              ? h(
-                  'div',
-                  { class: 'pc-value' },
-                  [involvement.level, involvement.notes].map((col) => (col >= 0 ? (r.cells[col] ?? '').trim() : '')).filter(Boolean).join(' · ') || h('span', { class: 'pc-value empty' }, 'Not recorded'),
-                )
-              : [involvement.level >= 0 ? involvementChoice(r, involvement.level) : null, involvement.notes >= 0 ? involvementNotes(r, involvement.notes) : null],
+            involvement.level >= 0 ? involvementChoice(r, involvement.level) : null,
+            involvement.notes >= 0 ? involvementNotes(r, involvement.notes) : null,
           ),
     ), r);
   };
@@ -2470,7 +2473,7 @@ function renderPrep(): HTMLElement | null {
       : renderSource(grid),
     renderUpdate(grid),
     active.length && active.every((r) => isLocked(r))
-      ? h('p', { class: 'lock-note muted' }, '🔒 Patients start locked against changes: unlock one with its 🔒 to edit, or Unlock all.')
+      ? h('p', { class: 'lock-note muted' }, '🔒 Patients start locked against changes: unlock one with its 🔒 to edit, or Unlock all. Your involvement (and adding a backup lens) can still be filled in.')
       : null,
     allergyBanner(),
     phone ? [openAll, cards] : state.tableView ? h('div', { class: 'table-wrap' }, table) : prepCards,

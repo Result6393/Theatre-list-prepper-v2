@@ -264,7 +264,7 @@ function renderPrompts(props: Props): HTMLElement {
     ),
     lines(
       'Same-calculation lenses',
-      'One per line: a lens that uses another’s calculation on the IOL report (the same platform and A-constant), e.g. DIUx = ZCUx, so a DIU150 is read from the report’s ZCU150.',
+      'One per line: a lens that uses another’s calculation on the IOL report (the same platform and A-constant), e.g. DIUx = ZCUx, so a DIU150 is read from the report’s ZCU150, or AR40x = AR40, so an AR40e or AR40M is read from the report’s AR40 lines.',
       prompts.equivalents,
       (v) => (prompts.equivalents = v),
     ),
