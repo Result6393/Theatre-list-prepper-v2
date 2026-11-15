@@ -2230,6 +2230,7 @@ function renderPrep(): HTMLElement | null {
                 { class: `pfield ${classFor(r, col, r.cells[col])}` },
                 h('span', { class: 'pfield-label' }, c.heading || `Column ${col + 1}`),
                 h('div', { class: value ? 'pc-value' : 'pc-value empty' }, value || '—'),
+                col === promptCols.lens ? renderAddBackup(r, col) : null,
                 col === promptCols.lens ? renderReports(r) : null,
               );
             }
@@ -2394,7 +2395,7 @@ function renderPrep(): HTMLElement | null {
           ? h('section', { class: 'pc-section' }, lensRow && !locked ? renderFindingControls(r, findingsCol) : null, field(findingsCol))
           : null,
         lensCol >= 0
-          ? h('section', { class: 'pc-section pc-lens' }, lensRow && !locked ? renderLensControls(r, lensCol) : null, field(lensCol), (lensRow && !locked) || r.reports?.length ? renderReportBlock(r) : null)
+          ? h('section', { class: 'pc-section pc-lens' }, lensRow && !locked ? renderLensControls(r, lensCol) : null, field(lensCol), renderAddBackup(r, lensCol), (lensRow && !locked) || r.reports?.length ? renderReportBlock(r) : null)
           : null,
       ),
       rest.length ? h('div', { class: 'pc-foot' }, rest.map((col) => field(col, true))) : null,
@@ -3012,7 +3013,10 @@ function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | nu
   const reports = only !== 'findings' ? renderReports(r) : null;
   const cols = promptColumns(layout, prompts);
   // Locked: no buttons, just the report (if any).
-  if (isLocked(r) || !prompts.enabled || !isLensRow(r) || (cols.findings === -1 && cols.lens === -1)) return reports ? h('div', { class: 'prompts' }, reports) : null;
+  if (isLocked(r) || !prompts.enabled || !isLensRow(r) || (cols.findings === -1 && cols.lens === -1)) {
+    const addBackup = prompts.enabled && only !== 'findings' && !only ? renderAddBackup(r, cols.lens) : null;
+    return reports || addBackup ? h('div', { class: 'prompts' }, addBackup, reports) : null;
+  }
   const key = rowKey(r);
   const set = (col: number, value: string) => {
     r.cells[col] = value;
@@ -3384,6 +3388,66 @@ function renderLensControls(r: GridRow, col: number): HTMLElement {
       }),
     ),
     renderBackupLens(r, col),
+  );
+}
+
+/** A backup lens being added to a locked patient: the lens and power chosen so far, until Add is pressed. */
+const backupDrafts = new WeakMap<GridRow, { model: string; power: string }>();
+
+/**
+ * A locked patient with no backup lens can still be given one (a late decision to have a sulcus lens
+ * on hand shouldn't need the whole patient unlocked). Once added it's locked like everything else:
+ * changing or removing it needs the patient unlocked.
+ */
+function renderAddBackup(r: GridRow, col: number): HTMLElement | null {
+  const { prompts } = state.settings;
+  if (col < 0 || !isLocked(r) || r.status === 'cancelled' || !isLensRow(r) || !prompts.backupLenses.length) return null;
+  if (readBackup(r.cells[col] ?? '')) return null;
+  const key = rowKey(r);
+  const draft = backupDrafts.get(r) ?? { model: '', power: '' };
+  const add = () => {
+    if (!draft.model || readBackup(r.cells[col] ?? '')) return;
+    r.cells[col] = writeBackup(r.cells[col] ?? '', prompts.lenses, draft);
+    backupDrafts.delete(r);
+    const added = readBackup(r.cells[col]);
+    say(`Added backup lens ${[added?.model, added?.power].filter(Boolean).join(' ')} for ${rowLabel(r)}. Unlock them (🔒) to change or remove it.`);
+  };
+  return h(
+    'div',
+    // lock-keep: these stay usable while the patient is locked.
+    { class: 'pc-row add-backup lock-keep', title: 'Add a backup lens (e.g. for the sulcus) without unlocking the patient. Once added, unlock them to change or remove it.' },
+    h('span', { class: 'pc-muted' }, 'Add backup'),
+    h(
+      'select',
+      {
+        class: 'pc-select',
+        'aria-label': `Backup lens to add for ${rowLabel(r)}`,
+        'data-key': `${key}:add-backup`,
+        onchange: (e: Event) => (backupDrafts.set(r, { ...draft, model: (e.target as HTMLSelectElement).value }), render()),
+      },
+      h('option', { value: '', selected: !draft.model }, 'Choose lens…'),
+      prompts.backupLenses.map((l) => h('option', { value: l, selected: draft.model === l }, l)),
+    ),
+    draft.model
+      ? [
+          h('input', {
+            type: 'text',
+            class: 'pc-input',
+            style: 'width:6em',
+            value: draft.power,
+            placeholder: 'power',
+            'aria-label': 'Backup lens power',
+            'data-key': `${key}:add-backup-power`,
+            oninput: (e: Event) => {
+              draft.power = (e.target as HTMLInputElement).value;
+              backupDrafts.set(r, draft);
+            },
+            onkeydown: (e: Event) => (e as KeyboardEvent).key === 'Enter' && add(),
+          }),
+          h('button', { class: 'primary', 'data-key': `${key}:add-backup-go`, onclick: add }, 'Add'),
+          h('button', { class: 'link', 'data-key': `${key}:add-backup-cancel`, onclick: () => (backupDrafts.delete(r), render()) }, 'Cancel'),
+        ]
+      : null,
   );
 }
 
@@ -4195,9 +4259,12 @@ function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
   const lensCol = promptColumns(layout, prompts).lens;
   const describe = (row: { power: number; ref: number; axis?: number }) =>
     `${result.code} ${signed(row.power)}${row.axis !== undefined ? `, axis ${row.axis}°` : ''} → ${result.source === 'estimate' ? 'about ' : ''}${signed(row.ref)}`;
+  // A locked patient with no backup lens yet can be given one; changing it needs them unlocked.
+  const canAddBackup = isBackup && isLocked(r) && !facts.backup;
   const apply = () => {
     if (lensCol < 0) return say('There’s no Implants column to put the lens in (Settings → Cataract prompts).');
     if (isBackup) {
+      if (isLocked(r) && facts.backup) return;
       // Only the backup line is written: the first lens and its target stay exactly as they are.
       r.cells[lensCol] = writeBackup(r.cells[lensCol] ?? '', prompts.lenses, { model: result.code, power: String(chosen.power) });
       state.viewer = { ...v, sim: { ...sim, power: String(chosen.power) } };
@@ -4246,8 +4313,8 @@ function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
     h('p', { class: 'sim-chosen' }, describe(chosen)),
     h(
       'button',
-      { class: 'primary', 'data-key': 'sim:apply', disabled: isLocked(r) || lensCol < 0 || Boolean(lens.family && !lens.family.number), title: isLocked(r) ? 'This patient is locked: unlock them (🔒) to apply a lens' : '', onclick: apply },
-      isLocked(r) ? '🔒 Locked: unlock the patient to apply' : isBackup ? `Set as backup: ${result.code} ${signed(chosen.power)}D` : `Apply: ${result.code} ${signed(chosen.power)}D, target ${result.target === 0 ? 'plano' : signed(result.target)}`,
+      { class: 'primary', 'data-key': 'sim:apply', disabled: (isLocked(r) && !canAddBackup) || lensCol < 0 || Boolean(lens.family && !lens.family.number), title: isLocked(r) && !canAddBackup ? 'This patient is locked: unlock them (🔒) to apply a lens' : '', onclick: apply },
+      canAddBackup ? `Add as backup: ${result.code} ${signed(chosen.power)}D` : isLocked(r) ? (isBackup ? '🔒 Locked: unlock the patient to change the backup' : '🔒 Locked: unlock the patient to apply') : isBackup ? `Set as backup: ${result.code} ${signed(chosen.power)}D` : `Apply: ${result.code} ${signed(chosen.power)}D, target ${result.target === 0 ? 'plano' : signed(result.target)}`,
     ),
     isBackup ? h('p', { class: 'report-check note' }, 'These are in-the-bag powers for the target. A lens placed in the sulcus usually needs less power: adjust it yourself.') : null,
     result.notes.map((n) => h('p', { class: 'report-check note' }, n)),
