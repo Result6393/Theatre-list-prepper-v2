@@ -101,6 +101,8 @@ function importLimits(value: unknown, defaults: PromptSettings['limits']): Promp
 
 /** The lens list before DIUx was added: settings still on it get the new default list. */
 const OLD_DEFAULT_LENSES = 'DCB00,DIB00,ZCUx,CNA0Tx';
+/** The same-calculation lenses before AR40x = AR40 was added: settings still on them get the new default. */
+const OLD_DEFAULT_EQUIVALENTS = 'DIUx = ZCUx';
 
 function importPrompts(value: unknown, defaults: PromptSettings): PromptSettings {
   if (!isObject(value)) return defaults;
@@ -109,7 +111,7 @@ function importPrompts(value: unknown, defaults: PromptSettings): PromptSettings
     findings: Array.isArray(value.findings) ? stringList(value.findings) : defaults.findings,
     lenses: Array.isArray(value.lenses) && stringList(value.lenses).join() !== OLD_DEFAULT_LENSES ? stringList(value.lenses) : defaults.lenses,
     constants: Array.isArray(value.constants) ? stringList(value.constants) : defaults.constants,
-    equivalents: Array.isArray(value.equivalents) ? stringList(value.equivalents) : defaults.equivalents,
+    equivalents: Array.isArray(value.equivalents) && stringList(value.equivalents).join() !== OLD_DEFAULT_EQUIVALENTS ? stringList(value.equivalents) : defaults.equivalents,
     backupLenses: Array.isArray(value.backupLenses) ? stringList(value.backupLenses) : defaults.backupLenses,
     limits: importLimits(value.limits, defaults.limits),
     findingsColumn: typeof value.findingsColumn === 'string' ? value.findingsColumn : defaults.findingsColumn,

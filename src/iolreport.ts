@@ -865,6 +865,14 @@ export function equivalentLens(lens: PickedLens, equivalents: LensEquivalent[]):
       return { ...lens, code: `${base}${lens.family.number}${e.to.slice(toAt + 1)}`, family: { base, number: lens.family.number } };
     }
     if (fromAt < 0 && canonical(lens.code) === canonical(e.from)) return { ...lens, code: e.to.replace('x', ''), family: undefined };
+    // "AR40x = AR40": every lens that starts with AR40 (AR40e, AR40M…) is read from the report's AR40 lines.
+    if (fromAt >= 0 && toAt < 0) {
+      const prefix = canonical(e.from.slice(0, fromAt));
+      const suffix = canonical(e.from.slice(fromAt + 1));
+      const code = canonical(lens.family?.base ?? lens.code);
+      const own = lens.family ? canonical(lens.family.base) === prefix : code.startsWith(prefix) && code.endsWith(suffix) && code.length > prefix.length + suffix.length;
+      if (own) return { ...lens, code: e.to, family: undefined };
+    }
   }
   return null;
 }

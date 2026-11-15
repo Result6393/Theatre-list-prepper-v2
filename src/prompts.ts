@@ -42,7 +42,7 @@ export function defaultPrompts(): PromptSettings {
     findings: ['PXF', 'Guttata', 'Good dilation | Mod dilation | Poor dilation', 'Phacodonesis', 'Tamsulosin'],
     lenses: ['DCB00', 'DIB00', 'ZCUx', 'DIUx', 'CNA0Tx'],
     constants: ['DCB00 119.3', 'CNA0Tx 119.1'],
-    equivalents: ['DIUx = ZCUx'],
+    equivalents: ['DIUx = ZCUx', 'AR40x = AR40'],
     backupLenses: ['MA60AC', 'AR40e'],
     limits: defaultLimits(),
     findingsColumn: '',

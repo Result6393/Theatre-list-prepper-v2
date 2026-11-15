@@ -432,3 +432,25 @@ describe('lenses that use another lens’s calculation', () => {
     expect(s.rows.find((r) => r.power === 22)).toMatchObject({ ref: -0.51, cyl: 1.5, axis: 167 });
   });
 });
+
+describe('AR40x lenses read from the report’s AR40 lines', () => {
+  const report = readReport(REPORT)!;
+  const equivalents = parseEquivalents(['AR40x = AR40']);
+  const ar40e = lens({ code: 'AR40e', power: null });
+
+  it('is read from the AR40 table when the lens is an AR40e or AR40M', () => {
+    for (const code of ['AR40e', 'AR40M', 'ar40E']) {
+      const s = simulateLens(report, 'right', { ...ar40e, code }, [], equivalents) as Simulation;
+      expect(s.source).toBe('report');
+      expect(s.notes[0]).toBe(`${code} isn’t on the report: read from its AR40 calculation (the same lens platform and A-constant, as set in Settings).`);
+      expect(s.rows.find((r) => r.power === 20.5)).toMatchObject({ ref: -0.81 });
+    }
+  });
+
+  it('checks a picked AR40e against the AR40 lines, and a lens that starts differently is left alone', () => {
+    expect(checkLens(report, lens({ code: 'AR40e', power: 20.5, target: null }), [], defaultLimits(), equivalents).facts[0]).toContain('AR40e +20.50 → predicted −0.81');
+    expect(simulateLens(report, 'right', lens({ code: 'MA60AC', power: null }), [], equivalents)).toEqual(expect.any(String));
+    // Without the pair, nothing is found.
+    expect(simulateLens(report, 'right', ar40e, [], [])).toEqual(expect.any(String));
+  });
+});
