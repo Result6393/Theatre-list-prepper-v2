@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pickNewer } from '../src/offline';
+import { pickNewer, templateForOffline, templateName } from '../src/offline';
 
 describe('which copy an offline file starts with', () => {
   const stored = '{"stored":true}';
@@ -25,5 +25,31 @@ describe('which copy an offline file starts with', () => {
 
   it("keeps the browser's copy for a file saved before the time was recorded", () => {
     expect(pickNewer(stored, 100, built, 0)).toEqual({ text: stored, fromEmbedded: false });
+  });
+});
+
+describe('which Excel template goes into an offline copy', () => {
+  const kept = '{"name":"kept.xlsx","data":"QQ=="}';
+  const chosen = '{"name":"chosen.xlsx","data":"Qg=="}';
+
+  it('uses a template chosen for the copy first', () => {
+    expect(templateForOffline(chosen, null, true)).toBe(chosen);
+    expect(templateForOffline(chosen, kept, true)).toBe(chosen);
+  });
+
+  it('otherwise the kept one, unless it is left out', () => {
+    expect(templateForOffline(null, kept, true)).toBe(kept);
+    expect(templateForOffline(null, kept, false)).toBeNull();
+  });
+
+  it('is none when there is nothing to include', () => {
+    expect(templateForOffline(null, null, true)).toBeNull();
+  });
+
+  it('reads a template name for showing', () => {
+    expect(templateName(kept)).toBe('kept.xlsx');
+    expect(templateName(null)).toBeNull();
+    expect(templateName('not json')).toBeNull();
+    expect(templateName('{"data":"x"}')).toBeNull();
   });
 });

@@ -14,7 +14,7 @@ import Papa from 'papaparse';
 import { classifyFile } from './files';
 import { headingCells, readHeading, type HeadingCell } from './heading';
 import { imageKey, openWorkbook, overwrittenBelow, saveWorkbook, sheetNameProblem, withEdit, WorkbookError, type OcrRecord, type SheetData, type SheetEdit, type Workbook } from './xlsx';
-import { capturePristine, embeddedSavedAt, embeddedSettings, embeddedTemplate, pickNewer, withEmbedded } from './offline';
+import { capturePristine, embeddedSavedAt, embeddedSettings, embeddedTemplate, pickNewer, templateForOffline, templateName, withEmbedded } from './offline';
 import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore, type Settings } from './settings';
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
@@ -846,14 +846,54 @@ async function loadStoredTemplate(): Promise<void> {
 
 /** Saves this page as one HTML file with the settings (and kept template) built in. */
 function downloadOfflineCopy(): void {
-  let template: string | null = null;
-  try {
-    template = currentTemplateText();
-  } catch {
-    template = embeddedTemplate();
-  }
+  const template = templateForOffline(offlineTemplateChoice?.json ?? null, keptTemplateText(), includeKeptTemplate);
   downloadText(`theatre-list-prepper-v${__APP_VERSION__}-with-settings.html`, withEmbedded(pristine, exportSettings(state.settings), template), 'text/html');
 }
+
+/** The template kept on this computer (or built into this file), as stored. */
+function keptTemplateText(): string | null {
+  try {
+    return currentTemplateText();
+  } catch {
+    return embeddedTemplate();
+  }
+}
+
+/** A template picked just for the offline copy when none is kept. It is not kept in this browser. */
+let offlineTemplateChoice: { name: string; json: string } | null = null;
+/** Leave the kept template out of the offline copy by unticking this. */
+let includeKeptTemplate = true;
+
+function chooseOfflineTemplate(): void {
+  pickFile('.xlsx,.xlsm', async (file) => {
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const book = await openWorkbook(bytes.buffer as ArrayBuffer);
+      if (hasPatients(book)) {
+        alert(`${file.name} has patients in it, so it can't go into the offline copy. Choose an empty template.`);
+        return;
+      }
+      offlineTemplateChoice = { name: file.name, json: JSON.stringify({ name: file.name, data: toBase64(bytes) }) };
+    } catch (e) {
+      alert(e instanceof WorkbookError ? `${file.name}: ${e.message}` : `Couldn’t read ${file.name}.`);
+    }
+    render();
+  });
+}
+
+const offlineTemplate = {
+  keptName: () => templateName(keptTemplateText()),
+  chosenName: () => offlineTemplateChoice?.name ?? null,
+  includeKept: () => includeKeptTemplate,
+  setIncludeKept: (include: boolean) => {
+    includeKeptTemplate = include;
+  },
+  choose: chooseOfflineTemplate,
+  clearChosen: () => {
+    offlineTemplateChoice = null;
+    render();
+  },
+};
 
 function hasPatients(book: Workbook): boolean {
   try {
@@ -1586,6 +1626,7 @@ function render(): void {
           },
           done: closeSettings,
           downloadOffline: downloadOfflineCopy,
+          offlineTemplate,
         }))
       : h('main', {}, renderSetup(), renderPrep()),
     ...[state.view === 'main' ? renderViewer() : null, state.view === 'main' ? renderReorder() : null, state.view === 'main' ? renderSaveForms() : null].filter((v): v is HTMLElement => v !== null),
