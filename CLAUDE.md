@@ -22,6 +22,7 @@ Name the single-file build with its version when sharing it, e.g. `theatre-list-
 ## Privacy
 Never commit real run sheets, patient details, surgeon names or email addresses. Tests use invented data; `.gitignore` blocks CSV/Excel files and `*settings*.json`.
 
+- The offline copy with settings built in (`*with-settings*`) holds the owner's settings (email addresses and so on): never commit one or put one in a release. Releases are built by CI from the code only.
 - **No real names anywhere**: code, tests, README, comments, commit messages, screenshots. Examples use invented names (e.g. "Smith"). Never copy a name from an uploaded sample into the repo.
 - Before every push, scan the whole working tree and the new commit(s) for names taken from the user's uploaded files. Keep that name list outside the repo (session scratchpad only). Don't push if anything matches.
 - CI also fails on spreadsheet/CSV files, real health-service email domains, and email addresses outside the placeholder domains (see `ci.yml`).

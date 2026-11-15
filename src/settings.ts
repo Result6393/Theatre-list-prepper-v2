@@ -28,9 +28,10 @@ export function defaultSettings(): Settings {
   };
 }
 
-export function loadSettings(store: KeyValueStore | null): Settings {
+/** `fallback` is settings built into an offline copy: used only when this browser has none of its own. */
+export function loadSettings(store: KeyValueStore | null, fallback?: string | null): Settings {
   try {
-    const text = store?.getItem(STORAGE_KEY);
+    const text = store?.getItem(STORAGE_KEY) || fallback;
     return text ? importSettings(text) : defaultSettings();
   } catch {
     return defaultSettings();

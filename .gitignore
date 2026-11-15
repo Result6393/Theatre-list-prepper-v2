@@ -7,3 +7,5 @@ dist/
 *.xls
 # Exported settings can contain email addresses: never commit them.
 *settings*.json
+# The offline copy with settings built in contains them too.
+*with-settings*
