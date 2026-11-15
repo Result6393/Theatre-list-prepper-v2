@@ -2866,3 +2866,17 @@ td.involvement-cell select {
   font-size: 1rem;
   font-weight: 600;
 }
+
+/* Adding a backup lens to a locked patient: the one thing that can be added without unlocking. */
+.add-backup {
+  padding-top: 2px;
+}
+
+.add-backup select {
+  border-style: dashed;
+}
+
+.locked .add-backup input[type='text'] {
+  background: var(--surface) !important;
+  cursor: text;
+}
