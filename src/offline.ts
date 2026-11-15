@@ -44,6 +44,25 @@ export function pickNewer(
   return { text: stored, fromEmbedded: false };
 }
 
+/**
+ * The Excel template to build into an offline copy: one chosen just for the copy, else the kept
+ * one (unless left out), else none.
+ */
+export function templateForOffline(chosen: string | null, kept: string | null, includeKept: boolean): string | null {
+  return chosen || (includeKept ? kept : null);
+}
+
+/** The name inside a stored template ({ name, data } as JSON), for showing. */
+export function templateName(json: string | null): string | null {
+  if (!json) return null;
+  try {
+    const name = (JSON.parse(json) as { name?: unknown } | null)?.name;
+    return typeof name === 'string' && name ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The kept Excel template baked into this file ({ name, data } as JSON), if any. */
 export function embeddedTemplate(): string | null {
   return embeddedText(TEMPLATE_ID);

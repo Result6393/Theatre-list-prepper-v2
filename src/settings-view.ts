@@ -15,6 +15,20 @@ interface Props {
   done: () => void;
   /** Saves this page as one HTML file with the settings built in. */
   downloadOffline: () => void;
+  /** The Excel template that goes into the offline copy. */
+  offlineTemplate: OfflineTemplate;
+}
+
+export interface OfflineTemplate {
+  /** Name of the template kept on this computer, or null if none. */
+  keptName: () => string | null;
+  /** Name of a template picked just for the offline copy, or null. */
+  chosenName: () => string | null;
+  includeKept: () => boolean;
+  setIncludeKept: (include: boolean) => void;
+  /** Opens a file picker for a template to include (when none is kept). */
+  choose: () => void;
+  clearChosen: () => void;
 }
 
 export function renderSettings(props: Props): HTMLElement {
@@ -441,6 +455,27 @@ function renderEmail(props: Props): HTMLElement {
 
 // ---- Backup -----------------------------------------------------------------------
 
+/** Which Excel template goes into the offline copy: the kept one, or one chosen here if none is kept. */
+function renderOfflineTemplate(o: OfflineTemplate): HTMLElement {
+  const kept = o.keptName();
+  if (kept) {
+    const box = h('input', { type: 'checkbox', checked: o.includeKept(), onchange: () => o.setIncludeKept(box.checked) });
+    return h('label', { class: 'hint' }, box, ` Include my Excel template (${kept}) in the offline copy`);
+  }
+  const chosen = o.chosenName();
+  return h(
+    'div',
+    { class: 'inline-form' },
+    h(
+      'span',
+      { class: 'hint' },
+      chosen ? `Excel template to include: ${chosen}` : 'No Excel template is kept on this computer, so the offline copy would have none.',
+    ),
+    h('button', { onclick: o.choose }, chosen ? 'Choose a different template' : 'Add an Excel template to include (.xlsx)'),
+    chosen ? h('button', { class: 'ghost', onclick: o.clearChosen }, 'Remove') : null,
+  );
+}
+
 function renderBackup(props: Props): HTMLElement {
   const fileInput = h('input', {
     type: 'file',
@@ -468,6 +503,7 @@ function renderBackup(props: Props): HTMLElement {
       { class: 'hint' },
       'For a computer that blocks the web version or clears browser data: “Download offline copy” saves this app as one HTML file with your settings (and your kept Excel template) already inside. Open it from a USB stick or a shared drive. It contains your settings, such as email addresses, so keep it private.',
     ),
+    renderOfflineTemplate(props.offlineTemplate),
     h(
       'div',
       { class: 'inline-form' },
