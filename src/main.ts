@@ -14,8 +14,8 @@ import Papa from 'papaparse';
 import { classifyFile } from './files';
 import { headingCells, readHeading, type HeadingCell } from './heading';
 import { imageKey, openWorkbook, overwrittenBelow, saveWorkbook, sheetNameProblem, withEdit, WorkbookError, type OcrRecord, type SheetData, type SheetEdit, type Workbook } from './xlsx';
-import { capturePristine, embeddedSettings, embeddedTemplate, withEmbedded } from './offline';
-import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore } from './settings';
+import { capturePristine, embeddedSavedAt, embeddedSettings, embeddedTemplate, pickNewer, withEmbedded } from './offline';
+import { defaultSettings, exportSettings, importSettings, loadSettings, saveSettings, STORAGE_KEY, SYNC_APP, type KeyValueStore, type Settings } from './settings';
 import { mountSyncControl, pullBeforeStart, pushSoon } from './sync.js';
 import { renderSettings } from './settings-view';
 import { summaryHtml, summaryPage, summaryText as listSummaryText, type Summary as ListSummary } from './summary';
@@ -85,8 +85,39 @@ const storage: KeyValueStore | null = (() => {
   }
 })();
 
+/**
+ * The settings to start with: the browser's own, or ones built into this file if it was saved after
+ * the browser's last changed. Built-in ones that win are kept in the browser from then on.
+ */
+function startingSettings(): Settings {
+  const read = (key: string): string | null => {
+    try {
+      return storage?.getItem(key) ?? null;
+    } catch {
+      return null;
+    }
+  };
+  let storedAt = 0;
+  try {
+    storedAt = Number((JSON.parse(read(`${STORAGE_KEY}.sync`) || 'null') as { updated?: number } | null)?.updated) || 0;
+  } catch {
+    storedAt = 0;
+  }
+  const pick = pickNewer(read(STORAGE_KEY), storedAt, embeddedSettings(), embeddedSavedAt());
+  const settings = loadSettings(null, pick.text);
+  if (pick.fromEmbedded) {
+    saveSettings(storage, settings);
+    try {
+      storage?.setItem(`${STORAGE_KEY}.sync`, JSON.stringify({ updated: embeddedSavedAt(), dirty: false }));
+    } catch {
+      // Not remembered: used for this visit.
+    }
+  }
+  return settings;
+}
+
 const state = {
-  settings: loadSettings(storage, embeddedSettings()),
+  settings: startingSettings(),
   view: 'main' as 'main' | 'settings',
   /** Settings as they were when the Settings page opened, to tell if the list needs rebuilding. */
   settingsSnapshot: '',
@@ -766,6 +797,33 @@ function newSheetPlace(grid: Grid, template: SheetData, sameFile = true): { cell
 // ---- Save to a new Excel file -------------------------------------------------------
 
 const TEMPLATE_KEY = 'theatre-list-prepper.template';
+/** When (ms since 1970) the kept template last changed or was forgotten. */
+const TEMPLATE_UPDATED_KEY = 'theatre-list-prepper.template.updated';
+
+/** The kept template to use: this browser's, or one built into the file if the file is newer. */
+function currentTemplateText(): string | null {
+  let stored: string | null = null;
+  let storedAt = 0;
+  try {
+    stored = storage?.getItem(TEMPLATE_KEY) ?? null;
+    storedAt = Number(storage?.getItem(TEMPLATE_UPDATED_KEY)) || 0;
+  } catch {
+    // Nothing readable.
+  }
+  const builtAt = embeddedSavedAt();
+  // Forgotten here after the file was saved: don't bring it back from the file.
+  if (!stored && storedAt > builtAt) return null;
+  const pick = pickNewer(stored, storedAt, embeddedTemplate(), builtAt);
+  if (pick.fromEmbedded && pick.text) {
+    try {
+      storage?.setItem(TEMPLATE_KEY, pick.text);
+      storage?.setItem(TEMPLATE_UPDATED_KEY, String(builtAt || Date.now()));
+    } catch {
+      // Used for this visit only.
+    }
+  }
+  return pick.text;
+}
 
 function toBase64(bytes: Uint8Array): string {
   let text = '';
@@ -776,7 +834,7 @@ function toBase64(bytes: Uint8Array): string {
 /** A template file chosen before, if this computer kept it. */
 async function loadStoredTemplate(): Promise<void> {
   try {
-    const raw = storage?.getItem(TEMPLATE_KEY) || embeddedTemplate();
+    const raw = currentTemplateText();
     if (!raw) return;
     const { name, data } = JSON.parse(raw) as { name: string; data: string };
     const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
@@ -790,7 +848,7 @@ async function loadStoredTemplate(): Promise<void> {
 function downloadOfflineCopy(): void {
   let template: string | null = null;
   try {
-    template = storage?.getItem(TEMPLATE_KEY) || embeddedTemplate();
+    template = currentTemplateText();
   } catch {
     template = embeddedTemplate();
   }
@@ -892,6 +950,7 @@ function chooseTemplate(): void {
       if (kept) {
         try {
           storage?.setItem(TEMPLATE_KEY, JSON.stringify({ name: file.name, data: toBase64(bytes) }));
+          storage?.setItem(TEMPLATE_UPDATED_KEY, String(Date.now()));
         } catch {
           // Storage full or blocked: it's used this time only.
         }
@@ -911,6 +970,7 @@ function forgetTemplate(): void {
   state.template = null;
   try {
     storage?.removeItem(TEMPLATE_KEY);
+    storage?.setItem(TEMPLATE_UPDATED_KEY, String(Date.now()));
   } catch {
     // Nothing kept.
   }
