@@ -191,6 +191,11 @@ interface SimState {
   target: string;
   power: string;
   side: 'right' | 'left';
+  /**
+   * Which lens is being tried. As 'backup', the choices are your backup lenses and Apply sets the
+   * backup lens only: the patient's first lens and target can't be changed from there.
+   */
+  role?: 'backup';
 }
 
 const app = document.getElementById('app')!;
@@ -3434,6 +3439,13 @@ function renderBackupLens(r: GridRow, col: number): HTMLElement {
           h('button', { 'aria-label': 'Backup lens power up 0.5 D', 'data-key': `${key}:backup-up`, onclick: () => step(0.5) }, '+'),
         )
       : null,
+    r.reports?.length
+      ? h(
+          'button',
+          { class: 'link lock-keep', 'data-key': `${key}:backup-calc`, title: 'Open the IOL report with the backup lens’s calculation. Your lens isn’t changed.', onclick: () => openViewer(r, 0, 'backup') },
+          'Calculation',
+        )
+      : null,
   );
 }
 
@@ -3650,8 +3662,8 @@ function reportThumb(r: GridRow, image: ReportImage, i: number): HTMLElement {
   );
 }
 
-function openViewer(r: GridRow, index: number): void {
-  state.viewer = { key: rowKey(r), index, actualSize: false, sim: simFromRow(r) };
+function openViewer(r: GridRow, index: number, role?: 'backup'): void {
+  state.viewer = { key: rowKey(r), index, actualSize: false, sim: role === 'backup' ? backupSimFromRow(r) : simFromRow(r) };
   render();
 }
 
@@ -3668,6 +3680,22 @@ function simFromRow(r: GridRow): SimState {
     target: readTarget(cell) ?? '',
     power,
     side: pickedLens(r).eye === 'LEFT' ? 'left' : 'right',
+  };
+}
+
+/** The backup lens to try: the one picked (or your first backup lens), for the first lens's target. */
+function backupSimFromRow(r: GridRow): SimState {
+  const { layout, prompts } = state.settings;
+  const col = promptColumns(layout, prompts).lens;
+  const cell = col >= 0 ? (r.cells[col] ?? '') : '';
+  const backup = readBackup(cell);
+  return {
+    lens: backup?.model || prompts.backupLenses[0] || '',
+    number: '',
+    target: readTarget(cell) ?? '',
+    power: backup?.power.match(/[+-]?\d+(?:\.\d+)?/)?.[0] ?? '',
+    side: pickedLens(r).eye === 'LEFT' ? 'left' : 'right',
+    role: 'backup',
   };
 }
 
@@ -3726,13 +3754,15 @@ function renderReports(r: GridRow): HTMLElement | null {
 }
 
 /** The lens picked for a row, as at timeout: eye, lens and power, target. */
-function lensFacts(r: GridRow): { eye: string; lens: string; target: string } {
+function lensFacts(r: GridRow): { eye: string; lens: string; target: string; backup: string } {
   const { layout, prompts } = state.settings;
   const eyeCol = layout.columns.findIndex((c) => c.source === 'field:eye');
   const eye = (eyeCol >= 0 ? r.cells[eyeCol] : r.patient?.eye ?? '').trim().toUpperCase();
   const lensCol = promptColumns(layout, prompts).lens;
-  const line = lensCol >= 0 ? lensLines([{ who: '', eye, cell: r.cells[lensCol] ?? '' }], prompts.lenses).lines[0] : undefined;
-  return { eye, lens: line ? [line.model, line.power].filter(Boolean).join(' ') : '', target: line?.target ?? '' };
+  const lines = lensCol >= 0 ? lensLines([{ who: '', eye, cell: r.cells[lensCol] ?? '' }], prompts.lenses).lines : [];
+  const line = lines.find((l) => !l.backup);
+  const backup = lines.find((l) => l.backup);
+  return { eye, lens: line ? [line.model, line.power].filter(Boolean).join(' ') : '', target: line?.target ?? '', backup: backup ? [backup.model, backup.power].filter(Boolean).join(' ') : '' };
 }
 
 /** A patient's IOL report full screen, with the lens you picked above it, to check at timeout. */
@@ -3748,7 +3778,7 @@ function renderViewer(): HTMLElement | null {
   }
   const close = () => ((state.viewer = null), render());
   const go = (index: number) => ((state.viewer = { ...v, index, actualSize: false }), render());
-  const { eye, lens, target } = lensFacts(r);
+  const { eye, lens, target, backup } = lensFacts(r);
   const eyeLabel = eye === 'RIGHT' ? 'Right eye' : eye === 'LEFT' ? 'Left eye' : eye === 'BOTH' ? 'Both eyes' : 'Eye not set';
   const mismatch = reportStatus(r)?.check?.nameMismatch;
   return h(
@@ -3768,6 +3798,7 @@ function renderViewer(): HTMLElement | null {
           h('span', { class: `viewer-eye viewer-eye-${eye ? eye.toLowerCase() : 'missing'}` }, eyeLabel),
           h('span', { class: lens ? 'viewer-iol' : 'viewer-iol missing' }, lens || 'No lens picked'),
           target ? h('span', { class: 'viewer-target' }, `Target ${target}`) : null,
+          backup ? h('span', { class: 'viewer-backup' }, `Backup ${backup}`) : null,
         ),
         renderViewerCheck(r),
       ),
@@ -4051,7 +4082,30 @@ function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
   };
   const chip = (label: string, on: boolean, onclick: () => void, key: string, title = '') =>
     h('button', { class: on ? 'chip on' : 'chip', 'aria-pressed': on ? 'true' : 'false', 'data-key': `sim:${key}`, title, onclick }, label);
-  const heading = h('h3', { class: 'sim-title' }, 'Try a lens');
+  const isBackup = sim.role === 'backup';
+  const facts = lensFacts(r);
+  const lensChoices = isBackup ? [...new Set([...prompts.backupLenses, ...(sim.lens ? [sim.lens] : [])])] : prompts.lenses;
+  const switchTo = (role?: 'backup') => {
+    state.viewer = { ...v, sim: role === 'backup' ? backupSimFromRow(r) : simFromRow(r) };
+    render();
+  };
+  // Which lens you're trying: looking at a backup lens never touches the first lens.
+  const heading = h(
+    'div',
+    { class: 'sim-head' },
+    h('h3', { class: 'sim-title' }, isBackup ? 'Try a backup lens' : 'Try a lens'),
+    prompts.backupLenses.length || facts.backup
+      ? h(
+          'div',
+          { class: 'seg sim-role', role: 'group', 'aria-label': 'Which lens to try' },
+          h('button', { class: isBackup ? '' : 'on', 'aria-pressed': isBackup ? 'false' : 'true', 'data-key': 'sim:role:lens', onclick: () => isBackup && switchTo() }, 'Lens'),
+          h('button', { class: isBackup ? 'on' : '', 'aria-pressed': isBackup ? 'true' : 'false', 'data-key': 'sim:role:backup', title: 'Look at a backup lens (e.g. for the sulcus) without changing the lens you picked', onclick: () => !isBackup && switchTo('backup') }, 'Backup lens'),
+        )
+      : null,
+    isBackup
+      ? h('p', { class: 'sim-kept' }, facts.lens ? `🔒 Your lens stays ${[facts.lens, facts.target ? `target ${facts.target}` : ''].filter(Boolean).join(', ')}: Apply here only sets the backup.` : '🔒 Apply here only sets the backup: no first lens is picked yet.')
+      : null,
+  );
   if (!reading) {
     const reading = (r.reports ?? []).map(readingOf).includes('reading');
     return h('aside', { class: 'sim' }, heading, h('p', { class: 'report-check none' }, reading ? 'Reading the report…' : 'The report couldn’t be read, so there’s nothing to work from.'));
@@ -4072,8 +4126,8 @@ function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
     h(
       'div',
       { class: 'prompt-set' },
-      h('span', { class: 'prompt-label' }, 'Lens'),
-      prompts.lenses.map((l) =>
+      h('span', { class: 'prompt-label' }, isBackup ? 'Backup' : 'Lens'),
+      lensChoices.map((l) =>
         chip(l.replace('x', '…'), sim.lens === l, () => {
           const family = l.includes('x') ? l.slice(0, l.indexOf('x')) : '';
           // A new lens (or number, eye or target) shows the best power for it until you pick one.
@@ -4143,6 +4197,12 @@ function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
     `${result.code} ${signed(row.power)}${row.axis !== undefined ? `, axis ${row.axis}°` : ''} → ${result.source === 'estimate' ? 'about ' : ''}${signed(row.ref)}`;
   const apply = () => {
     if (lensCol < 0) return say('There’s no Implants column to put the lens in (Settings → Cataract prompts).');
+    if (isBackup) {
+      // Only the backup line is written: the first lens and its target stay exactly as they are.
+      r.cells[lensCol] = writeBackup(r.cells[lensCol] ?? '', prompts.lenses, { model: result.code, power: String(chosen.power) });
+      state.viewer = { ...v, sim: { ...sim, power: String(chosen.power) } };
+      return say(`Set the backup lens to ${result.code} ${signed(chosen.power)} for ${rowLabel(r)}. Their lens is unchanged. ${reportSaveHint()}`);
+    }
     let cell = writeLens(r.cells[lensCol] ?? '', prompts.lenses, { lens: sim.lens, extra: lens.family?.number ?? '', power: String(chosen.power) });
     cell = writeTarget(cell, prompts.lenses, result.target === 0 ? 'plano' : String(result.target));
     r.cells[lensCol] = cell;
@@ -4187,8 +4247,9 @@ function renderSimulator(r: GridRow, v: Viewer): HTMLElement | null {
     h(
       'button',
       { class: 'primary', 'data-key': 'sim:apply', disabled: isLocked(r) || lensCol < 0 || Boolean(lens.family && !lens.family.number), title: isLocked(r) ? 'This patient is locked: unlock them (🔒) to apply a lens' : '', onclick: apply },
-      isLocked(r) ? '🔒 Locked: unlock the patient to apply' : `Apply: ${result.code} ${signed(chosen.power)}D, target ${result.target === 0 ? 'plano' : signed(result.target)}`,
+      isLocked(r) ? '🔒 Locked: unlock the patient to apply' : isBackup ? `Set as backup: ${result.code} ${signed(chosen.power)}D` : `Apply: ${result.code} ${signed(chosen.power)}D, target ${result.target === 0 ? 'plano' : signed(result.target)}`,
     ),
+    isBackup ? h('p', { class: 'report-check note' }, 'These are in-the-bag powers for the target. A lens placed in the sulcus usually needs less power: adjust it yourself.') : null,
     result.notes.map((n) => h('p', { class: 'report-check note' }, n)),
     result.working.length
       ? h(
