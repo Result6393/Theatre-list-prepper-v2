@@ -2367,7 +2367,7 @@ function renderPrep(): HTMLElement | null {
               autoGrow(target);
             },
           })
-        : h('div', { class: 'pc-name' }, rowName(r));
+        : h('div', { class: 'pc-name' }, (keyIndex >= 0 ? r.cells[keyIndex].trim() : '') || rowLabel(r));
     const rest = layout.columns.map((_, col) => col).filter((col) => !placed.has(col));
     return applyLock(h(
       'article',
@@ -3848,6 +3848,12 @@ function renderViewer(): HTMLElement | null {
   const { eye, lens, target, backup } = lensFacts(r);
   const eyeLabel = eye === 'RIGHT' ? 'Right eye' : eye === 'LEFT' ? 'Left eye' : eye === 'BOTH' ? 'Both eyes' : 'Eye not set';
   const mismatch = reportStatus(r)?.check?.nameMismatch;
+  // The side panel sticks just below the header, whose height depends on the screen.
+  requestAnimationFrame(() => {
+    const el = document.querySelector<HTMLElement>('.viewer');
+    const head = el?.querySelector<HTMLElement>('.viewer-head');
+    if (el && head) el.style.setProperty('--viewer-head-h', `${head.offsetHeight}px`);
+  });
   return h(
     'div',
     { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': `IOL report for ${rowLabel(r)}` },
