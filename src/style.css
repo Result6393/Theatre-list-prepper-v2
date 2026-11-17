@@ -1689,6 +1689,10 @@ body.viewing {
   padding: 12px 16px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  /* Stays at the top while the screenshot scrolls: patient, eye, lens and target are always in view. */
+  position: sticky;
+  top: 0;
+  z-index: 5;
 }
 
 .viewer-name {
@@ -1912,8 +1916,8 @@ table.estimate-table tr.picked td {
 
   aside.sim {
     position: sticky;
-    top: 0;
-    max-height: 100vh;
+    top: var(--viewer-head-h, 0px);
+    max-height: calc(100vh - var(--viewer-head-h, 0px));
     overflow-y: auto;
     border-left: 1px solid var(--border);
   }
