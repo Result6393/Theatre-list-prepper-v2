@@ -2846,10 +2846,22 @@ function renderSaveMenu(grid: Grid): HTMLElement | null {
 }
 
 /** How the last save went: where the file is, or why it couldn't save over it. */
+let saveReportTimedFor: SaveReport | null = null;
+
 function renderSaveReport(): HTMLElement | null {
   const report = state.saveReport;
   if (!report) return null;
   const actions = report.actions ?? [];
+  // A successful save's message goes away by itself after 10 seconds. Problems, and messages with
+  // buttons, stay until dismissed.
+  if (report.ok && !report.busy && !actions.length && saveReportTimedFor !== report) {
+    saveReportTimedFor = report;
+    window.setTimeout(() => {
+      if (state.saveReport !== report) return;
+      state.saveReport = null;
+      render();
+    }, 10000);
+  }
   return h(
     'div',
     { class: `save-report${report.ok ? '' : ' warn'}${report.busy ? ' busy' : ''}`, role: report.ok ? 'status' : 'alert' },
