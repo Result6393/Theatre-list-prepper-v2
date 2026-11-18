@@ -183,7 +183,8 @@ const state = {
 interface Viewer {
   key: string;
   index: number;
-  actualSize: boolean;
+  /** How the screenshot is sized: to the page's width or height, or a percentage of its own size. */
+  zoom: 'width' | 'height' | number;
   sim?: SimState;
 }
 
@@ -3820,7 +3821,7 @@ function reportThumb(r: GridRow, image: ReportImage, i: number): HTMLElement {
 }
 
 function openViewer(r: GridRow, index: number, role?: 'backup'): void {
-  state.viewer = { key: rowKey(r), index, actualSize: false, sim: role === 'backup' ? backupSimFromRow(r) : simFromRow(r) };
+  state.viewer = { key: rowKey(r), index, zoom: 'width', sim: role === 'backup' ? backupSimFromRow(r) : simFromRow(r) };
   render();
 }
 
@@ -3922,6 +3923,38 @@ function lensFacts(r: GridRow): { eye: string; lens: string; target: string; bac
   return { eye, lens: line ? [line.model, line.power].filter(Boolean).join(' ') : '', target: line?.target ?? '', backup: backup ? [backup.model, backup.power].filter(Boolean).join(' ') : '' };
 }
 
+const ZOOM_STEPS = [25, 50, 75, 100, 125, 150, 200, 300, 400];
+
+function setZoom(v: Viewer, zoom: Viewer['zoom']): void {
+  state.viewer = { ...v, zoom };
+  render();
+}
+
+/** Zoom buttons for the report view: out, fit to width, fit to height, actual size, in. */
+function renderZoomControls(v: Viewer, width: number): HTMLElement {
+  // What the screenshot is shown at now, as a percentage of its own size.
+  const current = () => {
+    const shown = document.querySelector<HTMLImageElement>('.viewer-body img')?.clientWidth ?? width;
+    return (shown / width) * 100;
+  };
+  const step = (dir: 1 | -1) => {
+    const now = current();
+    const next = dir > 0 ? ZOOM_STEPS.find((z) => z > now + 0.5) : [...ZOOM_STEPS].reverse().find((z) => z < now - 0.5);
+    if (next) setZoom(v, next);
+  };
+  const choice = (label: string, key: string, on: boolean, title: string, onclick: () => void) =>
+    h('button', { class: on ? 'on' : '', 'aria-pressed': on ? 'true' : 'false', 'data-key': `viewer:${key}`, title, onclick }, label);
+  return h(
+    'div',
+    { class: 'seg viewer-zoom', role: 'group', 'aria-label': 'Zoom' },
+    h('button', { 'data-key': 'viewer:zoom-out', 'aria-label': 'Zoom out', title: 'Zoom out', onclick: () => step(-1) }, '−'),
+    choice('Fit width', 'fit-width', v.zoom === 'width', 'Fill the width of the screen', () => setZoom(v, 'width')),
+    choice('Fit height', 'fit-height', v.zoom === 'height', 'Show the whole screenshot from top to bottom', () => setZoom(v, 'height')),
+    choice(typeof v.zoom === 'number' && v.zoom !== 100 ? `${v.zoom}%` : '100%', 'zoom-100', typeof v.zoom === 'number', 'Actual size (click the screenshot to switch too)', () => setZoom(v, 100)),
+    h('button', { 'data-key': 'viewer:zoom-in', 'aria-label': 'Zoom in', title: 'Zoom in', onclick: () => step(1) }, '+'),
+  );
+}
+
 /** A patient's IOL report full screen, with the lens you picked above it, to check at timeout. */
 function renderViewer(): HTMLElement | null {
   const v = state.viewer;
@@ -3934,11 +3967,11 @@ function renderViewer(): HTMLElement | null {
     return null;
   }
   const close = () => ((state.viewer = null), render());
-  const go = (index: number) => ((state.viewer = { ...v, index, actualSize: false }), render());
+  const go = (index: number) => ((state.viewer = { ...v, index, zoom: 'width' }), render());
   const { eye, lens, target, backup } = lensFacts(r);
   const eyeLabel = eye === 'RIGHT' ? 'Right eye' : eye === 'LEFT' ? 'Left eye' : eye === 'BOTH' ? 'Both eyes' : 'Eye not set';
   const mismatch = reportStatus(r)?.check?.nameMismatch;
-  // The side panel sticks just below the header, whose height depends on the screen.
+  // Fit to height leaves room for the header, whose height depends on the screen.
   requestAnimationFrame(() => {
     const el = document.querySelector<HTMLElement>('.viewer');
     const head = el?.querySelector<HTMLElement>('.viewer-head');
@@ -3976,11 +4009,7 @@ function renderViewer(): HTMLElement | null {
             ]
           : null,
         readAgainButton(r, 'Re-read this report', 'ghost'),
-        h(
-          'button',
-          { 'data-key': 'viewer:size', onclick: () => ((state.viewer = { ...v, actualSize: !v.actualSize }), render()) },
-          v.actualSize ? 'Fit to width' : 'Actual size',
-        ),
+        renderZoomControls(v, image.width),
         h('button', { class: 'primary', 'data-key': 'viewer:close', onclick: close }, 'Close'),
       ),
     ),
@@ -3989,11 +4018,11 @@ function renderViewer(): HTMLElement | null {
       { class: 'viewer-main' },
       h(
         'div',
-        { class: v.actualSize ? 'viewer-body actual' : 'viewer-body' },
+        { class: `viewer-body${typeof v.zoom === 'number' ? ' actual' : v.zoom === 'height' ? ' fit-height' : ''}` },
         h(
           'div',
-          { class: 'shot', style: v.actualSize ? `width:${image.width}px` : '' },
-          h('img', { src: imageUrl(image), alt: `IOL report for ${rowLabel(r)}`, onclick: () => ((state.viewer = { ...v, actualSize: !v.actualSize }), render()) }),
+          { class: 'shot', style: typeof v.zoom === 'number' ? `width:${Math.round((image.width * v.zoom) / 100)}px` : '' },
+          h('img', { src: imageUrl(image), alt: `IOL report for ${rowLabel(r)}`, onclick: () => setZoom(v, v.zoom === 'width' ? 100 : 'width') }),
           renderHighlights(r, image, v.sim),
         ),
       ),
@@ -4548,8 +4577,8 @@ document.addEventListener('keydown', (e) => {
   if (v) {
     const count = state.grid?.rows.find((r) => rowKey(r) === v.key)?.reports?.length ?? 0;
     if (e.key === 'Escape') state.viewer = null;
-    else if (e.key === 'ArrowLeft' && v.index > 0) state.viewer = { ...v, index: v.index - 1, actualSize: false };
-    else if (e.key === 'ArrowRight' && v.index < count - 1) state.viewer = { ...v, index: v.index + 1, actualSize: false };
+    else if (e.key === 'ArrowLeft' && v.index > 0) state.viewer = { ...v, index: v.index - 1, zoom: 'width' };
+    else if (e.key === 'ArrowRight' && v.index < count - 1) state.viewer = { ...v, index: v.index + 1, zoom: 'width' };
     else return;
     e.preventDefault();
     render();
