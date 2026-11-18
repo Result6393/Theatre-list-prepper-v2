@@ -1495,7 +1495,11 @@ body:has(.save-report) .toast-area {
 }
 
 .phone-bar > .primary {
-  flex: 1;
+  /* Just wide enough for its label; Save and ⋯ sit on the right. */
+  flex: 0 0 auto;
+  margin-right: auto;
+  padding-left: 18px;
+  padding-right: 18px;
 }
 
 .phone-bar .menu {
