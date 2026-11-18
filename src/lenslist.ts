@@ -25,12 +25,15 @@ export interface LensLine {
   target: string;
   /** A second lens to have on hand for this patient (e.g. for the sulcus), not the one planned. */
   backup?: boolean;
+  /** A toric lens (its model number isn't zero, e.g. CNA0T4): shown in bold so it stands out. */
+  toric?: boolean;
 }
 
 export interface LensCount {
   model: string;
   power: string;
   count: number;
+  toric?: boolean;
 }
 
 const SHORT_EYE: Record<string, string> = { RIGHT: 'RE', LEFT: 'LE', BOTH: 'BE' };
@@ -40,15 +43,16 @@ export function shortEye(eye: string): string {
 }
 
 /** The lens picked, or else whatever you typed in the box (minus the target line). */
-function lensOf(cell: string, lenses: string[]): { model: string; power: string } {
+function lensOf(cell: string, lenses: string[]): { model: string; power: string; toric: boolean } {
   const pick = readLens(cell, lenses);
-  if (pick) return { model: lensCode(pick), power: formatPower(pick.power) };
+  // A listed lens with an "x" for its model number is a toric when that number isn't all zeros.
+  if (pick) return { model: lensCode(pick), power: formatPower(pick.power), toric: pick.lens.includes('x') && /[1-9]/.test(pick.extra) };
   const typed = cell
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line && !/^target\b/i.test(line) && !isBackupLine(line))
     .join('; ');
-  return { model: typed, power: '' };
+  return { model: typed, power: '', toric: false };
 }
 
 /** Lines for patients with something in the Implants box, and those without (left out of the list). */
@@ -56,8 +60,8 @@ export function lensLines(items: LensItem[], lenses: string[]): { lines: LensLin
   const lines: LensLine[] = [];
   const missing: LensItem[] = [];
   for (const item of items) {
-    const { model, power } = lensOf(item.cell, lenses);
-    if (model) lines.push({ eye: shortEye(item.eye), who: item.who, model, power, target: readTarget(item.cell) ?? '' });
+    const { model, power, toric } = lensOf(item.cell, lenses);
+    if (model) lines.push({ eye: shortEye(item.eye), who: item.who, model, power, target: readTarget(item.cell) ?? '', ...(toric ? { toric } : {}) });
     else missing.push(item);
     // The backup lens is its own line, straight after the patient's lens, and is counted in the summary.
     const backup = readBackup(item.cell);
@@ -74,11 +78,11 @@ function powerValue(power: string): number {
 /** How many of each lens: by model, then power (lowest first). */
 export function lensSummary(lines: LensLine[]): LensCount[] {
   const counts = new Map<string, LensCount>();
-  for (const { model, power } of lines) {
+  for (const { model, power, toric } of lines) {
     const key = `${model}\u0000${power}`;
     const found = counts.get(key);
     if (found) found.count += 1;
-    else counts.set(key, { model, power, count: 1 });
+    else counts.set(key, { model, power, count: 1, ...(toric ? { toric } : {}) });
   }
   return [...counts.values()].sort(
     (a, b) =>
@@ -97,8 +101,8 @@ export interface LensEmailInfo {
   name: string;
 }
 
-const PATIENT_HEAD = ['Eye', 'Patient', 'Lens', 'Power', 'Target'];
-const SUMMARY_HEAD = ['Lens', 'Power', 'Number'];
+export const PATIENT_HEAD = ['Eye', 'Patient', 'Lens', 'Power', 'Target'];
+export const SUMMARY_HEAD = ['Lens', 'Power', 'Number'];
 
 function intro({ list, day }: LensEmailInfo): string {
   const which = list ? `the ${list} list` : 'the list';
@@ -110,6 +114,11 @@ function signOff(info: LensEmailInfo): string[] {
 }
 
 const patientRow = (l: LensLine) => [l.eye, l.who, l.backup ? `${l.model} (backup)` : l.model, l.power, l.target];
+
+/** Rows of the patient table, for showing on screen: each with whether it's a toric. */
+export function lensTableRows(lines: LensLine[]): { cells: string[]; toric: boolean }[] {
+  return lines.map((l) => ({ cells: patientRow(l), toric: Boolean(l.toric) }));
+}
 const summaryRow = (c: LensCount) => [c.model, c.power, String(c.count)];
 
 /** The whole email as plain text, for apps that don't take formatted text. */
@@ -120,11 +129,11 @@ export function lensEmailText(lines: LensLine[], info: LensEmailInfo): string {
     '',
     intro(info),
     '',
-    ...lines.map((l) => join([l.eye, l.who, l.backup ? `Backup: ${l.model}` : l.model, l.power, l.target ? `Target ${l.target}` : ''])),
+    ...lines.map((l) => join([l.eye, l.who, l.backup ? `Backup: ${l.model}` : l.toric ? `${l.model} (TORIC)` : l.model, l.power, l.target ? `Target ${l.target}` : ''])),
     '',
     'In summary, here are the lenses needed:',
     '',
-    ...lensSummary(lines).map((c) => `${join([c.model, c.power])} × ${c.count}`),
+    ...lensSummary(lines).map((c) => `${join([c.toric ? `${c.model} (TORIC)` : c.model, c.power])} × ${c.count}`),
     '',
     ...signOff(info),
   ].join('\n');
@@ -134,12 +143,14 @@ const escapeHtml = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;')
 
 const CELL = 'border:1px solid #999;padding:3px 8px;text-align:left';
 
-function table(head: string[], rows: string[][]): string {
-  const cells = (tag: string, row: string[]) => row.map((c) => `<${tag} style="${CELL}">${escapeHtml(c)}</${tag}>`).join('');
+const TORIC_CELL = `${CELL};font-weight:bold;background:#fff2a8`;
+
+function table(head: string[], rows: { cells: string[]; toric?: boolean }[]): string {
+  const cells = (tag: string, row: string[], toric = false) => row.map((c) => `<${tag} style="${toric ? TORIC_CELL : CELL}">${escapeHtml(c)}</${tag}>`).join('');
   return (
     '<table style="border-collapse:collapse" cellpadding="0" cellspacing="0">' +
     `<thead><tr>${cells('th', head)}</tr></thead>` +
-    `<tbody>${rows.map((r) => `<tr>${cells('td', r)}</tr>`).join('')}</tbody>` +
+    `<tbody>${rows.map((r) => `<tr>${cells('td', r.cells, r.toric)}</tr>`).join('')}</tbody>` +
     '</table>'
   );
 }
@@ -156,11 +167,11 @@ export function lensEmailHtml(lines: LensLine[], info: LensEmailInfo): string {
     gap,
     line(intro(info)),
     gap,
-    table(PATIENT_HEAD, lines.map(patientRow)),
+    table(PATIENT_HEAD, lensTableRows(lines)),
     gap,
     line('In summary, here are the lenses needed:'),
     gap,
-    table(SUMMARY_HEAD, lensSummary(lines).map(summaryRow)),
+    table(SUMMARY_HEAD, lensSummary(lines).map((c) => ({ cells: summaryRow(c), toric: c.toric }))),
     gap,
     ...signOff(info).map(line),
   ].join('');
