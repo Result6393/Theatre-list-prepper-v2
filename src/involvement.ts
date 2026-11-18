@@ -7,7 +7,7 @@ import type { SheetData } from './xlsx';
  * so the levels can be filtered and counted in Excel. Like every other pick, it's just the cell's text.
  */
 
-export const INVOLVEMENT_LEVELS = ['Observed', 'Supervised', 'Assisted', 'Unsupervised'];
+export const INVOLVEMENT_LEVELS = ['Not involved', 'Observed', 'Supervised', 'Assisted', 'Unsupervised'];
 
 export const INVOLVEMENT_HEADING = 'Involvement';
 export const INVOLVEMENT_NOTES_HEADING = 'Involvement notes';

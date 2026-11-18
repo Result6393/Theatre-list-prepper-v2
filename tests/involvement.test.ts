@@ -23,6 +23,7 @@ describe('involvement', () => {
   it('reads a level however it’s typed, and leaves other text alone', () => {
     expect(readInvolvement(' supervised')).toBe('Supervised');
     expect(readInvolvement('UNSUPERVISED')).toBe('Unsupervised');
+    expect(readInvolvement(' not involved')).toBe('Not involved');
     expect(readInvolvement('')).toBe('');
     expect(readInvolvement('did phaco only')).toBe('');
   });

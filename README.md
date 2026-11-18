@@ -68,7 +68,7 @@ The prompts just edit the cell text, so you can still type in the cell, and anyt
 
 ## Your involvement (for your audit)
 
-Each patient has **My involvement** at the foot of their card: pick **Observed**, **Supervised**, **Assisted** or **Unsupervised** (click it again to clear it), and type anything else beside it (e.g. `did phaco only`). In Compact view it's a dropdown in the *Involvement* column; on a phone, four buttons.
+Each patient has **My involvement** at the foot of their card: pick **Not involved**, **Observed**, **Supervised**, **Assisted** or **Unsupervised** (click it again to clear it), and type anything else beside it (e.g. `did phaco only`). In Compact view it's a dropdown in the *Involvement* column; on a phone, five buttons.
 
 - It's saved in its own two columns, **Involvement** and **Involvement notes** (L and M by default, straight after *Plan & notes*), so in Excel you can filter, sort and count by level. It's left out of the Summary you send on, and the template doesn't print those columns.
 - IOL report screenshots sit just right of the last column, so they now start at N.
