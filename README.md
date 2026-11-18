@@ -108,7 +108,7 @@ Patients dropped, added or reordered after you prepped? Keep your notes without 
 Then check the list. Patients are matched by MRN:
 - **Patients still on the list** keep everything you typed, in the new order. Anyone whose place changed is marked **Moved, was #n** (both patients, when two swap).
 - **New patients** are filled in from the run sheet and marked **New**, so you can see who still needs prep.
-- **Patients no longer on the list** are kept at the bottom, marked **Cancelled** (with the list they're on now, if they moved to another one). Untick any you don't want to keep. Cancelled patients are never put in the Medical Records email.
+- **Patients no longer on the list** are kept at the bottom, marked **Cancelled** (with the list they're on now, if they moved to another one). Untick any you don't want to keep. Cancelled patients are never put in the Medical Records email. Cancelled by mistake? Press **Uncancel** beside the badge to put the patient back on the list, at the end.
 - If the run sheet now says something different from your sheet (e.g. the eye or procedure changed), the cell shows **Now: …** with **Use** or **Keep**.
 
 Then click **Copy for Excel**, click B5 (or wherever the rows were) and press Ctrl+V. This replaces the old rows. Cancelled patients go under a `CANCELLED` row at the bottom, and blank rows clear anything left over.
