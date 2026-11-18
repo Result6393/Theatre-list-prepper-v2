@@ -1455,6 +1455,21 @@ function moveRow(grid: Grid, from: number, to: number): void {
   render();
 }
 
+/** Puts a cancelled patient back on the list, at the end of it (above the other cancelled ones). */
+function uncancelRow(grid: Grid, r: GridRow): void {
+  if (r.status !== 'cancelled') return;
+  const at = grid.rows.indexOf(r);
+  if (at < 0) return;
+  grid.rows.splice(at, 1);
+  r.status = 'sheet';
+  r.note = undefined;
+  r.included = true;
+  const last = grid.rows.map((x) => x.status !== 'cancelled').lastIndexOf(true);
+  grid.rows.splice(last + 1, 0, r);
+  say('Back on the list, at the end.', false);
+  render();
+}
+
 function activeRows(grid: Grid): GridRow[] {
   return grid.rows.filter((r) => r.status !== 'cancelled');
 }
@@ -1997,6 +2012,7 @@ function renderPrep(): HTMLElement | null {
       r.reinstated ? h('span', { class: 'badge badge-new', title: 'Was cancelled on your sheet and is back on the run sheet' }, 'Back on list') : null,
       r.movedFrom !== undefined ? h('span', { class: 'badge badge-moved', title: 'The order changed: this patient has moved' }, `Moved, was #${r.movedFrom}`) : null,
       isCancelled ? h('span', { class: 'badge badge-cancelled' }, 'Cancelled') : null,
+      isCancelled && grid ? h('button', { class: 'mini uncancel', title: 'Put this patient back on the list, at the end', 'data-key': `${rowKey(r)}:uncancel`, onclick: () => uncancelRow(grid, r) }, 'Uncancel') : null,
       r.note ? h('div', { class: 'who' }, r.note) : null,
     ];
   };
