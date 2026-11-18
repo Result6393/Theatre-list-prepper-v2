@@ -2886,3 +2886,30 @@ td.involvement-cell select {
   background: var(--surface) !important;
   cursor: text;
 }
+
+/* Lens list shown over the page: toric lenses in bold on a highlight. */
+.lens-body {
+  padding: 12px 16px 16px;
+  overflow-x: auto;
+}
+
+.lens-body h4 {
+  margin: 16px 0 6px;
+}
+
+.lens-table {
+  border-collapse: collapse;
+}
+
+.lens-table th,
+.lens-table td {
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  text-align: left;
+}
+
+.lens-table tr.toric td {
+  font-weight: 700;
+  background: #fff2a8;
+  color: #000;
+}

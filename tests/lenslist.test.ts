@@ -27,8 +27,21 @@ describe('lens email for the theatre coordinator', () => {
   it('writes a lens with a typed number, such as a toric', () => {
     const cell = writeLens('', lenses, { lens: 'CNA0Tx', extra: '4', power: '20' });
     expect(lensLines([item('3000001 CHARLIE, Cat', 'BOTH', cell)], lenses).lines[0]).toEqual({
-      eye: 'BE', who: '3000001 CHARLIE, Cat', model: 'CNA0T4', power: '+20.0D', target: '',
+      eye: 'BE', who: '3000001 CHARLIE, Cat', model: 'CNA0T4', power: '+20.0D', target: '', toric: true,
     });
+  });
+
+  it('puts toric lenses in bold on a highlight, and marks them in the text', () => {
+    const toric = writeLens('', lenses, { lens: 'CNA0Tx', extra: '4', power: '20' });
+    const plain = writeLens('', lenses, { lens: 'DCB00', extra: '', power: '21.5' });
+    const { lines } = lensLines([item('3000001 CHARLIE, Cat', 'BOTH', toric), item('1000001 ALPHA, Ann', 'RIGHT', plain)], lenses);
+    const info = { list: '', day: '', name: '' };
+    expect(lensEmailText(lines, info)).toContain('CNA0T4 (TORIC)');
+    expect(lensEmailText(lines, info)).not.toContain('DCB00 (TORIC)');
+    const html = lensEmailHtml(lines, info);
+    expect(html).toContain('font-weight:bold');
+    expect(html.match(/font-weight:bold/g)).toHaveLength(8);  // 5 patient cells + 3 summary cells, toric only
+
   });
 
   it('leaves patients with no lens out, and says who', () => {

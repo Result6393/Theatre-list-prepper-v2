@@ -9,7 +9,7 @@ import { INVOLVEMENT_LEVELS, involvementColumns, missingHeadings, readInvolvemen
 import { combineSessions, listOfPatient, orderedSelection } from './lists';
 import { copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, isLocked, keepReports, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
-import { lensEmailHtml, lensEmailText, lensLines, type LensItem } from './lenslist';
+import { lensEmailHtml, lensEmailText, lensLines, lensSummary, lensTableRows, PATIENT_HEAD, SUMMARY_HEAD, type LensItem } from './lenslist';
 import { absentText, cycleFinding, findingGroups, findingState, hasToken, isBackupLine, isLensSurgery, lensCode, readBackup, readGrading, writeBackup, writeGrading, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
 import Papa from 'papaparse';
 import { classifyFile } from './files';
@@ -139,6 +139,10 @@ const state = {
   emailMenuOpen: false,
   /** The Summary menu (copy for email, print / save as PDF). */
   summaryMenuOpen: false,
+  /** The Lens list menu (show it, or copy it for the theatre coordinator). */
+  lensMenuOpen: false,
+  /** The lens list is showing over the page. */
+  lensListOpen: false,
   /** The short list for changing the order of the patients. */
   reorderOpen: false,
   saveMenuOpen: false,
@@ -1647,7 +1651,7 @@ function render(): void {
           offlineTemplate,
         }))
       : h('main', {}, renderSetup(), renderPrep()),
-    ...[state.view === 'main' ? renderViewer() : null, state.view === 'main' ? renderReorder() : null, state.view === 'main' ? renderSaveForms() : null].filter((v): v is HTMLElement => v !== null),
+    ...[state.view === 'main' ? renderViewer() : null, state.view === 'main' ? renderReorder() : null, state.view === 'main' ? renderLensList() : null, state.view === 'main' ? renderSaveForms() : null].filter((v): v is HTMLElement => v !== null),
     h(
       'div',
       { class: 'toast-area', role: 'status', 'aria-live': 'polite' },
@@ -1934,20 +1938,7 @@ function renderPrep(): HTMLElement | null {
         ),
     renderEmailMenu(grid),
     renderSummaryMenu(grid),
-    (() => {
-      const items = lensItems(grid);
-      if (!items) return null;
-      const ready = lensLines(items, state.settings.prompts.lenses).lines.length;
-      return h(
-        'button',
-        {
-          disabled: ready === 0,
-          title: ready ? 'Copies each ticked cataract patient with their lens, to paste into an email to the theatre coordinator' : 'Pick a lens under a cataract patient first',
-          onclick: () => void copyLensList(grid),
-        },
-        'Copy lens list',
-      );
-    })(),
+    renderLensMenu(grid),
     renderReorderButton(active.length),
     renderLockAll(grid),
     h('span', { class: 'toolbar-count muted' }, `${count} of ${active.length} ticked`),
@@ -2623,6 +2614,76 @@ function printSummary(grid: Grid): void {
   }, 100);
 }
 
+/** Toolbar: Lens list ▾ — show the lens list, or copy it as an email for the theatre coordinator. */
+function renderLensMenu(grid: Grid): HTMLElement | null {
+  const items = lensItems(grid);
+  if (!items) return null;
+  const ready = lensLines(items, state.settings.prompts.lenses).lines.length;
+  const pick = (action: () => void) => () => {
+    state.lensMenuOpen = false;
+    render();
+    action();
+  };
+  const item = (label: string, detail: string, onclick: () => void) =>
+    h('button', { class: 'menu-item', role: 'menuitem', onclick }, h('span', {}, label), h('span', { class: 'menu-detail' }, detail));
+  return h(
+    'div',
+    { class: 'menu-wrap' },
+    h(
+      'button',
+      {
+        class: state.lensMenuOpen ? 'on' : '',
+        disabled: ready === 0,
+        title: ready ? 'Each ticked cataract patient with their lens: show it here, or copy it for the theatre coordinator' : 'Pick a lens under a cataract patient first',
+        'aria-haspopup': 'menu',
+        'aria-expanded': state.lensMenuOpen ? 'true' : 'false',
+        onclick: () => ((state.lensMenuOpen = !state.lensMenuOpen), (state.summaryMenuOpen = false), (state.emailMenuOpen = false), (state.saveMenuOpen = false), render()),
+      },
+      'Lens list ▾',
+    ),
+    state.lensMenuOpen
+      ? h(
+          'div',
+          { class: 'menu', role: 'menu' },
+          item('Show lens list', 'Patients and lenses, toric lenses highlighted', pick(() => ((state.lensListOpen = true), render()))),
+          item('Copy lens list', 'An email for the theatre coordinator', pick(() => void copyLensList(grid))),
+        )
+      : null,
+  );
+}
+
+/** The lens list over the page: each ticked cataract patient's lens, then how many of each, with toric lenses in bold. */
+function renderLensList(): HTMLElement | null {
+  const grid = state.grid;
+  if (!state.lensListOpen || !grid) return null;
+  const items = lensItems(grid);
+  const close = () => ((state.lensListOpen = false), render());
+  const { lines, missing } = items ? lensLines(items, state.settings.prompts.lenses) : { lines: [], missing: [] };
+  const table = (head: string[], rows: { cells: string[]; toric: boolean }[]) =>
+    h(
+      'table',
+      { class: 'lens-table' },
+      h('thead', {}, h('tr', {}, head.map((c) => h('th', {}, c)))),
+      h('tbody', {}, rows.map((r) => h('tr', { class: r.toric ? 'toric' : '' }, r.cells.map((c) => h('td', {}, c))))),
+    );
+  return h(
+    'div',
+    { class: 'reorder-backdrop', onclick: (e: Event) => e.target === e.currentTarget && close() },
+    h(
+      'div',
+      { class: 'reorder lens-list', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Lens list' },
+      h('div', { class: 'reorder-head' }, h('h3', {}, 'Lens list'), h('span', { class: 'pc-muted' }, 'Toric lenses in bold'), h('button', { class: 'primary', 'data-key': 'lenslist:done', onclick: close }, 'Done')),
+      h(
+        'div',
+        { class: 'lens-body' },
+        lines.length ? table(PATIENT_HEAD, lensTableRows(lines)) : h('p', { class: 'muted' }, 'No lenses picked yet.'),
+        lines.length ? [h('h4', {}, 'Lenses needed'), table(SUMMARY_HEAD, lensSummary(lines).map((c) => ({ cells: [c.model, c.power, String(c.count)], toric: Boolean(c.toric) })))] : null,
+        missing.length ? h('p', { class: 'muted' }, `No lens picked: ${missing.map((m) => m.who).join('; ')}.`) : null,
+      ),
+    ),
+  );
+}
+
 /** Toolbar: Summary ▾ — copy for an email, or print / save as PDF. */
 function renderSummaryMenu(grid: Grid): HTMLElement {
   const ticked = activeRows(grid).filter((r) => r.included && r.status !== 'cancelled').length;
@@ -2700,6 +2761,7 @@ function renderPhoneBar(grid: Grid, count: number, cancelledCount: number): HTML
             canShare ? item('Share…', 'Text only: add the address yourself', run(() => void shareEmail(grid)), !ticked) : null,
             item('Copy email text', 'To paste into any email', run(() => void copyEmailText(grid)), !ticked),
             hasRecipients ? null : h('p', { class: 'menu-note' }, 'Add the Medical Records address in Settings to open a draft.'),
+            lensItems(grid) ? item('Show lens list', 'Patients and lenses, toric lenses highlighted', run(() => ((state.lensListOpen = true), render()))) : null,
             lensItems(grid) ? item('Copy lens list', 'Patients and lenses, for the theatre coordinator', run(() => void copyLensList(grid))) : null,
             item('Reorder', 'Change the order of the patients', run(() => ((state.reorderOpen = true), render()))),
             item('Copy summary', 'The prepped list, to paste into an email', run(() => void copySummary(grid))),
@@ -4420,8 +4482,9 @@ document.addEventListener('drop', (e) => {
 
 // Close the email menu on a click elsewhere or Escape.
 document.addEventListener('pointerdown', (e) => {
-  if ((state.emailMenuOpen || state.saveMenuOpen || state.moreMenuOpen || state.summaryMenuOpen) && !(e.target as HTMLElement).closest('.menu-wrap')) {
+  if ((state.emailMenuOpen || state.saveMenuOpen || state.moreMenuOpen || state.summaryMenuOpen || state.lensMenuOpen) && !(e.target as HTMLElement).closest('.menu-wrap')) {
     state.summaryMenuOpen = false;
+    state.lensMenuOpen = false;
     state.emailMenuOpen = false;
     state.saveMenuOpen = false;
     state.moreMenuOpen = false;
@@ -4443,6 +4506,11 @@ document.addEventListener('keydown', (e) => {
     render();
     return;
   }
+  if (state.lensListOpen && e.key === 'Escape') {
+    state.lensListOpen = false;
+    render();
+    return;
+  }
   if (state.reorderOpen && e.key === 'Escape') {
     state.reorderOpen = false;
     render();
@@ -4459,8 +4527,9 @@ document.addEventListener('keydown', (e) => {
     render();
     return;
   }
-  if (e.key === 'Escape' && (state.emailMenuOpen || state.saveMenuOpen || state.moreMenuOpen || state.summaryMenuOpen)) {
+  if (e.key === 'Escape' && (state.emailMenuOpen || state.saveMenuOpen || state.moreMenuOpen || state.summaryMenuOpen || state.lensMenuOpen)) {
     state.summaryMenuOpen = false;
+    state.lensMenuOpen = false;
     state.emailMenuOpen = false;
     state.saveMenuOpen = false;
     state.moreMenuOpen = false;
