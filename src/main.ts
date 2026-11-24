@@ -2,7 +2,7 @@ import './style.css';
 import { copyHtml, copyText, htmlTableRows, toTsv } from './clipboard';
 import { autoGrow, downloadBlob, downloadText, h } from './dom';
 import { startDrag } from './drag';
-import { allergyColumn, allergyPending, lacksAllergyDetails, pendingAllergies } from './allergy';
+import { allergyColumn, allergyPending, lacksAllergyDetails, pendingAllergies, saysAllergy } from './allergy';
 import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, outlookComposeUrl, weekdayLabel } from './email';
 import { extractSessions, type Patient, type Session } from './extract';
 import { INVOLVEMENT_LEVELS, involvementColumns, missingHeadings, readInvolvement } from './involvement';
@@ -2038,7 +2038,7 @@ function renderPrep(): HTMLElement | null {
   /** A cell's colour class. The allergy cell is red until the details are typed (or acknowledged). */
   const examCol = layout.columns.findIndex((c) => /\b(va|iop)\b|exam/i.test(c.heading));
   const classFor = (r: GridRow, col: number, value: string) => {
-    if (col === allergyCol && r.patient?.allergyPending && r.status !== 'cancelled') {
+    if (col === allergyCol && saysAllergy(r, allergyCol) && r.status !== 'cancelled') {
       if (allergyPending(r, allergyCol)) return 'allergy-pending';
       if (r.allergyAck && lacksAllergyDetails(value)) return 'allergy-ack';
     }
