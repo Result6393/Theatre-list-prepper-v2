@@ -39,7 +39,7 @@ On a narrow screen the list becomes a stack of patient cards instead of a wide t
 
 ## Allergies
 
-When the run sheet says a patient has an allergy (`Y`) but not what it is, their *Drops / allergies* box turns **red**, with an **Allergy: add details** badge, an **Acknowledge** button, and a banner over the list naming them. It stops being red when you type the details in the box (or press Acknowledge to say you've seen it and will add them later; the box then goes amber). Copying for Excel or saving into a file asks first if any ticked patient still has an allergy with no details. Nothing about allergies is stored: it's worked out from the run sheet and your box each time.
+When the run sheet says a patient has an allergy (`Y`) but not what it is, their *Drops / allergies* box turns **red**, with an **Allergy: add details** badge, an **Acknowledge** button, and a banner over the list naming them. It stops being red when you type the details in the box (or press Acknowledge to say you've seen it and will add them later; the box then goes amber). Copying for Excel or saving into a file asks first if any ticked patient still has an allergy with no details. Nothing about allergies is stored: it's worked out from the run sheet and your box each time. Reloading a list from your Excel file brings the flag back for anyone still showing a bare `Allergy: Y` (acknowledging isn't saved in the file, so you acknowledge again), including when the list is loaded from the file without a run sheet.
 
 ## Cataract prompts
 

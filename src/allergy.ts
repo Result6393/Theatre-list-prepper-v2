@@ -16,7 +16,16 @@ export function lacksAllergyDetails(text: string): boolean {
  * haven't acknowledged. It clears when you type the details, or acknowledge it.
  */
 export function allergyPending(row: GridRow, col: number): boolean {
-  return col >= 0 && row.status !== 'cancelled' && Boolean(row.patient?.allergyPending) && !row.allergyAck && lacksAllergyDetails(row.cells[col] ?? '');
+  return col >= 0 && row.status !== 'cancelled' && saysAllergy(row, col) && !row.allergyAck && lacksAllergyDetails(row.cells[col] ?? '');
+}
+
+/**
+ * The run sheet says the patient has an allergy. A row loaded from your Excel file alone has no
+ * booking to ask, so a bare "Allergy: Y" left in its allergy cell counts (an empty cell doesn't).
+ */
+export function saysAllergy(row: GridRow, col: number): boolean {
+  if (row.patient) return row.patient.allergyPending;
+  return col >= 0 && (row.cells[col] ?? '').trim() !== '' && lacksAllergyDetails(row.cells[col]);
 }
 
 /** Ticked patients still to check, i.e. the ones that would go out in a copy or an email. */

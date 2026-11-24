@@ -61,3 +61,17 @@ describe('allergies needing details', () => {
     expect(['Allergy: Yeast', 'Penicillin', 'Allergy not recorded', 'NKA', 'Latex'].map(lacksAllergyDetails)).toEqual([false, false, false, false, false]);
   });
 });
+
+describe('lists loaded from your Excel file alone', () => {
+  const sheetRow = (cell: string) => ({ patient: null, cells: layout.columns.map((_, i) => (i === col ? cell : '')), included: true, status: 'sheet' as const, changes: {} });
+  it('flags a bare "Allergy: Y" until acknowledged or detailed', () => {
+    const row = sheetRow('Allergy: Y');
+    expect(allergyPending(row, col)).toBe(true);
+    row.cells[col] = 'Penicillin';
+    expect(allergyPending(row, col)).toBe(false);
+    expect(allergyPending({ ...sheetRow('Allergy: Y'), allergyAck: true }, col)).toBe(false);
+  });
+  it('does not flag empty or NKA cells', () => {
+    expect([sheetRow(''), sheetRow('NKA'), sheetRow('Allergy not recorded')].map((r) => allergyPending(r, col))).toEqual([false, false, false]);
+  });
+});
