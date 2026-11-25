@@ -144,11 +144,56 @@ function tokens(words: OcrWord[]): string[] {
     .filter(Boolean);
 }
 
+/** "Barrett", as OCR may read it ("Bamett", "Barett", "Barreit"). */
+function isBarrett(w: OcrWord): boolean {
+  const t = w.text.replace(/[^A-Za-z]/g, '').toUpperCase();
+  return t.length >= 5 && t.length <= 8 && t[0] === 'B' && editDistance(t, 'BARRETT') <= 2;
+}
+
+/**
+ * Rows whose predicted refraction OCR may have misread, with what it could be: one read without a sign
+ * (OCR drops minus signs, "094" for "-0.94"), or a toric row whose spherical equivalent doesn't agree
+ * with the sphere and cylinder printed beside it. Settled by settleDoubts.
+ */
+const doubtful = new WeakMap<LensRow, number[]>();
+
 function standardRow(words: OcrWord[]): LensRow | null {
-  const numbers = tokens(words).map(readNumber).filter((n): n is number => n !== null);
+  const numbers = tokens(words)
+    .map((token) => ({ token, n: readNumber(token) }))
+    .filter((x): x is { token: string; n: number } => x.n !== null);
   if (numbers.length < 2) return null;
-  const [power, ref] = numbers;
-  return power > -15 && power < 45 && Math.abs(ref) < 15 ? { model: '', power, ref, words } : null;
+  const [power, ref] = numbers.map((x) => x.n);
+  if (!(power > -15 && power < 45 && Math.abs(ref) < 15)) return null;
+  const row: LensRow = { model: '', power, ref, words };
+  // The report prints every prediction with its sign, so one without lost it.
+  if (!hasSign(numbers[1].token) && ref !== 0) doubtful.set(row, [ref, -ref]);
+  return row;
+}
+
+/**
+ * A table's rows checked against each other. A power far from the rest is a misread (e.g. a toric's
+ * cylinder taken for its power), so it goes. The predictions fall on a straight line as the power goes
+ * up, so a doubtful prediction is the reading that fits the line through the other rows; where none
+ * fits well, or too few rows are certain to draw the line, the row is left out rather than guessed:
+ * a wrong prediction is worse than a missing one.
+ */
+function settleDoubts(rows: LensRow[]): void {
+  const middle = median(rows.map((r) => r.power));
+  for (let k = rows.length - 1; k >= 0; k--) if (Math.abs(rows[k].power - middle) > 5) rows.splice(k, 1);
+  const sure = rows.filter((r) => !doubtful.has(r));
+  const mp = sure.reduce((a, r) => a + r.power, 0) / sure.length;
+  const mr = sure.reduce((a, r) => a + r.ref, 0) / sure.length;
+  const spread = sure.reduce((a, r) => a + (r.power - mp) ** 2, 0);
+  const slope = spread > 0 ? sure.reduce((a, r) => a + (r.power - mp) * (r.ref - mr), 0) / spread : NaN;
+  for (let k = rows.length - 1; k >= 0; k--) {
+    const options = doubtful.get(rows[k]);
+    if (!options) continue;
+    doubtful.delete(rows[k]);
+    const fitted = mr + slope * (rows[k].power - mp);
+    const [near, next] = [...new Set(options)].map((v) => ({ v, off: Math.abs(v - fitted) })).sort((a, b) => a.off - b.off);
+    if (slope < 0 && near && near.off <= 0.15 && (!next || next.off > near.off)) rows[k].ref = near.v;
+    else rows.splice(k, 1);
+  }
 }
 
 /** "100 +20.50 +1.00 3° -0.33 -0.46 +0.27 3°": model, IOL SE, cyl, axis, then Ref SE, sph, cyl, axis. */
@@ -170,7 +215,14 @@ function toricRow(words: OcrWord[]): LensRow | null {
   const refCyl = t[start + 5] !== undefined ? readNumber(t[start + 5]) : null;
   const ref = predictedSE(t[start + 3], t[start + 4], refCyl);
   if (power === null || cyl === null || ref === null || power <= -15 || power >= 45) return null;
-  return { model, power, ref, cyl, axis: axis ?? undefined, refCyl: refCyl ?? undefined, words };
+  const row: LensRow = { model, power, ref, cyl, axis: axis ?? undefined, refCyl: refCyl ?? undefined, words };
+  // The spherical equivalent is the sphere plus half the cylinder: if they don't agree, one was misread.
+  const sph = readNumber(t[start + 4] ?? '');
+  if (sph !== null && refCyl !== null && hasSign(t[start + 4]) && hasSign(t[start + 5])) {
+    const se = Math.round((sph + refCyl / 2) * 100) / 100;
+    if (Math.abs(se - ref) > 0.02) doubtful.set(row, [ref, se]);
+  }
+  return row;
 }
 
 const hasSign = (token: string | undefined) => /^[+\-−–]/.test(token ?? '');
@@ -297,9 +349,7 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
 
   const tables: LensTable[] = [];
   half.forEach((r, i) => {
-    const isBarrett = (w: OcrWord) => /^barr?ett$/i.test(w.text.replace(/[^A-Za-z]/g, ''));
     if (!r.words.some(isBarrett)) return;
-    const toric = /toric/i.test(text(r.words));
     // The formula line ("- Barrett Universal II TK -") is centred over each lens's table, so it marks the tables' columns.
     const height = median(r.words.map((w) => w.y1 - w.y0));
     const phrases: OcrWord[][] = [];
@@ -308,7 +358,8 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
       if (last && w.x0 - last[last.length - 1].x1 < height * 1.5) last.push(w);
       else phrases.push([w]);
     }
-    const centres = phrases.filter((p) => p.some(isBarrett)).map((p) => (p[0].x0 + p[p.length - 1].x1) / 2);
+    const formulas = phrases.filter((p) => p.some(isBarrett));
+    const centres = formulas.map((p) => (p[0].x0 + p[p.length - 1].x1) / 2);
     centres.forEach((c, k) => {
       const from = k === 0 ? left : (centres[k - 1] + c) / 2;
       const to = k === centres.length - 1 ? right : (c + centres[k + 1]) / 2;
@@ -324,15 +375,21 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
         titleWords.push(...words);
         if (title.length === 2 || /johnson|alcon|zeiss|bausch|hoya|rayner|vision|medical/i.test(line)) break;
       }
+      // A toric calculation: "Barrett Toric" (OCR: "Tonic", "Taric"…), a toric lens, or a cylinder column.
+      const toric =
+        /\bT[aoe]?[rn][il1]c\b/i.test(text(formulas[k])) ||
+        /tor[il1]c/i.test(title.join(' ')) ||
+        half.slice(i + 1, i + 4).some((row) => /\bCyl\b|IOLCyl|RefCyl/i.test(text(within(row))));
       const tableRows: LensRow[] = [];
       for (let j = i + 1; j < Math.min(half.length, i + 12); j++) {
         const words = within(half[j]);
         const line = text(words);
-        if (/emmetropia|barr?ett/i.test(line)) break;
+        if (/emmetropia/i.test(line) || words.some(isBarrett)) break;
         if (!line || /\b(LF|DF|IOL|Ref)\b/i.test(line)) continue;
         const row = toric ? toricRow(words) : standardRow(words);
         if (row) tableRows.push(row);
       }
+      settleDoubts(tableRows);
       if (tableRows.length) tables.push({ title: title.join(' ').replace(/(\w)\s+-\s+(\w)/g, '$1-$2'), toric, rows: tableRows, titleWords });
     });
   });
@@ -370,7 +427,6 @@ export function readReport(words: OcrWord[]): ReportReading | null {
     const titles = rows
       .map((r, i) => ({ r, i }))
       .filter(({ r }) => /IOL\s*calculation|eye\s*status|biometric\s*values/i.test(text(r.words)) && r.words.filter((w) => !titleWords.test(w.text.replace(/[^A-Za-z0-9]/g, ''))).length === 0);
-    const isBarrett = (w: OcrWord) => /^barr?ett$/i.test(w.text.replace(/[^A-Za-z]/g, ''));
     const formulas = rows.findIndex((r) => r.words.filter(isBarrett).length >= 2);
     if (titles.length) {
       const middles = titles.map(({ r }) => {

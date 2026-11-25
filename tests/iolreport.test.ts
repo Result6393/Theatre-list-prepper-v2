@@ -498,3 +498,50 @@ describe('AR40x lenses read from the report’s AR40 lines', () => {
     expect(simulateLens(report, 'right', ar40e, [], [])).toEqual(expect.any(String));
   });
 });
+
+describe('lens tables as OCR misreads them', () => {
+  const equivalents = parseEquivalents(['DIUx = ZCUx']);
+  /** The report with text in its lines replaced, and optionally a third toric row. */
+  const misread = (swaps: [string, string][], thirdToricRow = false) => {
+    const lines = REPORT_LINES.map((l) => l.map(([c, t]) => [c, swaps.reduce((s, [a, b]) => s.replace(a, b), t)] as [number, string]));
+    if (thirdToricRow) {
+      const at = lines.findIndex((l) => l[0]?.[1].startsWith('100 +20.50'));
+      lines.splice(at + 1, 0, two('100 +20.00 +1.00 3° +0.02 -0.12 +0.27 3°', '150 +21.50 +1.50 167° -0.16 -0.28 +0.25 167°'));
+    }
+    return readReport(withLargeHeadings(page(lines)))!;
+  };
+  const rows = (table: { rows: { power: number; ref: number }[] } | undefined) => table?.rows.map((r) => [r.power, r.ref]);
+
+  it('finds the toric calculation when “Barrett Toric” is read as “Bamett Tonic”', () => {
+    const report = misread([['Barrett Toric', 'Bamett Tonic']]);
+    expect(rows(report.right!.tables.find((t) => t.toric))).toEqual([[21, -0.68], [20.5, -0.33]]);
+    const diu = lens({ code: 'DIU100', family: { base: 'DIU', number: '100' }, power: 21 });
+    expect(checkLens(report, diu, [], defaultLimits(), equivalents).facts).toEqual(['Right eye: DIU100 +21.00, axis 3° → predicted −0.68 (from the report’s ZCU100 calculation)']);
+  });
+
+  it('finds the lens tables when “Barrett” is misread in the formula line', () => {
+    for (const name of ['Bamett', 'Barett', 'Barreit']) {
+      const report = misread([['Barrett Universal', `${name} Universal`]]);
+      expect(report.right!.tables.filter((t) => !t.toric)).toHaveLength(2);
+    }
+  });
+
+  it('puts back a lost minus sign in a lens table from the other rows, and drops a prediction that fits neither sign', () => {
+    const report = misread([['+2100      -0.68', '+2100      068'], ['+20.00     +0.02', '+20.00     002']]);
+    expect(rows(report.right!.tables[0])).toEqual([[21.5, -1.03], [21, -0.68], [20.5, -0.33], [20, 0.02]]);
+    expect(checkLens(report, lens({ power: 21 })).facts).toEqual(['Right eye: DCB00 +21.00 → predicted −0.68']);
+    expect(rows(misread([['+20.50     -0.33', '+20.50     090']]).right!.tables[0])).toEqual([[21.5, -1.03], [21, -0.68], [20, 0.02]]);
+  });
+
+  it('drops a power far from the rest of its table (e.g. the cylinder read as the power)', () => {
+    expect(rows(misread([['+2100      -0.68', '+1.00      -0.68']]).right!.tables[0])).toEqual([[21.5, -1.03], [20.5, -0.33], [20, 0.02]]);
+  });
+
+  it('checks a toric row’s spherical equivalent against its sphere and cylinder', () => {
+    // −0.58 is a misread: the sphere and cylinder (−0.82 + 0.28 / 2) and the other rows say −0.68.
+    const report = misread([['3° -0.68 -0.81 +0.27', '3° -0.58 -0.82 +0.28']], true);
+    expect(rows(report.right!.tables.find((t) => t.toric))).toEqual([[21, -0.68], [20.5, -0.33], [20, 0.02]]);
+    // With too few rows to tell which was misread, the row is left out.
+    expect(rows(misread([['3° -0.68 -0.81 +0.27', '3° -0.58 -0.82 +0.28']]).right!.tables.find((t) => t.toric))).toEqual([[20.5, -0.33]]);
+  });
+});
