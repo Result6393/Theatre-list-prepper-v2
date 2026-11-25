@@ -2293,7 +2293,7 @@ function renderPrep(): HTMLElement | null {
           { class: 'pcard-title' },
           h('div', { class: 'pcard-name' }, title.split('\n')[0]),
           sub ? h('div', { class: 'pcard-sub' }, sub.split('\n')[0]) : null,
-          h('div', { class: 'pcard-badges' }, ...badgesOf(r)),
+          h('div', { class: 'pcard-badges' }, toricBadge(r), ...badgesOf(r)),
         ),
         tickOf(r),
       ),
@@ -2394,6 +2394,7 @@ function renderPrep(): HTMLElement | null {
           { class: 'pc-badges' },
           reportStatus(r)?.check?.nameMismatch ? h('span', { class: 'badge badge-mismatch', role: 'alert' }, '⛔ IOL report: wrong name') : null,
           [...new Map(alertsOf(r).map((a) => [a.short, a])).values()].map((a) => h('span', { class: `badge ${a.level === 'error' ? 'badge-mismatch' : 'badge-alert'}`, title: a.text }, a.short)),
+          toricBadge(r),
           ...badgesOf(r),
           todo.length
             ? h('span', { class: 'badge badge-todo', title: 'Still to fill in' }, `To do: ${todo.join(' · ')}`)
@@ -4145,6 +4146,12 @@ function reportStatus(r: GridRow): ReportStatus | null {
     console.error('Couldn’t check the lens against the report', e);
     return { state: 'unreadable' };
   }
+}
+
+/** A "Toric" badge when the lens picked is a toric (its model number isn't zero), as in the lens list. */
+function toricBadge(r: GridRow): HTMLElement | null {
+  const { family, code } = pickedLens(r);
+  return family && /[1-9]/.test(family.number) ? h('span', { class: 'badge badge-toric', title: `Toric lens: ${code}` }, 'Toric') : null;
 }
 
 const CHECK_ICON: Record<string, string> = { ok: '✓', warn: '⚠', error: '⛔', none: '' };

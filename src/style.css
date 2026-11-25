@@ -2000,6 +2000,12 @@ table.sim-table tr.outside td {
   text-align: center;
 }
 
+.badge-toric {
+  background: #fff2a8;
+  color: #000;
+  font-weight: 700;
+}
+
 .badge-mismatch {
   background: var(--danger);
   color: #fff;
