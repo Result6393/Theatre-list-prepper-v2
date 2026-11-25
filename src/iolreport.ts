@@ -153,7 +153,13 @@ function standardRow(words: OcrWord[]): LensRow | null {
 
 /** "100 +20.50 +1.00 3° -0.33 -0.46 +0.27 3°": model, IOL SE, cyl, axis, then Ref SE, sph, cyl, axis. */
 function toricRow(words: OcrWord[]): LensRow | null {
-  const t = tokens(words);
+  // The model is printed close to the power, so OCR often reads them as one word ("375+22.00"),
+  // and sometimes runs on into the cylinder ("+22.00+3.75"): split them at each sign after a digit.
+  const t = tokens(words).flatMap((token, k) => {
+    // On a small screenshot the "+" may be read as a "4" and the decimal point lost ("37542200").
+    const glued = k === 0 ? token.match(/^(\d{3})4(\d{2}[.,]?\d{2})$/) : null;
+    return glued ? [glued[1], `+${glued[2]}`] : token.replace(/(\d)([+\-−–])(?=\d)/g, '$1 $2').split(' ');
+  });
   const start = t.findIndex((token) => /^[+-]/.test(token.replace(/[−–]/g, '-')) && readNumber(token) !== null);
   if (start === -1 || t.length < start + 4) return null;
   const before = t[start - 1] ?? '';
@@ -161,10 +167,27 @@ function toricRow(words: OcrWord[]): LensRow | null {
   const power = readNumber(t[start]);
   const cyl = readNumber(t[start + 1]);
   const axis = readAxis(t[start + 2]);
-  const ref = readNumber(t[start + 3]);
   const refCyl = t[start + 5] !== undefined ? readNumber(t[start + 5]) : null;
+  const ref = predictedSE(t[start + 3], t[start + 4], refCyl);
   if (power === null || cyl === null || ref === null || power <= -15 || power >= 45) return null;
   return { model, power, ref, cyl, axis: axis ?? undefined, refCyl: refCyl ?? undefined, words };
+}
+
+const hasSign = (token: string | undefined) => /^[+\-−–]/.test(token ?? '');
+
+/**
+ * The toric row's predicted spherical equivalent. OCR can lose its minus sign ("124" for "-1.24"), and
+ * a wrong sign would be a wrong prediction, so an unsigned one is only taken when exactly one sign
+ * agrees with the sphere and cylinder printed beside it (SE = sphere + cylinder / 2); otherwise none.
+ */
+function predictedSE(seToken: string | undefined, sphToken: string | undefined, refCyl: number | null): number | null {
+  const se = seToken === undefined ? null : readNumber(seToken);
+  if (se === null || hasSign(seToken)) return se;
+  const sph = sphToken === undefined ? null : readNumber(sphToken);
+  if (sph === null || refCyl === null) return null;
+  const sphs = hasSign(sphToken) ? [sph] : [sph, -sph];
+  const fits = [se, -se].filter((v) => sphs.some((s) => Math.abs(v - (s + refCyl / 2)) <= 0.02));
+  return new Set(fits).size === 1 ? fits[0] : null;
 }
 
 function readEye(rows: Row[], left: number, right: number): EyeReading {
