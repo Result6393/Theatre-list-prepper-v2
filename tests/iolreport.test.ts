@@ -453,6 +453,30 @@ describe('a DIU when the report’s toric heading is hard to read', () => {
   });
 });
 
+describe('toric rows as OCR reads them', () => {
+  // The model sits close to the power, so OCR runs them together, and a small screenshot can lose signs.
+  const toricRows = (rows: [string, string]) =>
+    readReport(withLargeHeadings(page(REPORT_LINES.map((l) => (l[0]?.[1].startsWith('100 +21.00') ? two(rows[0], l[1][1]) : l[0]?.[1].startsWith('100 +20.50') ? two(rows[1], l[1][1]) : l)))))!.right!.tables.find((t) => t.toric)!.rows;
+
+  it('splits the model from the power', () => {
+    expect(toricRows(['100+21.00 +1.00 3° -0.68 -0.81 +0.27 3°', '100+20.50+1.00 3° -0.33 -0.46 +0.27 3°']).map((r) => [r.model, r.power, r.ref, r.cyl])).toEqual([
+      ['100', 21, -0.68, 1],
+      ['100', 20.5, -0.33, 1],
+    ]);
+  });
+
+  it('reads a "+" read as "4" with the decimal point lost', () => {
+    expect(toricRows(['10042100 +1.00 3° -0.68 -0.81 +0.27 3°', '100 +20.50 +1.00 3° -0.33 -0.46 +0.27 3°'])[0]).toMatchObject({ model: '100', power: 21, ref: -0.68 });
+  });
+
+  it('puts back a lost minus sign only when the sphere and cylinder agree, and otherwise drops the row', () => {
+    // −0.33 = −0.46 + 0.27 / 2; +0.33 fits no sphere sign.
+    expect(toricRows(['100 +21.00 +1.00 3° -0.68 -0.81 +0.27 3°', '100 +20.50 +1.00 3° 033 046 +0.27 3°'])[1]).toMatchObject({ power: 20.5, ref: -0.33 });
+    // 0.90 fits neither sign: not guessed.
+    expect(toricRows(['100 +21.00 +1.00 3° -0.68 -0.81 +0.27 3°', '100 +20.50 +1.00 3° 090 046 +0.27 3°']).map((r) => r.power)).toEqual([21]);
+  });
+});
+
 describe('AR40x lenses read from the report’s AR40 lines', () => {
   const report = readReport(REPORT)!;
   const equivalents = parseEquivalents(['AR40x = AR40']);
