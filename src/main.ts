@@ -1629,8 +1629,39 @@ async function copyRows(grid: Grid): Promise<void> {
 
 // ---- Rendering ----------------------------------------------------------------
 
+/**
+ * Panels that scroll on their own (the report view, its lens simulator beside the screenshot, the
+ * table): a redraw puts them back where they were, so clicking something doesn't jump to the top.
+ */
+const SCROLLERS = ['.viewer', 'aside.sim', '.viewer-body', '.table-wrap', '.lens-body', '.reorder-backdrop'];
+const VIEWER_SCROLLERS = new Set(['.viewer', 'aside.sim', '.viewer-body']);
+/** The report on show at the last redraw: another report (or patient) starts at the top. */
+let shownReport = '';
+
+function scrollPositions(): Map<string, [number, number]> {
+  const positions = new Map<string, [number, number]>();
+  for (const selector of SCROLLERS) {
+    app.querySelectorAll<HTMLElement>(selector).forEach((el, i) => positions.set(`${selector}#${i}`, [el.scrollTop, el.scrollLeft]));
+  }
+  return positions;
+}
+
+function restoreScroll(positions: Map<string, [number, number]>): void {
+  const report = state.viewer ? `${state.viewer.key}#${state.viewer.index}` : '';
+  const sameReport = report === shownReport;
+  shownReport = report;
+  for (const selector of SCROLLERS) {
+    if (VIEWER_SCROLLERS.has(selector) && !sameReport) continue;
+    app.querySelectorAll<HTMLElement>(selector).forEach((el, i) => {
+      const at = positions.get(`${selector}#${i}`);
+      if (at) [el.scrollTop, el.scrollLeft] = at;
+    });
+  }
+}
+
 function render(): void {
   const scroll = window.scrollY;
+  const panels = scrollPositions();
   const focusKey = (document.activeElement as HTMLElement | null)?.dataset?.key;
   app.replaceChildren(
     h(
@@ -1678,7 +1709,8 @@ function render(): void {
   );
   for (const area of app.querySelectorAll<HTMLTextAreaElement>('textarea.cell')) autoGrow(area);
   document.body.classList.toggle('viewing', Boolean(state.viewer));
-  if (focusKey) app.querySelector<HTMLElement>(`[data-key="${CSS.escape(focusKey)}"]`)?.focus();
+  restoreScroll(panels);
+  if (focusKey) app.querySelector<HTMLElement>(`[data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
   window.scrollTo(0, scroll);
 }
 
