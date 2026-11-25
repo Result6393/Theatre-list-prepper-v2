@@ -705,16 +705,33 @@ function editDistance(a: string, b: string): number {
   return d[a.length][b.length];
 }
 
+/** Like canonical, and also reading the letters OCR swaps in a lens name (Z/2, I/L/1) as the same. */
+function loose(s: string): string {
+  return canonical(s).replace(/Z/g, '2').replace(/[IL]/g, '1');
+}
+
 function tablesFor(eye: EyeReading | undefined, lens: PickedLens): LensTable[] {
   if (!eye) return [];
   const code = canonical(lens.family?.base ?? lens.code);
-  const named = eye.tables.filter((t) => canonical(t.title).includes(code));
+  const named = eye.tables.filter((t) => canonical(t.title).includes(code) || loose(t.title).includes(loose(code)));
   // A lens with a number (a toric) is read from the toric calculation; others from their own table first.
   if (lens.family) return named.filter((t) => t.toric).concat(named.filter((t) => !t.toric));
   const plain = named.filter((t) => !t.toric);
   if (plain.length) return plain;
   // A plain lens recommended in the toric calculation is listed there by its first letters (e.g. "DCB").
   return eye.tables.filter((t) => t.toric && t.rows.some((r) => r.model && code.startsWith(canonical(r.model))));
+}
+
+/**
+ * The tables for a lens that uses another's calculation (DIU375 → ZCU375). If the report's toric heading
+ * couldn't be read well enough to find "ZCU" in it, the toric calculation with that model number is it.
+ */
+function aliasTablesFor(eye: EyeReading | undefined, alias: PickedLens | null): LensTable[] {
+  if (!eye || !alias) return [];
+  const named = tablesFor(eye, alias);
+  const number = alias.family?.number ? canonical(alias.family.number) : '';
+  if (named.length || !number) return named;
+  return eye.tables.filter((t) => t.toric && t.rows.some((r) => canonical(r.model) === number));
 }
 
 function rowFor(tables: LensTable[], lens: PickedLens): { table: LensTable; row: LensRow } | null {
@@ -927,7 +944,7 @@ export function simulateLens(reading: ReportReading, side: 'right' | 'left', len
   let via: PickedLens | null = null;
   if (!tables.length) {
     const alias = equivalentLens(lens, equivalents);
-    const aliasTables = alias ? tablesFor(eye, alias) : [];
+    const aliasTables = aliasTablesFor(eye, alias);
     if (alias && aliasTables.length) {
       tables = aliasTables;
       via = alias;
@@ -1051,7 +1068,7 @@ export function checkLens(
       let match = lens;
       if (!tables.length) {
         const alias = equivalentLens(lens, equivalents);
-        const aliasTables = alias ? tablesFor(eye, alias) : [];
+        const aliasTables = aliasTablesFor(eye, alias);
         if (alias && aliasTables.length) {
           tables = aliasTables;
           match = alias;

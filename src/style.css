@@ -2613,7 +2613,15 @@ tbody.dragging td {
 }
 
 .bio-alerts .report-check {
-  font-weight: 500;
+  padding: 3px 8px;
+  border-left: 4px solid currentColor;
+  border-radius: 6px;
+  background: var(--alert-bg);
+  font-weight: 600;
+}
+
+.bio-alerts .report-check.error {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
 
 .bio-alerts.big .report-check {

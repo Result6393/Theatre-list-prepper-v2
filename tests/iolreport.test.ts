@@ -433,6 +433,26 @@ describe('lenses that use another lens’s calculation', () => {
   });
 });
 
+describe('a DIU when the report’s toric heading is hard to read', () => {
+  const equivalents = parseEquivalents(['DIUx = ZCUx']);
+  const diu = lens({ eye: 'LEFT', code: 'DIU150', family: { base: 'DIU', number: '150' }, power: 22, target: -0.25 });
+  const garbled = (title: string) => readReport(withLargeHeadings(page(REPORT_LINES.map((l) => l.map(([c, t]) => [c, t.replace('Toric II ZCU', title)] as [number, string])))))!;
+
+  it('still uses the toric calculation with the same model number', () => {
+    for (const title of ['Toric II 2CU', 'Toric II', 'Toric II ZCl']) {
+      const report = garbled(title);
+      expect(checkLens(report, diu, [], defaultLimits(), equivalents).facts).toEqual(['Left eye: DIU150 +22.00, axis 167° → predicted −0.51 (from the report’s ZCU150 calculation)']);
+      const s = simulateLens(report, 'left', { ...diu, power: null }, [], equivalents) as Simulation;
+      expect(s.source).toBe('report');
+    }
+  });
+
+  it('does not borrow a toric calculation with another model number', () => {
+    const report = garbled('Toric II');
+    expect(checkLens(report, { ...diu, code: 'DIU999', family: { base: 'DIU', number: '999' } }, [], defaultLimits(), equivalents).facts).toEqual([]);
+  });
+});
+
 describe('AR40x lenses read from the report’s AR40 lines', () => {
   const report = readReport(REPORT)!;
   const equivalents = parseEquivalents(['AR40x = AR40']);
