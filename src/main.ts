@@ -146,6 +146,8 @@ const state = {
   lensListOpen: false,
   /** The short list for changing the order of the patients. */
   reorderOpen: false,
+  /** Compact: columns empty for everyone that you've widened (they're shown as a thin strip until then). */
+  openColumns: new Set<number>(),
   /** The "Add a backfill case" form, while it's open. */
   backfillForm: null as (BackfillDetails & { error: string; note?: string; reading?: boolean }) | null,
   /** A question to answer before going on (e.g. cancelling a patient), as a pop-up. */
@@ -214,6 +216,12 @@ const app = document.getElementById('app')!;
 const phoneQuery = window.matchMedia('(max-width: 760px)');
 const isPhone = () => phoneQuery.matches;
 phoneQuery.addEventListener('change', () => render());
+// Compact's first column is sized for the window, so redraw (once it settles) when the window is resized.
+let resizeTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(() => state.tableView && state.grid && !isPhone() && render(), 250);
+});
 
 /** Saves settings on this device and, if signed in to sync, to your other devices. */
 function persist(): void {
@@ -2215,37 +2223,10 @@ function renderPrep(): HTMLElement | null {
     renderLensMenu(grid),
     renderReorderButton(active.length),
     renderLockAll(grid),
-    h('span', { class: 'toolbar-count muted' }, `${count} of ${active.length} ticked`),
     renderViewSwitch(),
   );
 
-  const columnCount = layout.columns.length + 2;
   const allTicked = active.length > 0 && active.every((r) => r.included);
-  const thead = h(
-    'thead',
-    {},
-    h(
-      'tr',
-      {},
-      h(
-        'th',
-        { class: 'handle' },
-        h('input', {
-          type: 'checkbox',
-          checked: allTicked,
-          title: allTicked ? 'Untick all' : 'Tick all',
-          'aria-label': 'Tick all patients',
-          onchange: (e: Event) => {
-            const on = (e.target as HTMLInputElement).checked;
-            for (const r of active) r.included = on;
-            render();
-          },
-        }),
-      ),
-      h('th', { class: 'time', title: 'Shown for reference. Add Time as a column in Settings to copy it.' }, 'Time'),
-      layout.columns.map((c) => h('th', {}, c.heading)),
-    ),
-  );
 
   const allergyCol = allergyColumn(layout);
   const involvement = involvementColumns(layout);
@@ -2386,51 +2367,152 @@ function renderPrep(): HTMLElement | null {
     return { area, change };
   };
 
+  const phone = isPhone();
+  const colOf = (source: string) => layout.columns.findIndex((c) => c.source === source);
+  const eyeCol = colOf('field:eye');
+  const procCol = Math.max(colOf('field:procedure'), colOf('field:procedureRaw'));
+  const alertCol = colOf('field:alerts');
+  const promptCols = promptColumns(layout, state.settings.prompts);
+
+  /** The eye: R / L / B buttons on an unlocked patient, a coloured pill on a locked one. */
+  const eyeControl = (r: GridRow) => {
+    if (eyeCol < 0) return null;
+    const eye = r.cells[eyeCol].trim().toUpperCase();
+    if (isLocked(r) || r.status === 'cancelled') {
+      return h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}`, title: eye || 'Eye not set' }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?');
+    }
+    return h(
+      'div',
+      { class: 'pc-eye', role: 'group', 'aria-label': `Eye for ${rowName(r)}` },
+      [['RIGHT', 'R'], ['LEFT', 'L'], ['BOTH', 'B']].map(([value, label]) =>
+        h(
+          'button',
+          {
+            class: `eye-btn eye-btn-${value.toLowerCase()}${eye === value ? ' on' : ''}`,
+            'aria-pressed': eye === value ? 'true' : 'false',
+            title: value.charAt(0) + value.slice(1).toLowerCase(),
+            'data-key': `${rowKey(r)}:eye:${value}`,
+            onclick: () => ((r.cells[eyeCol] = eye === value ? '' : value), render()),
+          },
+          label,
+        ),
+      ),
+    );
+  };
+
+  // ---- Compact: the columns as a table that fits the window (no scrolling sideways) ----
+  // The eye goes beside the name as a pill, and your involvement under the row, instead of their own columns.
+  const eyeBesideName = eyeCol >= 0 && keyIndex >= 0 && keyIndex !== eyeCol;
+  const offTable = new Set([eyeBesideName ? eyeCol : -1, involvement.level, involvement.notes].filter((i) => i >= 0));
+  const listed = [...active, ...cancelled];
+  // A column empty for every patient shrinks to a strip (click it to widen), except the ones the prompts fill in.
+  const keepOpen = new Set([keyIndex, examCol, allergyCol, promptCols.findings, promptCols.lens]);
+  const shrunk = (col: number) =>
+    !keepOpen.has(col) && !state.openColumns.has(col) && listed.every((r) => !(r.cells[col] ?? '').trim() && r.changes[col] === undefined);
+  const shown = layout.columns.map((_, col) => col).filter((col) => !offTable.has(col));
+  const openColumn = (col: number, r?: GridRow) => {
+    state.openColumns.add(col);
+    render();
+    if (r) requestAnimationFrame(() => app.querySelector<HTMLElement>(`[data-key="${CSS.escape(`${rowKey(r)}:cell${col}`)}"]`)?.focus());
+  };
+  // Shares of the width: free text gets more, short columns less; a shrunk column a thin strip.
+  // The first column (number, lock, tick, time, badges) needs about 100px whatever the window's width.
+  const HANDLE_SHARE = Math.min(9, Math.max(6.5, 10000 / Math.max(window.innerWidth - 80, 600)));
+  const SHRUNK_SHARE = 2.2;
+  const shareOf = (col: number) => {
+    if (shrunk(col)) return SHRUNK_SHARE;
+    if (col === promptCols.lens) return 2.1;
+    if (col === examCol) return 1.4;
+    return COLUMN_SHARES[layout.columns[col].source] ?? 1.5;
+  };
+  const flexible = shown.filter((col) => !shrunk(col));
+  const flexTotal = flexible.reduce((sum, col) => sum + shareOf(col), 0);
+  const flexRoom = 100 - HANDLE_SHARE - (shown.length - flexible.length) * SHRUNK_SHARE;
+  const widthOf = (col: number) => (shrunk(col) ? SHRUNK_SHARE : (shareOf(col) / flexTotal) * flexRoom);
+  const columnCount = shown.length + 1;
+
+  const thead = h(
+    'thead',
+    {},
+    h(
+      'tr',
+      {},
+      h(
+        'th',
+        { class: 'handle' },
+        h('input', {
+          type: 'checkbox',
+          checked: allTicked,
+          title: `${allTicked ? 'Untick all' : 'Tick all'} (${count} of ${active.length} ticked)`,
+          'aria-label': 'Tick all patients',
+          onchange: (e: Event) => {
+            const on = (e.target as HTMLInputElement).checked;
+            for (const r of active) r.included = on;
+            render();
+          },
+        }),
+        h('div', { class: 'tick-count' }, `${count}/${active.length}`),
+      ),
+      shown.map((col) => {
+        const heading = layout.columns[col].heading || `Column ${col + 1}`;
+        return shrunk(col)
+          ? h('th', { class: 'shrunk' }, h('button', { class: 'shrunk-head', title: `${heading}: empty for every patient. Click to widen.`, 'aria-label': `Show ${heading}`, onclick: () => openColumn(col) }, heading))
+          : h('th', {}, col === keyIndex && eyeBesideName ? `${layout.columns[eyeCol].heading || 'Eye'} · ${heading}` : heading);
+      }),
+    ),
+  );
+
   const renderRow = (r: GridRow) => {
     const p = r.patient;
     const who = whoOf(r);
-    const prompts = r.status === 'cancelled' ? null : renderPrompts(r);
+    const cancelledRow = r.status === 'cancelled';
+    const prompts = cancelledRow ? null : renderPrompts(r);
+    const audit =
+      cancelledRow || (involvement.level < 0 && involvement.notes < 0)
+        ? null
+        : h(
+            'div',
+            { class: 'grid-audit lock-keep', title: 'Your own part in this case, for your logbook and audit. Saved in its own columns on your sheet. Still editable while the patient is locked.' },
+            h('span', { class: 'pc-label' }, 'My involvement'),
+            involvement.level >= 0 ? involvementChoice(r, involvement.level) : null,
+            involvement.notes >= 0 ? involvementNotes(r, involvement.notes) : null,
+          );
+    const eye = eyeCol >= 0 ? r.cells[eyeCol].trim().toLowerCase() : '';
     const main = h(
       'tr',
       {},
-      h('td', { class: 'handle' }, numberOf(r) ? h('span', { class: 'row-num', title: numberTitle(r) }, numberOf(r)) : null, r.status === 'cancelled' ? null : lockToggle(r), tickOf(r)),
-      h('td', { class: 'time', title: p?.consultant ?? '' }, h('div', { class: 'time-value' }, p?.time ?? ''), who ? h('div', { class: 'who' }, who) : null, ...badgesOf(r)),
-      layout.columns.map((c, col) => {
-        if (col === involvement.level && r.status !== 'cancelled') {
-          const value = (r.cells[col] ?? '').trim();
-          const picked = readInvolvement(value);
-          return h(
-            'td',
-            { class: 'involvement-cell lock-keep' },
-            h(
-              'select',
-              {
-                class: 'pc-select',
-                'aria-label': `Your involvement for ${rowName(r)}`,
-                'data-key': `${rowKey(r)}:involvement`,
-                onchange: (e: Event) => ((r.cells[col] = (e.target as HTMLSelectElement).value), render()),
-              },
-              h('option', { value: '', selected: !value }, '—'),
-              INVOLVEMENT_LEVELS.map((level) => h('option', { value: level, selected: picked === level }, level)),
-              value && !picked ? h('option', { value, selected: true }, value) : null,
-            ),
-          );
+      // Number, lock and tick, then the time and the patient's badges under them.
+      h(
+        'td',
+        { class: 'handle', title: p?.consultant ?? '' },
+        h('div', { class: 'handle-top' }, numberOf(r) ? h('span', { class: 'row-num', title: numberTitle(r) }, numberOf(r)) : null, cancelledRow ? null : lockToggle(r), tickOf(r)),
+        p?.time ? h('div', { class: 'time-value', title: 'Shown for reference. Add Time as a column in Settings to copy it.' }, p.time) : null,
+        who ? h('div', { class: 'who' }, who) : null,
+        h('div', { class: 'handle-badges' }, ...badgesOf(r)),
+      ),
+      shown.map((col) => {
+        if (shrunk(col)) {
+          const heading = layout.columns[col].heading || `Column ${col + 1}`;
+          return h('td', { class: 'shrunk', title: `${heading}: click to widen and type here`, onclick: () => !isLocked(r) && openColumn(col, r) });
         }
         const { area, change } = editorOf(r, col, Boolean(prompts), (target) => (target.parentElement!.className = classFor(r, col, target.value)));
-        return h('td', { class: `${classFor(r, col, r.cells[col])}${col === involvement.notes ? ' lock-keep' : ''}`.trim(), style: `min-width:${columnWidth(c.source)}px` }, area, change, acknowledgeOf(r, col));
+        // The eye beside the name, on the same line.
+        const box = col === keyIndex && eyeBesideName ? h('div', { class: 'cell-with-eye' }, h('div', { class: 'cell-eye' }, eyeControl(r)), area) : area;
+        return h('td', { class: classFor(r, col, r.cells[col]) }, box, change, acknowledgeOf(r, col));
       }),
     );
     return applyLock(h(
       'tbody',
-      { class: ['patient', ...classesOf(r)].join(' ') },
+      { class: ['patient', eye ? `side-${eye}` : '', ...classesOf(r)].filter(Boolean).join(' ') },
       main,
-      prompts ? h('tr', { class: 'prompt-row' }, h('td', { colspan: 2 }), h('td', { colspan: layout.columns.length }, prompts)) : null,
+      prompts || audit ? h('tr', { class: 'prompt-row' }, h('td'), h('td', { colspan: shown.length }, prompts, audit)) : null,
     ), r);
   };
 
   const table = h(
     'table',
     { class: 'grid' },
+    h('colgroup', {}, h('col', { style: `width:${HANDLE_SHARE}%` }), shown.map((col) => h('col', { style: `width:${widthOf(col).toFixed(2)}%` }))),
     thead,
     mainList.map(renderRow),
     h('tbody', { class: 'backfill-heading' }, h('tr', {}, h('td', { colspan: columnCount }, backfillHeading ? h('span', {}, backfillHeading) : null, addBackfillButton()))),
@@ -2444,12 +2526,6 @@ function renderPrep(): HTMLElement | null {
       : null,
     cancelled.map((r) => renderRow(r)),
   );
-
-  const phone = isPhone();
-  const colOf = (source: string) => layout.columns.findIndex((c) => c.source === source);
-  const eyeCol = colOf('field:eye');
-  const procCol = Math.max(colOf('field:procedure'), colOf('field:procedureRaw'));
-  const alertCol = colOf('field:alerts');
 
   /** Phone: one card per patient. Closed, it's a summary; tap it to edit each column in full width. */
   const renderCard = (r: GridRow) => {
@@ -2601,28 +2677,7 @@ function renderPrep(): HTMLElement | null {
       return wrap;
     };
     const eye = eyeCol >= 0 ? r.cells[eyeCol].trim().toUpperCase() : '';
-    const eyeSwitch =
-      eyeCol >= 0 && locked
-        ? h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}`, title: eye || 'Eye not set' }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?')
-        : eyeCol >= 0
-        ? h(
-            'div',
-            { class: 'pc-eye', role: 'group', 'aria-label': `Eye for ${rowName(r)}` },
-            [['RIGHT', 'R'], ['LEFT', 'L'], ['BOTH', 'B']].map(([value, label]) =>
-              h(
-                'button',
-                {
-                  class: `eye-btn eye-btn-${value.toLowerCase()}${eye === value ? ' on' : ''}`,
-                  'aria-pressed': eye === value ? 'true' : 'false',
-                  title: value.charAt(0) + value.slice(1).toLowerCase(),
-                  'data-key': `${key}:eye:${value}`,
-                  onclick: () => ((r.cells[eyeCol] = eye === value ? '' : value), render()),
-                },
-                label,
-              ),
-            ),
-          )
-        : null;
+    const eyeSwitch = eyeControl(r);
     const procedure = procCol >= 0 ? r.cells[procCol].split('\n')[0] : p?.procedure ?? '';
     const sub = [p?.time, procedure, whoOf(r)].filter(Boolean).join(' · ');
     const todo = cancelledRow ? [] : toDoOf(r, examCol, findingsCol, lensCol);
@@ -2702,7 +2757,7 @@ function renderPrep(): HTMLElement | null {
         const on = (e.target as HTMLInputElement).checked;
         for (const r of active) r.included = on;
         render();
-      } }), ` Tick all`),
+      } }), ` Tick all`, h('span', { class: 'muted' }, ` · ${count} of ${active.length} ticked`)),
     ),
     mainList.map(renderPrepCard),
     h('div', { class: 'pcards-backfill' }, backfillHeading ? h('span', {}, backfillHeading) : null, addBackfillButton()),
@@ -3496,20 +3551,19 @@ function renderPrompts(r: GridRow, only?: 'findings' | 'lens'): HTMLElement | nu
   return parts.length ? h('div', { class: 'prompts' }, parts) : null;
 }
 
-const COLUMN_WIDTHS: Record<string, number> = {
-  'field:eye': 68,
-  'field:patient': 180,
-  'field:procedureRaw': 180,
-  'field:comment': 180,
-  'field:history': 150,
-  'field:planNotes': 120,
-  'field:alerts': 120,
-  blank: 72,
+/** Each column's share of the Compact table's width, by where its value comes from (others: 1.5). */
+const COLUMN_SHARES: Record<string, number> = {
+  'field:eye': 0.9,
+  'field:patient': 2.6,
+  'field:name': 2.2,
+  'field:procedure': 1.4,
+  'field:procedureRaw': 2.4,
+  'field:comment': 2.4,
+  'field:history': 3.2,
+  'field:allergy': 1.7,
+  'field:planNotes': 2.2,
+  'field:alerts': 1.8,
 };
-
-function columnWidth(source: string): number {
-  return COLUMN_WIDTHS[source] ?? 96;
-}
 
 function cellClass(source: string, value: string): string {
   if (source === 'field:eye') {
