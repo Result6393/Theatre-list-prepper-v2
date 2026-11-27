@@ -2571,7 +2571,7 @@ input.grade-input.needs-info {
   min-width: 1.4em;
   margin-right: 4px;
   font-weight: 800;
-  color: var(--brand);
+  color: var(--text);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -3027,4 +3027,154 @@ td.involvement-cell select {
 
 .viewer-zoom button {
   min-width: 2.2em;
+}
+
+/* Compact: the table fits the window, its columns sharing the width (no scrolling sideways). */
+table.grid {
+  table-layout: fixed;
+  min-width: 960px;
+}
+
+.grid th.handle,
+.grid td.handle {
+  width: auto;
+  white-space: normal;
+}
+
+.grid td.handle {
+  padding-left: 8px;
+}
+
+.handle-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.grid td.handle .time-value {
+  margin-top: 4px;
+}
+
+.handle-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.handle-badges:empty {
+  display: none;
+}
+
+.handle-badges .who {
+  flex-basis: 100%;
+}
+
+.tick-count {
+  margin-top: 2px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+/* The patient's eye as a coloured edge on the row, and as a pill or R / L / B beside the name. */
+.grid tbody.side-right td.handle {
+  box-shadow: inset 4px 0 0 var(--right-text);
+}
+
+.grid tbody.side-left td.handle {
+  box-shadow: inset 4px 0 0 var(--left-text);
+}
+
+.grid tbody.side-both td.handle {
+  box-shadow: inset 4px 0 0 var(--both-text);
+}
+
+.cell-with-eye {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.cell-with-eye textarea.cell {
+  flex: 1;
+  min-width: 0;
+}
+
+.cell-eye {
+  flex: none;
+  margin: 3px 0 0 3px;
+}
+
+.handle-badges button.mini {
+  white-space: nowrap;
+  padding: 1px 5px;
+}
+
+.grid .pc-eye button {
+  padding: 2px 9px;
+}
+
+/* A column empty for every patient: a thin strip until you click it. */
+.grid th.shrunk,
+.grid td.shrunk {
+  padding: 0;
+}
+
+.grid td.shrunk {
+  cursor: pointer;
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+}
+
+.grid td.shrunk:hover {
+  background: var(--accent-soft);
+}
+
+button.shrunk-head {
+  display: block;
+  width: 100%;
+  max-height: 140px;
+  margin: 0;
+  padding: 6px 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+/* Your involvement, under the row (not for the consultant: it isn't in the Summary). */
+.grid-audit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+.grid-audit .involvement-notes {
+  flex: 1 1 220px;
+  max-width: 420px;
+}
+
+/* Long checks and alerts wrap inside the row instead of widening the table. */
+.grid .report-check,
+.grid .report-check.mismatch {
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* The toolbar on one line: Standard | Compact at its end. */
+.toolbar .view-switch {
+  margin-left: auto;
 }
