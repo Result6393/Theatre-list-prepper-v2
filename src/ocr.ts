@@ -91,3 +91,43 @@ function wordsOf(data: Tesseract.Page): OcrWord[] {
         for (const word of line.words) words.push({ text: word.text, x0: word.bbox.x0, y0: word.bbox.y0, x1: word.bbox.x1, y1: word.bbox.y1 });
   return words;
 }
+
+/**
+ * Enlarged, grey copy of a screenshot of the patient banner (from the Medical Letter Prepper app).
+ * The record system's banner is white text on dark blue, which reads far better as dark text on a
+ * light background, so dark pictures are inverted.
+ */
+async function preparedBanner(image: Blob): Promise<HTMLCanvasElement> {
+  const bitmap = await createImageBitmap(image);
+  const scale = Math.min(4, Math.max(1, READ_WIDTH / bitmap.width));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  const context = canvas.getContext('2d', { willReadFrequently: true })!;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+  const d = pixels.data;
+  let total = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const grey = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    d[i] = d[i + 1] = d[i + 2] = grey;
+    total += grey;
+  }
+  if (total / (d.length / 4) < 128) for (let i = 0; i < d.length; i += 4) d[i] = d[i + 1] = d[i + 2] = 255 - d[i];
+  context.putImageData(pixels, 0, 0);
+  return canvas;
+}
+
+/** The text in a screenshot of the patient banner, line by line (see patientheader.ts). Nothing is kept. */
+export async function readText(image: Blob): Promise<string> {
+  engine ??= start().catch((e) => {
+    engine = null;
+    throw e;
+  });
+  const worker = await engine;
+  const { data } = await worker.recognize(await preparedBanner(image));
+  return data.text ?? '';
+}

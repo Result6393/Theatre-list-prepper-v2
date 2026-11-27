@@ -7,7 +7,7 @@ import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, ou
 import { extractSessions, type Patient, type Session } from './extract';
 import { INVOLVEMENT_LEVELS, involvementColumns, missingHeadings, readInvolvement } from './involvement';
 import { combineSessions, listOfPatient, orderedSelection } from './lists';
-import { backfillProblem, backfillRow, copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, inSections, isLocked, keepReports, rowMrn, sectionOf, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type BackfillDetails, type GridRow, type MergeSummary } from './merge';
+import { backfillFromBanner, backfillProblem, backfillRow, copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, inSections, isLocked, keepReports, rowMrn, sectionOf, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type BackfillDetails, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
 import { lensEmailHtml, lensEmailText, lensLines, lensSummary, lensTableRows, PATIENT_HEAD, SUMMARY_HEAD, type LensItem } from './lenslist';
 import { absentText, cycleFinding, findingGroups, findingState, hasToken, isBackupLine, isLensSurgery, lensCode, readBackup, readGrading, writeBackup, writeGrading, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
@@ -22,7 +22,8 @@ import { renderSettings } from './settings-view';
 import { summaryHtml, summaryPage, summaryText as listSummaryText, type Summary as ListSummary } from './summary';
 import { reportImage, type ReportImage } from './report';
 import { checkLens, combineReadings, parseConstants, parseEquivalents, readReport, signed, simulateLens, type BiometryAlert, type LensCheck, type PickedLens, type ReportReading } from './iolreport';
-import { OCR_ENGINE, readWords } from './ocr';
+import { OCR_ENGINE, readText, readWords } from './ocr';
+import { foundAnything, parsePatientHeader } from './patientheader';
 
 /** The list being prepped: one list, or several ticked together that run on as one. */
 interface Grid {
@@ -146,7 +147,7 @@ const state = {
   /** The short list for changing the order of the patients. */
   reorderOpen: false,
   /** The "Add a backfill case" form, while it's open. */
-  backfillForm: null as (BackfillDetails & { error: string }) | null,
+  backfillForm: null as (BackfillDetails & { error: string; note?: string; reading?: boolean }) | null,
   /** A question to answer before going on (e.g. cancelling a patient), as a pop-up. */
   confirm: null as { title: string; text: string; yes: string; no: string; danger?: boolean; run: () => void } | null,
   saveMenuOpen: false,
@@ -1035,6 +1036,14 @@ function renderBackfillForm(): HTMLElement | null {
         'form',
         { class: 'update-open backfill-form', onsubmit: submit },
         h('p', {}, h('strong', {}, 'Add a backfill case. '), 'For a patient who isn’t on the run sheet. They go under Backfill, after the list, and are saved under a BACKFILL row in your Excel file. Fill in the rest on their card.'),
+        h(
+          'div',
+          { class: 'paste-zone' },
+          h('strong', {}, form.reading ? 'Reading the screenshot…' : 'Paste a screenshot of the patient banner (Ctrl+V)'),
+          h('span', {}, ' to fill the name, MRN and age. It’s read on this computer only and not kept. '),
+          h('button', { type: 'button', class: 'link', disabled: Boolean(form.reading), onclick: () => pickFile('image/*', (file) => void fillBackfillFromScreenshot(file)) }, 'or choose a picture'),
+        ),
+        form.note ? h('p', { class: 'hint small', role: 'status' }, form.note) : null,
         h('div', { class: 'inline-form' }, text('MRN', 'mrn', 'e.g. 1234567', 12), text('Name', 'name', 'SURNAME, Given', 24), text('Age/sex', 'ageSex', 'e.g. 70F', 6)),
         h('div', { class: 'inline-form' }, h('span', { class: 'prompt-label' }, 'Eye'), eye('RIGHT', 'Right'), eye('LEFT', 'Left'), eye('BOTH', 'Both'), text('Procedure', 'procedure', 'e.g. Phaco + IOL', 22)),
         h(
@@ -1611,6 +1620,45 @@ function openBackfillForm(): void {
   state.backfillForm = { mrn: '', name: '', ageSex: '', eye: '', procedure: '', error: '' };
   state.moreMenuOpen = false;
   render();
+}
+
+/** Today as dd/mm/yyyy, like the run sheet's dates. */
+function todayDate(): string {
+  const d = new Date();
+  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+}
+
+/**
+ * Fills the backfill form from a screenshot of the patient banner (as in the Medical Letter Prepper):
+ * name, MRN, and age on the day of the list from the DOB. Read on this computer; the picture isn't kept.
+ */
+async function fillBackfillFromScreenshot(image: Blob): Promise<void> {
+  const form = state.backfillForm;
+  const grid = state.grid;
+  if (!form || !grid || form.reading) return;
+  form.reading = true;
+  form.error = '';
+  form.note = '';
+  render();
+  try {
+    const found = parsePatientHeader(await readText(image));
+    if (state.backfillForm !== form) return;
+    if (!foundAnything(found)) {
+      form.error = 'Couldn’t find a name, MRN or DOB in that picture. Screenshot just the blue patient banner.';
+      return;
+    }
+    const day = (grid.sheetOnly ? sheetSession(grid).date : grid.combined.date) || todayDate();
+    const filled = backfillFromBanner(found, day);
+    Object.assign(form, filled);
+    const got = [filled.name ? 'name' : '', filled.mrn ? 'MRN' : '', filled.ageSex ? 'age' : ''].filter(Boolean);
+    const missed = [filled.name ? '' : 'name', filled.mrn ? '' : 'MRN', found.dob ? '' : 'DOB'].filter(Boolean);
+    form.note = `Filled ${got.join(', ')} from the screenshot${missed.length ? ` (couldn’t read ${missed.join(', ')})` : ''}. Check them against the record, and add the sex to the age.`;
+  } catch {
+    if (state.backfillForm === form) form.error = 'Couldn’t read that picture.';
+  } finally {
+    form.reading = false;
+    render();
+  }
 }
 
 /** Adds the backfill case typed in the form, after the other backfill cases (unlocked, ready to prep). */
@@ -4778,6 +4826,16 @@ document.addEventListener('pointerdown', (e) => {
   }
 });
 document.addEventListener('paste', (e) => {
+  // While adding a backfill case, a pasted picture is the patient banner (even with a box focused).
+  if (state.backfillForm) {
+    const item = [...(e.clipboardData?.items ?? [])].find((i) => i.kind === 'file' && i.type.startsWith('image/'));
+    const file = item?.getAsFile();
+    if (file) {
+      e.preventDefault();
+      void fillBackfillFromScreenshot(file);
+    }
+    return;
+  }
   if ((e.target as HTMLElement | null)?.closest?.('textarea, input')) return;
   const r = reportRowAt(e.target);
   const files = pastedImages(e);
