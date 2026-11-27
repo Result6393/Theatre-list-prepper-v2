@@ -7,7 +7,7 @@ import { buildEmail, emailBodyHtml, emailBodyText, mailtoUrl, MAX_URL_LENGTH, ou
 import { extractSessions, type Patient, type Session } from './extract';
 import { INVOLVEMENT_LEVELS, involvementColumns, missingHeadings, readInvolvement } from './involvement';
 import { combineSessions, listOfPatient, orderedSelection } from './lists';
-import { copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, isLocked, keepReports, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type GridRow, type MergeSummary } from './merge';
+import { backfillProblem, backfillRow, copyBlock, copyPictures, findInSheet, findListBlock, findPreppedRows, freshRows, inSections, isLocked, keepReports, rowMrn, sectionOf, sheetRows, isRectangular, mergePrepped, MergeError, parsePastedRows, withoutTrailingBlankRows, type BackfillDetails, type GridRow, type MergeSummary } from './merge';
 import { ParseError, parseTable, type Table } from './parse';
 import { lensEmailHtml, lensEmailText, lensLines, lensSummary, lensTableRows, PATIENT_HEAD, SUMMARY_HEAD, type LensItem } from './lenslist';
 import { absentText, cycleFinding, findingGroups, findingState, hasToken, isBackupLine, isLensSurgery, lensCode, readBackup, readGrading, writeBackup, writeGrading, promptColumns, readEyeOrder, readLens, readTarget, toggleFinding, writeEyeOrder, writeLens, writeTarget } from './prompts';
@@ -145,6 +145,10 @@ const state = {
   lensListOpen: false,
   /** The short list for changing the order of the patients. */
   reorderOpen: false,
+  /** The "Add a backfill case" form, while it's open. */
+  backfillForm: null as (BackfillDetails & { error: string }) | null,
+  /** A question to answer before going on (e.g. cancelling a patient), as a pop-up. */
+  confirm: null as { title: string; text: string; yes: string; no: string; danger?: boolean; run: () => void } | null,
   saveMenuOpen: false,
   /** Phone: the ⋯ menu in the bottom bar (Update, Email). */
   moreMenuOpen: false,
@@ -292,13 +296,17 @@ function gridFor(ids: string[]): Grid {
   }
   const sessions = ids.map((id) => state.sessions.find((s) => s.id === id)).filter((s): s is Session => Boolean(s));
   const recent = [...state.grids.values()].reverse();
+  const sources = new Set<Grid>();
   const rows = sessions.flatMap((s) => {
     const source = recent.find((g) => g.sessions.includes(s));
+    if (source) sources.add(source);
     return source
-      ? source.rows.filter((r) => r.patient && r.status !== 'cancelled' && source.listOf.get(r.patient) === s)
+      ? source.rows.filter((r) => r.patient && (r.status !== 'cancelled' || r.cancelledByYou) && source.listOf.get(r.patient) === s)
       : freshRows(s.patients, state.settings.layout);
   });
-  const grid: Grid = { sessions, combined: combineSessions(sessions), listOf: listOfPatient(sessions), rows, padTo: 0, pasteAt: null, summary: null, undo: null };
+  // Backfill cases you added (they have no booking) come along with the lists they were added to.
+  for (const source of sources) rows.push(...source.rows.filter((r) => !r.patient && r.backfill && r.status !== 'cancelled'));
+  const grid: Grid = { sessions, combined: combineSessions(sessions), listOf: listOfPatient(sessions), rows: inSections(rows), padTo: 0, pasteAt: null, summary: null, undo: null };
   state.grids.set(key, grid);
   return grid;
 }
@@ -376,7 +384,7 @@ function sheetSession(grid: Grid): Session {
 function tickedPatients(grid: Grid): Patient[] {
   return grid.rows
     .filter((r) => r.included && r.status !== 'cancelled')
-    .map((r) => (grid.sheetOnly ? sheetPatient(r) : r.patient))
+    .map((r) => (grid.sheetOnly || !r.patient ? sheetPatient(r) : r.patient))
     .filter((p): p is Patient => p !== null);
 }
 
@@ -385,13 +393,17 @@ function medicalRecordsEmail(grid: Grid) {
   const ticked = tickedPatients(grid);
   const groups = grid.sheetOnly
     ? [{ session: sheetSession(grid), patients: ticked }]
-    : grid.sessions.map((session) => ({ session, patients: ticked.filter((p) => grid.listOf.get(p) === session) }));
+    : grid.sessions.map((session, i) => ({
+        session,
+        // Patients with no booking (backfill cases) go with the last of the lists.
+        patients: ticked.filter((p) => grid.listOf.get(p) === session || (!grid.listOf.has(p) && i === grid.sessions.length - 1)),
+      }));
   return buildEmail(state.settings.email, groups);
 }
 
 function emailSummary(grid: Grid): string {
   const ticked = tickedPatients(grid);
-  const lists = new Set(ticked.map((p) => grid.listOf.get(p))).size;
+  const lists = new Set(ticked.map((p) => grid.listOf.get(p)).filter(Boolean)).size;
   return `${ticked.length} patient${ticked.length === 1 ? '' : 's'}${lists > 1 ? ` from ${lists} lists` : ''}`;
 }
 
@@ -990,6 +1002,80 @@ function renderSaveForms(): HTMLElement | null {
   );
 }
 
+/** "Add a backfill case": a patient who isn't on the run sheet, added after the list (before the cancelled). */
+function renderBackfillForm(): HTMLElement | null {
+  const grid = state.grid;
+  const form = state.backfillForm;
+  if (!grid || !form) return null;
+  const close = () => ((state.backfillForm = null), render());
+  const submit = (e: Event) => (e.preventDefault(), addBackfill(grid));
+  const text = (label: string, key: 'mrn' | 'name' | 'ageSex' | 'procedure', placeholder: string, size: number) =>
+    h(
+      'label',
+      {},
+      `${label} `,
+      h('input', {
+        type: 'text',
+        value: form[key],
+        placeholder,
+        size,
+        'data-key': `backfill:${key}`,
+        oninput: (e: Event) => (form[key] = (e.target as HTMLInputElement).value),
+      }),
+    );
+  const eye = (value: BackfillDetails['eye'], label: string) =>
+    h('button', { type: 'button', class: form.eye === value ? 'chip on' : 'chip', 'aria-pressed': form.eye === value ? 'true' : 'false', onclick: () => ((form.eye = form.eye === value ? '' : value), render()) }, label);
+  return h(
+    'div',
+    { class: 'reorder-backdrop', onclick: (e: Event) => e.target === e.currentTarget && close() },
+    h(
+      'div',
+      { class: 'save-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Add a backfill case' },
+      h(
+        'form',
+        { class: 'update-open backfill-form', onsubmit: submit },
+        h('p', {}, h('strong', {}, 'Add a backfill case. '), 'For a patient who isn’t on the run sheet. They go under Backfill, after the list, and are saved under a BACKFILL row in your Excel file. Fill in the rest on their card.'),
+        h('div', { class: 'inline-form' }, text('MRN', 'mrn', 'e.g. 1234567', 12), text('Name', 'name', 'SURNAME, Given', 24), text('Age/sex', 'ageSex', 'e.g. 70F', 6)),
+        h('div', { class: 'inline-form' }, h('span', { class: 'prompt-label' }, 'Eye'), eye('RIGHT', 'Right'), eye('LEFT', 'Left'), eye('BOTH', 'Both'), text('Procedure', 'procedure', 'e.g. Phaco + IOL', 22)),
+        h(
+          'div',
+          { class: 'inline-form' },
+          h('button', { type: 'submit', class: 'primary', 'data-key': 'backfill:save' }, 'Add case'),
+          h('button', { type: 'button', class: 'ghost', onclick: close }, 'Close'),
+        ),
+        form.error ? h('p', { class: 'error', role: 'alert' }, form.error) : null,
+      ),
+    ),
+  );
+}
+
+/** A question to answer before going on (e.g. cancelling a patient). */
+function renderConfirm(): HTMLElement | null {
+  const q = state.confirm;
+  if (!q) return null;
+  const answer = (yes: boolean) => {
+    state.confirm = null;
+    if (yes) q.run();
+    render();
+  };
+  return h(
+    'div',
+    { class: 'reorder-backdrop confirm-backdrop', onclick: (e: Event) => e.target === e.currentTarget && answer(false) },
+    h(
+      'div',
+      { class: 'save-dialog confirm', role: 'alertdialog', 'aria-modal': 'true', 'aria-label': q.title },
+      h('h3', {}, q.title),
+      h('p', {}, q.text),
+      h(
+        'div',
+        { class: 'inline-form' },
+        h('button', { class: q.danger ? 'primary danger-fill' : 'primary', 'data-key': 'confirm:yes', onclick: () => answer(true) }, q.yes),
+        h('button', { class: 'ghost', 'data-key': 'confirm:no', onclick: () => answer(false) }, q.no),
+      ),
+    ),
+  );
+}
+
 /** Chooses a template file for new lists. It's kept on this computer, unless it has patients in it. */
 function chooseTemplate(): void {
   pickFile('.xlsx,.xlsm', async (file) => {
@@ -1448,26 +1534,102 @@ function closeSettings(): void {
 }
 
 
-/** Moves a row within the list; cancelled rows stay together at the bottom. */
+/**
+ * Moves a row within its part of the list (the list, or the backfill cases); cancelled rows stay
+ * together at the bottom. `from` and `to` count the list and backfill cases together, as shown.
+ */
 function moveRow(grid: Grid, from: number, to: number): void {
-  if (to < 0 || to >= activeRows(grid).length || from === to) return;
-  const [row] = grid.rows.splice(from, 1);
-  grid.rows.splice(to, 0, row);
+  const active = activeRows(grid);
+  if (to < 0 || to >= active.length || from === to || sectionOf(active[from]) !== sectionOf(active[to])) return;
+  const [row] = grid.rows.splice(grid.rows.indexOf(active[from]), 1);
+  const target = grid.rows.indexOf(active[to]);
+  grid.rows.splice(from < to ? target + 1 : target, 0, row);
   render();
 }
 
-/** Puts a cancelled patient back on the list, at the end of it (above the other cancelled ones). */
+/** Puts a row at the end of its part of the list (the list, the backfill cases, or the cancelled). */
+function placeAtEnd(grid: Grid, r: GridRow): void {
+  grid.rows = inSections([...grid.rows.filter((x) => x !== r), r]);
+}
+
+/** The patient's name for a question about them, e.g. "1234567 SMITH, Jan". */
+function whoIs(r: GridRow): string {
+  const { layout } = state.settings;
+  const keyCol = layout.columns.findIndex((c) => c.source === 'field:patient' || c.source === 'field:mrn' || c.source === 'field:name');
+  return (r.patient?.patient || (keyCol >= 0 ? r.cells[keyCol] : '') || 'this patient').split('\n')[0].trim();
+}
+
+function ask(question: NonNullable<typeof state.confirm>): void {
+  state.confirm = question;
+  render();
+}
+
+/** Cancels a patient (after asking): they go to the cancelled at the bottom, and stay there in your Excel file. */
+function cancelRow(grid: Grid, r: GridRow): void {
+  if (r.status === 'cancelled') return;
+  const backfill = r.backfill;
+  ask({
+    title: 'Cancel this case?',
+    text: `${whoIs(r)} will move to Cancelled at the bottom of the list${backfill ? '' : ', and stay cancelled even while the run sheet still lists them'}. In your Excel file they’re kept under a CANCELLED row. You can uncancel them later.`,
+    yes: 'Cancel case',
+    no: 'Keep on the list',
+    danger: true,
+    run: () => {
+      r.statusBefore = r.status;
+      r.status = 'cancelled';
+      r.cancelledByYou = true;
+      r.note = 'Cancelled by you';
+      r.unlocked = undefined;
+      placeAtEnd(grid, r);
+      say(`Cancelled ${whoIs(r)}.`, false);
+    },
+  });
+}
+
+/** Puts a cancelled patient back (after asking), at the end of the list (or of the backfill cases, for one). */
 function uncancelRow(grid: Grid, r: GridRow): void {
   if (r.status !== 'cancelled') return;
-  const at = grid.rows.indexOf(r);
-  if (at < 0) return;
-  grid.rows.splice(at, 1);
-  r.status = 'sheet';
-  r.note = undefined;
-  r.included = true;
-  const last = grid.rows.map((x) => x.status !== 'cancelled').lastIndexOf(true);
-  grid.rows.splice(last + 1, 0, r);
-  say('Back on the list, at the end.', false);
+  const where = r.backfill ? 'the backfill cases' : 'the list';
+  ask({
+    title: 'Uncancel this case?',
+    text: `${whoIs(r)} will go back on ${where}, at the end.${r.cancelledByYou || r.patient ? '' : ' They aren’t on the latest run sheet, so check they’re really back on.'}`,
+    yes: 'Uncancel',
+    no: 'Leave cancelled',
+    run: () => {
+      r.status = r.statusBefore ?? (r.patient ? 'kept' : 'sheet');
+      r.statusBefore = undefined;
+      r.cancelledByYou = undefined;
+      r.note = undefined;
+      r.included = true;
+      placeAtEnd(grid, r);
+      say(`${whoIs(r)} is back on ${where}, at the end.`, false);
+    },
+  });
+}
+
+function openBackfillForm(): void {
+  state.backfillForm = { mrn: '', name: '', ageSex: '', eye: '', procedure: '', error: '' };
+  state.moreMenuOpen = false;
+  render();
+}
+
+/** Adds the backfill case typed in the form, after the other backfill cases (unlocked, ready to prep). */
+function addBackfill(grid: Grid): void {
+  const form = state.backfillForm;
+  if (!form) return;
+  const problem = backfillProblem(form);
+  const { layout } = state.settings;
+  const row = problem ? null : backfillRow(form, layout, `backfill:${Date.now().toString(36)}:${grid.rows.length}`);
+  const mrn = row ? rowMrn(row, layout) : '';
+  const same = row && mrn ? grid.rows.find((r) => rowMrn(r, layout) === mrn) : undefined;
+  if (problem || !row || same) {
+    form.error = problem ?? (same ? `${whoIs(same)} is already on this list${same.status === 'cancelled' ? ' as cancelled: uncancel them instead' : ''}.` : 'Couldn’t add this case.');
+    render();
+    return;
+  }
+  grid.rows = inSections([...grid.rows, row]);
+  state.backfillForm = null;
+  say(`Added ${whoIs(row)} as a backfill case.`, false);
   render();
 }
 
@@ -1698,7 +1860,7 @@ function render(): void {
           offlineTemplate,
         }))
       : h('main', {}, renderSetup(), renderPrep()),
-    ...[state.view === 'main' ? renderViewer() : null, state.view === 'main' ? renderReorder() : null, state.view === 'main' ? renderLensList() : null, state.view === 'main' ? renderSaveForms() : null].filter((v): v is HTMLElement => v !== null),
+    ...[state.view === 'main' ? renderViewer() : null, state.view === 'main' ? renderReorder() : null, state.view === 'main' ? renderLensList() : null, state.view === 'main' ? renderSaveForms() : null, state.view === 'main' ? renderBackfillForm() : null, renderConfirm()].filter((v): v is HTMLElement => v !== null),
     h(
       'div',
       { class: 'toast-area', role: 'status', 'aria-live': 'polite' },
@@ -1954,8 +2116,24 @@ function renderPrep(): HTMLElement | null {
   );
 
   const active = activeRows(grid);
+  const mainList = active.filter((r) => !r.backfill);
+  const backfill = active.filter((r) => r.backfill);
   const cancelled = cancelledRows(grid);
   const count = active.filter((r) => r.included).length;
+  /** Where a patient is: 1, 2… on the list, B1, B2… for the backfill cases. */
+  const numberOf = (r: GridRow): string | null => {
+    const at = mainList.indexOf(r);
+    if (at >= 0) return String(at + 1);
+    const b = backfill.indexOf(r);
+    return b >= 0 ? `B${b + 1}` : null;
+  };
+  const numberTitle = (r: GridRow) => (r.backfill ? `Backfill case ${numberOf(r)}` : `Number ${numberOf(r)} on the list`);
+  const addBackfillButton = () => h('button', { class: 'add-backfill', 'data-key': 'backfill:add', title: 'Add a patient who isn’t on the run sheet (e.g. a short-notice backfill)', onclick: openBackfillForm }, '+ Add backfill case');
+  const backfillHeading = backfill.length
+    ? `Backfill: added on the day, not on the run sheet (${backfill.length}). Copied below the list under a BACKFILL row.`
+    : '';
+  const yours = cancelled.filter((r) => r.cancelledByYou).length;
+  const cancelledHeading = `Cancelled (${[cancelled.length - yours ? `${cancelled.length - yours} not on the latest run sheet` : '', yours ? `${yours} by you` : ''].filter(Boolean).join(', ')}). Copied below the list under a CANCELLED row; untick any you don’t want to keep.`;
   const cancelledCount = cancelled.filter((r) => r.included).length;
   const where = grid.pasteAt || layout.pasteStart || 'the first cell';
 
@@ -2043,9 +2221,14 @@ function renderPrep(): HTMLElement | null {
         : null,
       r.status === 'new' ? h('span', { class: 'badge badge-new', title: 'Added to the list since your sheet: needs prep' }, 'New') : null,
       r.reinstated ? h('span', { class: 'badge badge-new', title: 'Was cancelled on your sheet and is back on the run sheet' }, 'Back on list') : null,
+      r.backfill && !isCancelled ? h('span', { class: 'badge badge-backfill', title: 'Added by you: not on the run sheet' }, 'Backfill') : null,
+      r.fromBackfill ? h('span', { class: 'badge badge-new', title: 'Was a backfill case on your sheet and is now booked on the run sheet' }, 'Now on run sheet') : null,
       r.movedFrom !== undefined ? h('span', { class: 'badge badge-moved', title: 'The order changed: this patient has moved' }, `Moved, was #${r.movedFrom}`) : null,
       isCancelled ? h('span', { class: 'badge badge-cancelled' }, 'Cancelled') : null,
-      isCancelled && grid ? h('button', { class: 'mini uncancel', title: 'Put this patient back on the list, at the end', 'data-key': `${rowKey(r)}:uncancel`, onclick: () => uncancelRow(grid, r) }, 'Uncancel') : null,
+      isCancelled && grid ? h('button', { class: 'mini uncancel', title: 'Put this patient back on the list, at the end (asks first)', 'data-key': `${rowKey(r)}:uncancel`, onclick: (e: Event) => (e.stopPropagation(), uncancelRow(grid, r)) }, 'Uncancel') : null,
+      !isCancelled && grid && !isLocked(r)
+        ? h('button', { class: 'mini danger cancel-case', title: 'Cancel this case: it moves to Cancelled at the bottom (asks first)', 'data-key': `${rowKey(r)}:cancel`, onclick: (e: Event) => (e.stopPropagation(), cancelRow(grid, r)) }, 'Cancel case')
+        : null,
       r.note ? h('div', { class: 'who' }, r.note) : null,
     ];
   };
@@ -2155,14 +2338,14 @@ function renderPrep(): HTMLElement | null {
     return { area, change };
   };
 
-  const renderRow = (r: GridRow, index: number) => {
+  const renderRow = (r: GridRow) => {
     const p = r.patient;
     const who = whoOf(r);
     const prompts = r.status === 'cancelled' ? null : renderPrompts(r);
     const main = h(
       'tr',
       {},
-      h('td', { class: 'handle' }, index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null, r.status === 'cancelled' ? null : lockToggle(r), tickOf(r)),
+      h('td', { class: 'handle' }, numberOf(r) ? h('span', { class: 'row-num', title: numberTitle(r) }, numberOf(r)) : null, r.status === 'cancelled' ? null : lockToggle(r), tickOf(r)),
       h('td', { class: 'time', title: p?.consultant ?? '' }, h('div', { class: 'time-value' }, p?.time ?? ''), who ? h('div', { class: 'who' }, who) : null, ...badgesOf(r)),
       layout.columns.map((c, col) => {
         if (col === involvement.level && r.status !== 'cancelled') {
@@ -2201,15 +2384,17 @@ function renderPrep(): HTMLElement | null {
     'table',
     { class: 'grid' },
     thead,
-    active.map(renderRow),
+    mainList.map(renderRow),
+    h('tbody', { class: 'backfill-heading' }, h('tr', {}, h('td', { colspan: columnCount }, backfillHeading ? h('span', {}, backfillHeading) : null, addBackfillButton()))),
+    backfill.map(renderRow),
     cancelled.length
       ? h(
           'tbody',
           { class: 'cancelled-heading' },
-          h('tr', {}, h('td', { colspan: columnCount }, `Cancelled: not on the latest run sheet (${cancelled.length}). Copied below the list under a CANCELLED row; untick any you don’t want to keep.`)),
+          h('tr', {}, h('td', { colspan: columnCount }, cancelledHeading)),
         )
       : null,
-    cancelled.map((r) => renderRow(r, -1)),
+    cancelled.map((r) => renderRow(r)),
   );
 
   const phone = isPhone();
@@ -2219,7 +2404,7 @@ function renderPrep(): HTMLElement | null {
   const alertCol = colOf('field:alerts');
 
   /** Phone: one card per patient. Closed, it's a summary; tap it to edit each column in full width. */
-  const renderCard = (r: GridRow, index: number) => {
+  const renderCard = (r: GridRow) => {
     const key = rowKey(r);
     const open = state.openCards.has(key);
     const p = r.patient;
@@ -2317,7 +2502,7 @@ function renderPrep(): HTMLElement | null {
             }
           },
         },
-        index >= 0 ? h('span', { class: 'row-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
+        numberOf(r) ? h('span', { class: 'row-num', title: numberTitle(r) }, numberOf(r)) : null,
         r.status === 'cancelled' ? null : lockToggle(r),
         h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}` }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?'),
         h(
@@ -2339,7 +2524,7 @@ function renderPrep(): HTMLElement | null {
   const lensCol = promptColumns(layout, state.settings.prompts).lens;
   const findingsCol = promptColumns(layout, state.settings.prompts).findings;
   const placed = new Set([eyeCol, keyIndex, examCol, allergyCol, findingsCol, lensCol, involvement.level, involvement.notes].filter((c) => c >= 0));
-  const renderPrepCard = (r: GridRow, index: number) => {
+  const renderPrepCard = (r: GridRow) => {
     const key = rowKey(r);
     const p = r.patient;
     const cancelledRow = r.status === 'cancelled';
@@ -2416,7 +2601,7 @@ function renderPrep(): HTMLElement | null {
         'div',
         { class: 'pc-head' },
         // Where the patient is on the theatre list.
-        index >= 0 ? h('span', { class: 'pc-num', title: `Number ${index + 1} on the list` }, String(index + 1)) : null,
+        numberOf(r) ? h('span', { class: 'pc-num', title: numberTitle(r) }, numberOf(r)) : null,
         cancelledRow ? null : lockToggle(r),
         tickOf(r),
         eyeSwitch,
@@ -2471,19 +2656,21 @@ function renderPrep(): HTMLElement | null {
         render();
       } }), ` Tick all`),
     ),
-    active.map(renderPrepCard),
-    cancelled.length
-      ? h('div', { class: 'pcards-cancelled' }, `Cancelled: not on the latest run sheet (${cancelled.length}). Copied below the list under a CANCELLED row; untick any you don’t want to keep.`)
-      : null,
-    cancelled.map((r) => renderPrepCard(r, -1)),
+    mainList.map(renderPrepCard),
+    h('div', { class: 'pcards-backfill' }, backfillHeading ? h('span', {}, backfillHeading) : null, addBackfillButton()),
+    backfill.map(renderPrepCard),
+    cancelled.length ? h('div', { class: 'pcards-cancelled' }, cancelledHeading) : null,
+    cancelled.map((r) => renderPrepCard(r)),
   );
 
   const cards = h(
     'div',
     { class: 'pcards' },
-    active.map(renderCard),
-    cancelled.length ? h('div', { class: 'pcards-cancelled' }, `Cancelled: not on the latest run sheet (${cancelled.length}). Copied below the list under a CANCELLED row; untick any you don’t want to keep.`) : null,
-    cancelled.map((r) => renderCard(r, -1)),
+    mainList.map(renderCard),
+    h('div', { class: 'pcards-backfill' }, backfillHeading ? h('span', {}, backfillHeading) : null, addBackfillButton()),
+    backfill.map(renderCard),
+    cancelled.length ? h('div', { class: 'pcards-cancelled' }, cancelledHeading) : null,
+    cancelled.map((r) => renderCard(r)),
   );
   const openAll = h(
     'div',
@@ -2548,13 +2735,15 @@ function renderReorder(): HTMLElement | null {
       h(
         'ol',
         { class: 'reorder-list' },
-        active.map((r, index) => {
+        active.flatMap((r, index) => {
           const eye = pickedLens(r).eye;
+          // The backfill cases are moved among themselves, under their own heading.
+          const divider = r.backfill && !active[index - 1]?.backfill ? h('li', { class: 'reorder-divider' }, 'Backfill') : null;
           const procedure = (procCol >= 0 ? r.cells[procCol] : r.patient?.procedure ?? '').split('\n')[0];
-          return h(
+          const item = h(
             'li',
             { class: 'reorder-item' },
-            h('span', { class: 'pc-num' }, String(index + 1)),
+            h('span', { class: 'pc-num' }, r.backfill ? `B${index - active.findIndex((x) => x.backfill) + 1}` : String(index + 1)),
             h(
               'button',
               {
@@ -2575,9 +2764,10 @@ function renderReorder(): HTMLElement | null {
             ),
             h('span', { class: `eye-pill ${eye ? `eye-${eye.toLowerCase()}` : 'eye-missing'}` }, eye === 'RIGHT' ? 'R' : eye === 'LEFT' ? 'L' : eye === 'BOTH' ? 'B' : '?'),
             h('span', { class: 'reorder-name' }, rowLabel(r), h('span', { class: 'pc-muted' }, [r.patient?.time, procedure].filter(Boolean).join(' · '))),
-            h('button', { class: 'mini', disabled: index === 0, 'aria-label': `Move ${rowLabel(r)} up`, 'data-key': `reorder:up:${rowKey(r)}`, onclick: () => moveRow(grid, index, index - 1) }, '↑'),
-            h('button', { class: 'mini', disabled: index === active.length - 1, 'aria-label': `Move ${rowLabel(r)} down`, 'data-key': `reorder:down:${rowKey(r)}`, onclick: () => moveRow(grid, index, index + 1) }, '↓'),
+            h('button', { class: 'mini', disabled: index === 0 || Boolean(active[index - 1].backfill) !== Boolean(r.backfill), 'aria-label': `Move ${rowLabel(r)} up`, 'data-key': `reorder:up:${rowKey(r)}`, onclick: () => moveRow(grid, index, index - 1) }, '↑'),
+            h('button', { class: 'mini', disabled: index === active.length - 1 || Boolean(active[index + 1].backfill) !== Boolean(r.backfill), 'aria-label': `Move ${rowLabel(r)} down`, 'data-key': `reorder:down:${rowKey(r)}`, onclick: () => moveRow(grid, index, index + 1) }, '↓'),
           );
+          return divider ? [divider, item] : [item];
         }),
       ),
     ),
@@ -2629,7 +2819,7 @@ function buildSummary(grid: Grid): ListSummary {
         check = nameMismatch ?? `${CHECK_ICON[level]} ${[...facts, ...(first && level !== 'ok' ? [first.text] : [])].join(' · ')}`.trim();
         if (status.check.alerts.length) check += `${check ? ' · ' : ''}${status.check.alerts.map((a) => a.short).join(', ')}`;
       } else if (status) check = status.state === 'reading' ? 'Still being read' : 'Not read: check by eye';
-      return { time: r.patient?.time ?? '', cells: r.cells.map((cell, i) => (involvement.has(i) ? '' : cell)), check };
+      return { time: r.patient?.time || (r.backfill ? 'Backfill' : ''), cells: r.cells.map((cell, i) => (involvement.has(i) ? '' : cell)), check };
     }),
   };
 }
@@ -4596,6 +4786,16 @@ document.addEventListener('paste', (e) => {
   void addReports(r, files);
 });
 document.addEventListener('keydown', (e) => {
+  if (state.confirm && e.key === 'Escape') {
+    state.confirm = null;
+    render();
+    return;
+  }
+  if (state.backfillForm && e.key === 'Escape') {
+    state.backfillForm = null;
+    render();
+    return;
+  }
   if ((state.newFile || state.newSheet) && e.key === 'Escape' && !state.saveReport?.busy) {
     state.newFile = null;
     state.newSheet = null;

@@ -1,5 +1,5 @@
 import Papa from 'papaparse';
-import type { Patient, Session } from './extract';
+import type { Eye, Patient, Session } from './extract';
 import { buildRow, cellValue, type Layout } from './layout';
 import type { ReportImage } from './report';
 import { blockPictures, columnIndex, columnName, type SheetData } from './xlsx';
@@ -35,6 +35,14 @@ export interface GridRow {
   reports?: ReportImage[];
   /** Unlocked for changes: every patient starts locked (see isLocked). */
   unlocked?: boolean;
+  /** A backfill case you added, not on the run sheet: listed after the main list, before the cancelled. */
+  backfill?: boolean;
+  /** Cancelled by you (not because the run sheet dropped them): stays cancelled while still on the run sheet. */
+  cancelledByYou?: boolean;
+  /** What the row was before you cancelled it, to put it back the same. */
+  statusBefore?: RowStatus;
+  /** Was a backfill case on your sheet and is now booked on the run sheet. */
+  fromBackfill?: boolean;
 }
 
 export interface MergeSummary {
@@ -57,6 +65,81 @@ export class MergeError extends Error {}
 /** First cell of the row that heads the cancelled patients in the copy. */
 export const CANCELLED_LABEL = 'CANCELLED';
 export const CANCELLED_NOTE = 'Not on the latest run sheet';
+/** The note on the row that heads the patients you cancelled yourself (under its own CANCELLED row). */
+export const CANCELLED_BY_YOU_NOTE = 'Cancelled on the day';
+/** First cell of the row that heads the backfill cases in the copy. */
+export const BACKFILL_LABEL = 'BACKFILL';
+export const BACKFILL_NOTE = 'Added on the day, not on the run sheet';
+
+/** Which part of the list a row is in. */
+export type Section = 'main' | 'backfill' | 'cancelled';
+
+export function sectionOf(r: GridRow): Section {
+  return r.status === 'cancelled' ? 'cancelled' : r.backfill ? 'backfill' : 'main';
+}
+
+/** The rows in their sections, in order within each: the list, the backfill cases, then the cancelled. */
+export function inSections(rows: GridRow[]): GridRow[] {
+  const order: Section[] = ['main', 'backfill', 'cancelled'];
+  return order.flatMap((section) => rows.filter((r) => sectionOf(r) === section));
+}
+
+type Heading = 'backfill' | 'cancelled' | 'cancelledByYou';
+
+/** A row heading a part of the block (BACKFILL, CANCELLED), not a patient: no MRN beside the label. */
+function headingOf(cells: string[]): Heading | null {
+  const first = (cells.find((c) => c.trim()) ?? '').trim();
+  const label = first.match(new RegExp(`^(${CANCELLED_LABEL}|${BACKFILL_LABEL})\\b`, 'i'))?.[1]?.toUpperCase();
+  if (!label) return null;
+  if (cells.slice(1).some((c) => MRN_LIKE.test(normaliseMrn(c.split(/\s+/)[0] ?? '')))) return null;
+  if (label === BACKFILL_LABEL) return 'backfill';
+  return cells.some((c) => c.trim().toLowerCase() === CANCELLED_BY_YOU_NOTE.toLowerCase()) ? 'cancelledByYou' : 'cancelled';
+}
+
+/** What you type to add a backfill case. */
+export interface BackfillDetails {
+  mrn: string;
+  /** "SURNAME, Given". */
+  name: string;
+  /** e.g. "70F". */
+  ageSex: string;
+  eye: Eye;
+  procedure: string;
+}
+
+/** Why these details can't be added, if they can't: a row needs an MRN and a name to be read back from your sheet. */
+export function backfillProblem(details: BackfillDetails): string | null {
+  const mrn = normaliseMrn(details.mrn);
+  if (!mrn) return 'Type the patient’s MRN.';
+  if (!MRN_LIKE.test(mrn)) return 'The MRN should be at least 4 digits, as on the run sheet.';
+  if (!/[A-Za-z]/.test(details.name)) return 'Type the patient’s name (e.g. SMITH, Jan).';
+  return null;
+}
+
+/** A backfill case as a row, its columns filled in from what you typed, like a run-sheet booking's. */
+export function backfillRow(details: BackfillDetails, layout: Layout, id: string): GridRow {
+  const mrn = details.mrn.trim().replace(/\s+/g, '');
+  const name = details.name.trim().replace(/\s+/g, ' ');
+  const ageSex = details.ageSex.trim().replace(/\s+/g, '').toUpperCase();
+  const procedure = details.procedure.trim();
+  const patient = {
+    id, raw: { MRN: mrn, PT_NAME: name, PLANNED_PROCEDURE: procedure }, time: '', mrn, name, ageSex,
+    patient: [mrn, name, ageSex].filter(Boolean).join(' '), eye: details.eye, procedure, procedureRaw: procedure,
+    interpreter: '', diabetic: '', history: '', allergy: '', allergyPending: false, alerts: '', hospitalFlags: [], planNotes: '',
+    comment: '', consultant: '', consultantSurname: '', ward: '', admissionType: '', arrival: '', priority: '',
+  } satisfies Patient;
+  return { patient: null, id, cells: buildRow(patient, layout), included: true, status: 'sheet', backfill: true, unlocked: true, changes: {} };
+}
+
+/** The MRN on a row (from its MRN or Patient column), to find the same patient twice. */
+export function rowMrn(r: GridRow, layout: Layout): string {
+  try {
+    const key = keyColumn(layout);
+    return key.read(r.cells[key.index] ?? '');
+  } catch {
+    return '';
+  }
+}
 
 export function freshRows(patients: Patient[], layout: Layout): GridRow[] {
   return patients.map((patient) => ({
@@ -120,21 +203,24 @@ export function findListBlock(sheet: SheetData, layout: Layout): FoundRows | nul
   return best;
 }
 
-/** Editable rows from a block on your sheet: patients in order, then any under the CANCELLED row. */
+/** Editable rows from a block on your sheet: patients in order, then any under the BACKFILL and CANCELLED rows. */
 export function sheetRows(block: string[][], idPrefix: string, pictures: ReportImage[][] = []): GridRow[] {
-  let cancelled = false;
+  let under: Heading | null = null;
   const rows: GridRow[] = [];
   block.forEach((cells, i) => {
     if (isEmptyRow(cells)) return;
-    const first = cells.find((c) => c.trim()) ?? '';
-    if (new RegExp(`^${CANCELLED_LABEL}\\b`, 'i').test(first.trim()) && !cells.slice(1).some((c) => MRN_LIKE.test(normaliseMrn(c.split(/\s+/)[0] ?? '')))) {
-      cancelled = true;
+    const heading = headingOf(cells);
+    if (heading) {
+      under = heading;
       return;
     }
     const reports = pictures[i]?.length ? [...pictures[i]] : undefined;
-    rows.push({ patient: null, id: `${idPrefix}:${i}`, cells: [...cells], included: true, status: cancelled ? 'cancelled' : 'sheet', changes: {}, reports });
+    const row: GridRow = { patient: null, id: `${idPrefix}:${i}`, cells: [...cells], included: true, status: under && under !== 'backfill' ? 'cancelled' : 'sheet', changes: {}, reports };
+    if (under === 'backfill') row.backfill = true;
+    if (under === 'cancelledByYou') row.cancelledByYou = true;
+    rows.push(row);
   });
-  return rows;
+  return inSections(rows);
 }
 
 /** "0001234" and "1234 " match: Excel can drop leading zeros from an MRN-only column. */
@@ -292,9 +378,10 @@ export function mergePrepped(
     waiting.set(mrn, [...(waiting.get(mrn) ?? []), p]);
   }
 
-  const matched = new Map<Patient, { cells: string[]; oldPos: number; wasCancelled: boolean; reports?: ReportImage[] }>();
+  const matched = new Map<Patient, { cells: string[]; oldPos: number; under: Heading | null; reports?: ReportImage[] }>();
   const cancelled: GridRow[] = [];
-  let inCancelled = false;
+  const backfill: GridRow[] = [];
+  let under: Heading | null = null;
   let position = 0;
   let padTo = 0;
 
@@ -304,42 +391,53 @@ export function mergePrepped(
     if (cells.some(Boolean) && cells.every((c, i) => c.trim().toLowerCase() === headings[i])) continue;
     padTo += 1;
     if (isEmptyRow(cells)) continue;
+    const heading = headingOf(cells);
+    if (heading) {
+      under = heading;
+      continue;
+    }
     const mrn = key.read(cells[key.index]);
     const patient = waiting.get(mrn)?.shift();
+    if (!under) position += 1;
     if (patient) {
-      if (!inCancelled) position += 1;
-      matched.set(patient, { cells, oldPos: position, wasCancelled: inCancelled, reports });
+      matched.set(patient, { cells, oldPos: position, under, reports });
       continue;
     }
-    const first = cells.find((c) => c.trim()) ?? '';
-    if (new RegExp(`^${CANCELLED_LABEL}\\b`, 'i').test(first.trim())) {
-      inCancelled = true;
+    // A backfill case still not on the run sheet stays one.
+    if (under === 'backfill') {
+      backfill.push({ patient: null, id: `backfill:${session.id}:${at}`, cells, included: true, status: 'sheet', backfill: true, changes: {}, reports });
       continue;
     }
-    if (!inCancelled) position += 1;
     const now = elsewhere.get(mrn);
     cancelled.push({
       patient: null,
       cells,
       included: true,
       status: 'cancelled',
+      cancelledByYou: under === 'cancelledByYou' || undefined,
       changes: {},
-      note: now ? `Now on ${describe(now)}` : undefined,
+      note: now ? `Now on ${describe(now)}` : under === 'cancelledByYou' ? 'Cancelled by you' : undefined,
       reports,
     });
   }
 
-  if (matched.size === 0 && cancelled.length > 0) {
+  if (matched.size === 0 && cancelled.length + backfill.length > 0) {
     throw new MergeError(
       `None of the pasted patients are on this list (${describe(session)}). Check you picked the right list and copied the rows from your sheet.`,
     );
   }
   if (matched.size === 0) throw new MergeError('No patient rows found in what you pasted.');
 
-  const rows: GridRow[] = session.patients.map((patient) => {
+  // Patients you cancelled stay cancelled while the run sheet still has them.
+  const stillCancelled: GridRow[] = [];
+  const rows: GridRow[] = session.patients.flatMap((patient): GridRow[] => {
     const prepped = matched.get(patient);
     if (!prepped) {
-      return { patient, cells: buildRow(patient, layout), included: true, status: 'new', changes: {} };
+      return [{ patient, cells: buildRow(patient, layout), included: true, status: 'new', changes: {} }];
+    }
+    if (prepped.under === 'cancelledByYou') {
+      stillCancelled.push({ patient, cells: prepped.cells, included: true, status: 'cancelled', cancelledByYou: true, statusBefore: 'kept', changes: {}, note: 'Cancelled by you (still on the run sheet)', reports: prepped.reports });
+      return [];
     }
     const changes: Record<number, string> = {};
     layout.columns.forEach((column, i) => {
@@ -347,19 +445,20 @@ export function mergePrepped(
       const latest = cellValue(patient, column.source);
       if (latest.trim() && !squash(prepped.cells[i]).includes(squash(latest))) changes[i] = latest;
     });
-    return {
+    return [{
       patient,
       cells: prepped.cells,
       included: true,
       status: 'kept',
-      reinstated: prepped.wasCancelled || undefined,
+      reinstated: prepped.under === 'cancelled' || undefined,
+      fromBackfill: prepped.under === 'backfill' || undefined,
       changes,
       reports: prepped.reports,
-    };
+    }];
   });
 
   // Patients outside the longest run still in their old order are the ones that moved.
-  const kept = rows.filter((r) => r.status === 'kept' && !r.reinstated);
+  const kept = rows.filter((r) => r.status === 'kept' && !r.reinstated && !r.fromBackfill);
   const oldOrder = kept.map((r) => matched.get(r.patient!)!.oldPos);
   const stayed = inEveryLongestRun(oldOrder);
   kept.forEach((r, i) => {
@@ -367,7 +466,7 @@ export function mergePrepped(
   });
 
   return {
-    rows: [...rows, ...cancelled],
+    rows: [...rows, ...backfill, ...cancelled, ...stillCancelled],
     padTo,
     summary: {
       kept: rows.filter((r) => r.status === 'kept').length,
@@ -380,20 +479,25 @@ export function mergePrepped(
 }
 
 /**
- * The rows to paste back over your sheet: the list, then the ticked cancelled patients under a
- * label row, then blank rows to clear anything left over from the old, longer block.
+ * The rows to paste back over your sheet: the list, then the ticked backfill cases and cancelled
+ * patients each under a label row, then blank rows to clear anything left over from the old, longer block.
  */
 export function copyBlock(rows: GridRow[], layout: Layout, padTo = 0): string[][] {
   const width = layout.columns.length;
   const blank = () => Array.from({ length: width }, () => '');
+  const labels: Record<Label, [string, string]> = {
+    backfill: [BACKFILL_LABEL, BACKFILL_NOTE],
+    cancelled: [CANCELLED_LABEL, CANCELLED_NOTE],
+    cancelledByYou: [CANCELLED_LABEL, CANCELLED_BY_YOU_NOTE],
+  };
   return blockOrder(rows, padTo).map((r) => {
     if (r === 'blank') return blank();
-    if (r === 'label') {
+    if (typeof r === 'string') {
       const label = blank();
-      label[0] = CANCELLED_LABEL;
+      label[0] = labels[r][0];
       let noteAt = layout.columns.findIndex((c) => c.source === 'field:patient' || c.source === 'field:mrn');
       if (noteAt <= 0) noteAt = width > 1 ? 1 : -1;
-      if (noteAt > 0) label[noteAt] = CANCELLED_NOTE;
+      if (noteAt > 0) label[noteAt] = labels[r][1];
       return label;
     }
     return r.cells;
@@ -405,11 +509,18 @@ export function copyPictures(rows: GridRow[], padTo = 0): ReportImage[][] {
   return blockOrder(rows, padTo).map((r) => (typeof r === 'string' ? [] : [...(r.reports ?? [])]));
 }
 
-/** The block's rows in order: the list, then the ticked cancelled patients under a label row, then blanks. */
-function blockOrder(rows: GridRow[], padTo: number): (GridRow | 'blank' | 'label')[] {
-  const out: (GridRow | 'blank' | 'label')[] = rows.filter((r) => r.status !== 'cancelled' && r.included);
-  const cancelled = rows.filter((r) => r.status === 'cancelled' && r.included);
-  if (cancelled.length) out.push('blank', 'label', ...cancelled);
+type Label = 'backfill' | 'cancelled' | 'cancelledByYou';
+
+/** The block's rows in order: the list, then the ticked backfill and cancelled patients each under a label row, then blanks. */
+function blockOrder(rows: GridRow[], padTo: number): (GridRow | 'blank' | Label)[] {
+  const ticked = rows.filter((r) => r.included);
+  const out: (GridRow | 'blank' | Label)[] = ticked.filter((r) => sectionOf(r) === 'main');
+  const parts: [Label, GridRow[]][] = [
+    ['backfill', ticked.filter((r) => sectionOf(r) === 'backfill')],
+    ['cancelled', ticked.filter((r) => r.status === 'cancelled' && !r.cancelledByYou)],
+    ['cancelledByYou', ticked.filter((r) => r.status === 'cancelled' && r.cancelledByYou)],
+  ];
+  for (const [label, part] of parts) if (part.length) out.push('blank', label, ...part);
   while (out.length < padTo) out.push('blank');
   return out;
 }

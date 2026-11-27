@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { toTsv } from '../src/clipboard';
 import { extractSessions, type Session } from '../src/extract';
 import { buildRow, defaultLayout, type Layout } from '../src/layout';
-import { CANCELLED_LABEL, copyBlock, copyPictures, freshRows, isRectangular, keepReports, mergePrepped, MergeError, normaliseMrn, parsePastedRows, sheetRows } from '../src/merge';
+import { backfillProblem, backfillRow, CANCELLED_LABEL, copyBlock, copyPictures, freshRows, inSections, isRectangular, keepReports, mergePrepped, MergeError, normaliseMrn, parsePastedRows, rowMrn, sheetRows, type GridRow } from '../src/merge';
 import type { ReportImage } from '../src/report';
 import { parseTable } from '../src/parse';
 import { booking, runSheetCsv, slot } from './fixtures';
@@ -253,5 +253,87 @@ describe('IOL report screenshots follow their patient', () => {
   it('comes with the rows of a sheet opened without a run sheet', () => {
     const rows = sheetRows([['RIGHT', '3000001 ALPHA, Ann'], ['', ''], ['LEFT', '3000002 BRAVO, Ben']], 's', [[pic(1)], [], [pic(2)]]);
     expect(rows.map((r) => r.reports?.[0].bytes[0])).toEqual([1, 2]);
+  });
+});
+
+describe('backfill cases and patients you cancel', () => {
+  const layout = defaultLayout();
+  const details = { mrn: '3000009', name: 'GOLF, Gus', ageSex: '70m', eye: 'LEFT' as const, procedure: 'LE CE/IOL' };
+  const prepped = () => {
+    const rows = merge(preppedSheet()).rows;
+    const golf = backfillRow(details, layout, 'backfill:1');
+    golf.cells[4] = 'VA 6/9';
+    // You cancel Alpha on the day, though the run sheet still lists them.
+    const alpha = rows.find((r) => mrnOf(r.cells) === '3000001')!;
+    alpha.statusBefore = alpha.status;
+    alpha.status = 'cancelled';
+    alpha.cancelledByYou = true;
+    return inSections([...rows, golf]);
+  };
+
+  it('fills in a backfill case’s columns from what you typed, ready to prep', () => {
+    const golf = backfillRow(details, layout, 'backfill:1');
+    expect(golf.cells.slice(0, 3)).toEqual(['LEFT', '3000009 GOLF, Gus 70M', 'LE CE/IOL']);
+    expect(golf).toMatchObject({ patient: null, status: 'sheet', backfill: true, unlocked: true, included: true });
+    expect(rowMrn(golf, layout)).toBe('3000009');
+  });
+
+  it('needs an MRN and a name, so the row can be read back from your sheet', () => {
+    expect(backfillProblem({ ...details, mrn: '' })).toMatch(/MRN/);
+    expect(backfillProblem({ ...details, mrn: '12' })).toMatch(/at least 4 digits/);
+    expect(backfillProblem({ ...details, name: ' ' })).toMatch(/name/);
+    expect(backfillProblem(details)).toBeNull();
+  });
+
+  it('copies the list, then BACKFILL, then CANCELLED and the patients you cancelled under their own row', () => {
+    const block = copyBlock(prepped(), layout);
+    const firsts = block.map((r) => (r[0] === 'BACKFILL' || r[0] === 'CANCELLED' ? `${r[0]} ${r[1]}` : mrnOf(r) || '-'));
+    expect(firsts).toEqual([
+      '3000003', '3000005', '3000006',
+      '-', 'BACKFILL Added on the day, not on the run sheet', '3000009',
+      '-', 'CANCELLED Not on the latest run sheet', '3000002', '3000004',
+      '-', 'CANCELLED Cancelled on the day', '3000001',
+    ]);
+  });
+
+  it('reads the sections back from your sheet', () => {
+    const rows = sheetRows(copyBlock(prepped(), layout), 'sheet');
+    expect(rows.map((r) => [mrnOf(r.cells), r.status, Boolean(r.backfill), Boolean(r.cancelledByYou)])).toEqual([
+      ['3000003', 'sheet', false, false],
+      ['3000005', 'sheet', false, false],
+      ['3000006', 'sheet', false, false],
+      ['3000009', 'sheet', true, false],
+      ['3000002', 'cancelled', false, false],
+      ['3000004', 'cancelled', false, false],
+      ['3000001', 'cancelled', false, true],
+    ]);
+  });
+
+  it('keeps a backfill case and your cancellations through an update from the run sheet', () => {
+    const result = merge(copyBlock(prepped(), layout));
+    const by = (mrn: string) => result.rows.find((r) => mrnOf(r.cells) === mrn)!;
+    expect(result.rows.map((r) => mrnOf(r.cells))).toEqual(['3000003', '3000005', '3000006', '3000009', '3000002', '3000004', '3000001']);
+    expect(by('3000009')).toMatchObject({ status: 'sheet', backfill: true, patient: null });
+    expect(by('3000009').cells[4]).toBe('VA 6/9');
+    // Still on the run sheet, but you cancelled them: they stay cancelled, not "Back on list".
+    expect(by('3000001')).toMatchObject({ status: 'cancelled', cancelledByYou: true, statusBefore: 'kept' });
+    expect(by('3000001').reinstated).toBeUndefined();
+    expect(by('3000001').patient?.mrn).toBe('3000001');
+    expect(result.summary.cancelled).toBe(2);
+  });
+
+  it('a backfill case booked on the run sheet since joins the list, with your notes', () => {
+    const booked = [...morning.slice(0, 5), person('3000009', 'GOLF, Gus', '11:00', 'left'), ...morning.slice(5)];
+    const golf = merge(copyBlock(prepped(), layout), booked).rows.find((r) => mrnOf(r.cells) === '3000009')!;
+    expect(golf).toMatchObject({ status: 'kept', fromBackfill: true });
+    expect(golf.backfill).toBeUndefined();
+    expect(golf.cells[4]).toBe('VA 6/9');
+    expect(golf.movedFrom).toBeUndefined();
+  });
+
+  it('puts rows in their sections: the list, the backfill cases, the cancelled', () => {
+    const row = (id: string, extra: Partial<GridRow>): GridRow => ({ patient: null, id, cells: [], included: true, status: 'sheet', changes: {}, ...extra });
+    const rows = [row('c', { status: 'cancelled' }), row('b', { backfill: true }), row('m', {}), row('cb', { status: 'cancelled', backfill: true })];
+    expect(inSections(rows).map((r) => r.id)).toEqual(['m', 'b', 'c', 'cb']);
   });
 });
