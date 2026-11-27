@@ -1,5 +1,6 @@
 import Papa from 'papaparse';
 import type { Eye, Patient, Session } from './extract';
+import type { HeaderDetails } from './patientheader';
 import { buildRow, cellValue, type Layout } from './layout';
 import type { ReportImage } from './report';
 import { blockPictures, columnIndex, columnName, type SheetData } from './xlsx';
@@ -129,6 +130,29 @@ export function backfillRow(details: BackfillDetails, layout: Layout, id: string
     comment: '', consultant: '', consultantSurname: '', ward: '', admissionType: '', arrival: '', priority: '',
   } satisfies Patient;
   return { patient: null, id, cells: buildRow(patient, layout), included: true, status: 'sheet', backfill: true, unlocked: true, changes: {} };
+}
+
+/** Age in whole years on a day, from dates as dd/mm/yyyy; null if either can't be read. */
+export function ageOn(dob: string, day: string): number | null {
+  const parse = (d: string) => d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)?.slice(1).map(Number);
+  const [bd, bm, by] = parse(dob) ?? [];
+  const [dd, dm, dy] = parse(day) ?? [];
+  if (!by || !dy) return null;
+  const age = dy - by - (dm < bm || (dm === bm && dd < bd) ? 1 : 0);
+  return age >= 0 && age < 130 ? age : null;
+}
+
+/**
+ * What a screenshot of the patient banner fills in for a backfill case: the MRN, the name as on the
+ * run sheet ("SURNAME, First") and the age on the day of the list (the banner has no sex).
+ */
+export function backfillFromBanner(found: HeaderDetails, day: string): Partial<BackfillDetails> {
+  const out: Partial<BackfillDetails> = {};
+  if (found.mrn) out.mrn = found.mrn;
+  if (found.surname || found.first) out.name = [found.surname.toUpperCase(), found.first].filter(Boolean).join(', ');
+  const age = found.dob ? ageOn(found.dob, day) : null;
+  if (age !== null) out.ageSex = String(age);
+  return out;
 }
 
 /** The MRN on a row (from its MRN or Patient column), to find the same patient twice. */

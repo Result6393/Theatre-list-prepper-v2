@@ -635,6 +635,15 @@ button.mini.cancel-case {
   border-top: 2px solid var(--both-text);
 }
 
+/* The patient banner screenshot box in "Add a backfill case" (as in the Medical Letter Prepper). */
+.paste-zone {
+  margin: 0 12px 8px;
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+}
+
 /* A question before going on (cancel / uncancel a case). */
 .confirm-backdrop {
   z-index: 40;

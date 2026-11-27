@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { toTsv } from '../src/clipboard';
 import { extractSessions, type Session } from '../src/extract';
 import { buildRow, defaultLayout, type Layout } from '../src/layout';
-import { backfillProblem, backfillRow, CANCELLED_LABEL, copyBlock, copyPictures, freshRows, inSections, isRectangular, keepReports, mergePrepped, MergeError, normaliseMrn, parsePastedRows, rowMrn, sheetRows, type GridRow } from '../src/merge';
+import { ageOn, backfillFromBanner, backfillProblem, backfillRow, CANCELLED_LABEL, copyBlock, copyPictures, freshRows, inSections, isRectangular, keepReports, mergePrepped, MergeError, normaliseMrn, parsePastedRows, rowMrn, sheetRows, type GridRow } from '../src/merge';
 import type { ReportImage } from '../src/report';
 import { parseTable } from '../src/parse';
 import { booking, runSheetCsv, slot } from './fixtures';
@@ -335,5 +335,26 @@ describe('backfill cases and patients you cancel', () => {
     const row = (id: string, extra: Partial<GridRow>): GridRow => ({ patient: null, id, cells: [], included: true, status: 'sheet', changes: {}, ...extra });
     const rows = [row('c', { status: 'cancelled' }), row('b', { backfill: true }), row('m', {}), row('cb', { status: 'cancelled', backfill: true })];
     expect(inSections(rows).map((r) => r.id)).toEqual(['m', 'b', 'c', 'cb']);
+  });
+});
+
+describe('a backfill case from a screenshot of the patient banner', () => {
+  it('works out the age on the day of the list', () => {
+    expect(ageOn('15/06/1950', '14/06/2026')).toBe(75);
+    expect(ageOn('15/06/1950', '15/06/2026')).toBe(76);
+    expect(ageOn('01/02/1950', '')).toBeNull();
+    expect(ageOn('', '14/06/2026')).toBeNull();
+  });
+
+  it('fills the MRN, the name as on the run sheet and the age', () => {
+    expect(backfillFromBanner({ first: 'Mary Ann', surname: 'Sample-Jones', dob: '01/02/1960', mrn: '0012345' }, '14/10/2026')).toEqual({
+      mrn: '0012345',
+      name: 'SAMPLE-JONES, Mary Ann',
+      ageSex: '66',
+    });
+  });
+
+  it('leaves out what the banner didn’t give', () => {
+    expect(backfillFromBanner({ first: '', surname: '', dob: '01/01/1900', mrn: '1234567' }, 'not a date')).toEqual({ mrn: '1234567' });
   });
 });
