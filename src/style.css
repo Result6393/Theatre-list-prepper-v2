@@ -585,6 +585,79 @@ label.stacked {
   color: var(--surface);
 }
 
+/* Backfill cases: added by you, between the list and the cancelled. */
+.badge-backfill {
+  background: var(--both-bg);
+  color: var(--both-text);
+  border: 1px solid currentColor;
+}
+
+tbody.backfill-heading td,
+.pcards-backfill {
+  color: var(--both-text);
+  font-weight: 700;
+}
+
+tbody.backfill-heading td {
+  background: var(--bg);
+  padding: 10px 8px 6px;
+  border-top: 2px solid var(--both-text);
+}
+
+.pcards-backfill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 12px 0 4px;
+  padding-top: 8px;
+  border-top: 2px solid var(--both-text);
+}
+
+tbody.backfill-heading td > span {
+  margin-right: 12px;
+}
+
+button.add-backfill {
+  font-weight: 650;
+}
+
+button.mini.cancel-case {
+  margin-left: 4px;
+}
+
+.reorder-divider {
+  list-style: none;
+  padding: 8px 12px 4px;
+  color: var(--both-text);
+  font-weight: 700;
+  font-size: 0.85rem;
+  border-top: 2px solid var(--both-text);
+}
+
+/* A question before going on (cancel / uncancel a case). */
+.confirm-backdrop {
+  z-index: 40;
+}
+
+.save-dialog.confirm {
+  width: min(460px, 100%);
+  padding: 16px 18px 14px;
+}
+
+.save-dialog.confirm h3 {
+  margin: 0 0 6px;
+}
+
+.save-dialog.confirm p {
+  margin: 0 0 14px;
+}
+
+button.primary.danger-fill {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
 tbody.cancelled-heading td {
   background: var(--bg);
   color: var(--danger);

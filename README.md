@@ -29,6 +29,14 @@ Both edit the same cells, so your Excel file is the same whichever you use.
 
 Every patient **starts locked** against changes (🔒 beside their number), and a locked patient shows just their information: the text of each column (which you can select and copy), the eye, and their IOL report thumbnail and check (which still opens full screen; Apply in it is off). Two things stay open on a locked patient. Your **involvement** (buttons and notes) can always be filled in or changed, since it's your own record. And a **backup lens** can be added: *Add backup* under their Implants (choose the lens, type its power, **Add**), or *Add as backup* in the report view. Once it's there it's locked too: unlock the patient to change or remove it. The buttons, boxes, lens dropdown, drag handle and pasting a screenshot appear when you unlock them. Tap **🔒** to unlock one (and again to lock it), or **🔓 Unlock all / 🔒 Lock all** (in the toolbar on a computer, beside the tick count on a phone). Patients you unlock stay unlocked while the page is open (and through updates from the run sheet); reopening the file locks everyone again.
 
+## Backfill cases and cancelling
+
+- **+ Add backfill case** (under the list, in every view) adds a patient who isn't on the run sheet, e.g. a short-notice backfill. Type the MRN and name (and, if you like, age/sex, eye and procedure). They go under **Backfill**, between the list and the cancelled patients, numbered B1, B2…, unlocked and ready to prep like anyone else. They're on the copy, the Excel file (under a `BACKFILL` row), the Summary, the lens list and the Medical Records email. An MRN already on the list isn't added twice.
+- Updating from a new run sheet keeps your backfill cases. One that's since been booked joins the list with your notes, marked **Now on run sheet**.
+- **Cancel case** (on an unlocked patient) asks first, then moves the patient to Cancelled at the bottom. Patients you cancel are saved under their own `CANCELLED · Cancelled on the day` row, and stay cancelled when you update from a run sheet that still lists them.
+- **Uncancel** asks first too, then puts the patient back at the end of the list (or of the backfill cases, for one).
+- **⇅ Reorder** moves backfill cases among themselves, under their own heading.
+
 ## On a phone
 
 On a narrow screen the list becomes a stack of patient cards instead of a wide table, so there's no scrolling sideways:
