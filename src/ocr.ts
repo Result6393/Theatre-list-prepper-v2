@@ -7,10 +7,10 @@ import Tesseract from 'tesseract.js/dist/tesseract.esm.min.js';
 import workerSource from 'tesseract.js/dist/worker.min.js?raw';
 import coreSource from 'tesseract.js-core/tesseract-core-lstm.wasm.js?raw';
 import languageBase64 from '@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz?base64';
-import type { OcrWord } from './iolreport';
+import { headingGaps, readReport, withReread, type OcrWord } from './iolreport';
 
 /** Identifies how a picture was read: OCR results saved by another engine or settings are read again. */
-export const OCR_ENGINE = 'tesseract.js 6, eng best_int, LSTM, grey 1900px';
+export const OCR_ENGINE = 'tesseract.js 6, eng best_int, LSTM, grey 1900px, lens headings re-read';
 
 /** Where the worker asks for the English data; it never goes to the network (see below). */
 const LANG_PATH = 'https://offline.invalid/tessdata';
@@ -68,10 +68,26 @@ export async function readWords(image: Blob): Promise<{ words: OcrWord[]; width:
   const worker = await engine;
   const canvas = await enlarged(image);
   const { data } = await worker.recognize(canvas, {}, { blocks: true, text: false });
+  let words = wordsOf(data);
+  // Reading the whole page, OCR can drop the second line of a lens's heading (the line with its name,
+  // e.g. "nsar AR40 3-Piece"); read on their own, those headings come out whole.
+  for (const area of headingGaps(readReport(words))) {
+    const left = Math.max(0, Math.floor(area.x0));
+    const top = Math.max(0, Math.floor(area.y0));
+    const width = Math.min(canvas.width, Math.ceil(area.x1)) - left;
+    const height = Math.min(canvas.height, Math.ceil(area.y1)) - top;
+    if (width < 10 || height < 10) continue;
+    const again = await worker.recognize(canvas, { rectangle: { left, top, width, height } }, { blocks: true, text: false });
+    words = withReread(words, area, wordsOf(again.data));
+  }
+  return { words, width: canvas.width, height: canvas.height };
+}
+
+function wordsOf(data: Tesseract.Page): OcrWord[] {
   const words: OcrWord[] = [];
   for (const block of data.blocks ?? [])
     for (const paragraph of block.paragraphs)
       for (const line of paragraph.lines)
         for (const word of line.words) words.push({ text: word.text, x0: word.bbox.x0, y0: word.bbox.y0, x1: word.bbox.x1, y1: word.bbox.y1 });
-  return { words, width: canvas.width, height: canvas.height };
+  return words;
 }

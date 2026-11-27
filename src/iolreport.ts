@@ -33,6 +33,19 @@ export interface LensTable {
   toric: boolean;
   rows: LensRow[];
   titleWords?: OcrWord[];
+  /**
+   * Where the heading has room for a line OCR didn't read (it can drop the second line, e.g. "nsar AR40
+   * 3-Piece", leaving no lens name): the area to read again (see headingGaps).
+   */
+  headingGap?: Box;
+}
+
+/** An area of the screenshot. */
+export interface Box {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
 }
 
 export interface EyeReading {
@@ -375,6 +388,14 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
         titleWords.push(...words);
         if (title.length === 2 || /johnson|alcon|zeiss|bausch|hoya|rayner|vision|medical/i.test(line)) break;
       }
+      // The heading sits right above the formula line; a line's worth of space between them (or no
+      // heading at all) means OCR may have dropped one.
+      const formulaTop = Math.min(...formulas[k].filter(isBarrett).map((w) => w.y0));
+      const titleTop = titleWords.length ? Math.min(...titleWords.map((w) => w.y0)) : formulaTop - height * 2.6;
+      const titleBottom = titleWords.length ? Math.max(...titleWords.map((w) => w.y1)) : titleTop;
+      const headingGap = title.length < 2 && formulaTop - titleBottom > height * 0.6
+        ? { x0: Math.max(from, 0), y0: Math.max(0, titleTop - height * 0.3), x1: to, y1: formulaTop }
+        : undefined;
       // A toric calculation: "Barrett Toric" (OCR: "Tonic", "Taric"…), a toric lens, or a cylinder column.
       const toric =
         /\bT[aoe]?[rn][il1]c\b/i.test(text(formulas[k])) ||
@@ -390,7 +411,7 @@ function readEye(rows: Row[], left: number, right: number): EyeReading {
         if (row) tableRows.push(row);
       }
       settleDoubts(tableRows);
-      if (tableRows.length) tables.push({ title: title.join(' ').replace(/(\w)\s+-\s+(\w)/g, '$1-$2'), toric, rows: tableRows, titleWords });
+      if (tableRows.length) tables.push({ title: title.join(' ').replace(/(\w)\s+-\s+(\w)/g, '$1-$2'), toric, rows: tableRows, titleWords, headingGap });
     });
   });
   // ΔK is the start of the line with K2 on it (OCR reads "Δ" all sorts of ways).
@@ -497,6 +518,25 @@ export function readReport(words: OcrWord[]): ReportReading | null {
   };
 }
 
+
+/** The lens headings OCR may have read only in part, to read again on their own (see withReread). */
+export function headingGaps(reading: ReportReading | null): Box[] {
+  return [reading?.right, reading?.left].flatMap((eye) => eye?.tables.flatMap((t) => (t.headingGap ? [t.headingGap] : [])) ?? []);
+}
+
+/**
+ * The words with one area read again: the second reading replaces the first there when it has more
+ * lines with words in them (OCR reading a small area on its own can find a line it dropped from the whole page).
+ */
+export function withReread(words: OcrWord[], area: Box, again: OcrWord[]): OcrWord[] {
+  const inside = (w: OcrWord) => centre(w) >= area.x0 && centre(w) <= area.x1 && (w.y0 + w.y1) / 2 >= area.y0 && (w.y0 + w.y1) / 2 <= area.y1;
+  // Lines with a word in them: a stray mark read on its own line isn't one.
+  const lines = (ws: OcrWord[]) => (ws.length ? rowsOf(ws).filter((r) => r.words.some((w) => /[A-Za-z0-9]{3,}/.test(w.text))).length : 0);
+  const before = words.filter((w) => inside(w) && w.text.trim());
+  const after = again.filter((w) => inside(w) && w.text.trim());
+  if (lines(after) <= lines(before)) return words;
+  return words.filter((w) => !inside(w)).concat(after);
+}
 
 // ---- Biometry alerts --------------------------------------------------------------
 

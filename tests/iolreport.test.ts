@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { biometryAlerts, checkLens, combineReadings, defaultLimits, parseConstants, parseEquivalents, readNumber, readReport, simulateLens, type Biometry, type EyeReading, type OcrWord, type PickedLens, type ReportReading, type Simulation } from '../src/iolreport';
+import { biometryAlerts, checkLens, combineReadings, defaultLimits, headingGaps, parseConstants, parseEquivalents, readNumber, readReport, simulateLens, withReread, type Biometry, type EyeReading, type OcrWord, type PickedLens, type ReportReading, type Simulation } from '../src/iolreport';
 import { srktPower, srktRefraction } from '../src/srkt';
 
 /**
@@ -543,5 +543,37 @@ describe('lens tables as OCR misreads them', () => {
     expect(rows(report.right!.tables.find((t) => t.toric))).toEqual([[21, -0.68], [20.5, -0.33], [20, 0.02]]);
     // With too few rows to tell which was misread, the row is left out.
     expect(rows(misread([['3° -0.68 -0.81 +0.27', '3° -0.58 -0.82 +0.28']]).right!.tables.find((t) => t.toric))).toEqual([[20.5, -0.33]]);
+  });
+});
+
+describe('lens headings OCR read only in part', () => {
+  // Reading the whole page, OCR can drop a heading's second line ("nsar AR40 3-Piece"): the lens's name.
+  const dropped = withLargeHeadings(page(REPORT_LINES.map((l) => (l[0]?.[1].startsWith('cnis DCB') ? [] : l))));
+  const equivalents = parseEquivalents(['AR40x = AR40']);
+  const ar40e = lens({ code: 'AR40e', power: null, target: 0 });
+
+  it('finds the headings with room for a line it didn’t read, and none when they’re whole', () => {
+    const gaps = headingGaps(readReport(dropped));
+    expect(gaps).toHaveLength(4);
+    expect(gaps.every((g) => g.y0 < 11 * 30 && g.y1 >= 11 * 30 + 20)).toBe(true);
+    expect(headingGaps(readReport(REPORT))).toEqual([]);
+  });
+
+  it('reads the lens from its heading read again', () => {
+    expect(simulateLens(readReport(dropped)!, 'right', ar40e, [], equivalents)).toContain('isn’t on the right eye’s side of the report');
+    // The headings read on their own come out whole (here: the words of the whole report).
+    const words = headingGaps(readReport(dropped)).reduce((ws, gap) => withReread(ws, gap, REPORT), dropped);
+    const reading = readReport(words)!;
+    expect(reading.right!.tables.map((t) => t.title)).toEqual(readReport(REPORT)!.right!.tables.map((t) => t.title));
+    const s = simulateLens(reading, 'right', ar40e, [], equivalents) as Simulation;
+    expect(s.source).toBe('report');
+    expect(s.best).toMatchObject({ power: 19.5, ref: -0.09 });
+  });
+
+  it('keeps the first reading when reading again finds no more lines of words', () => {
+    const [gap] = headingGaps(readReport(dropped));
+    const stray = { text: '|', x0: gap.x0 + 5, x1: gap.x0 + 8, y0: gap.y0, y1: gap.y0 + 5 };
+    expect(withReread(dropped, gap, [...dropped, stray])).toBe(dropped);
+    expect(withReread(dropped, gap, [])).toBe(dropped);
   });
 });
